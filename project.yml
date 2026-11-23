@@ -1,0 +1,54 @@
+name: Riptide
+options:
+  deploymentTarget:
+    iOS: "18.0"
+packages:
+  RiptideCore:
+    path: .
+  SwiftMarkdown:
+    url: https://github.com/swiftlang/swift-markdown.git
+    exactVersion: 0.8.0
+  WebRTC:
+    url: https://github.com/stasel/WebRTC.git
+    exactVersion: 154.0.0
+targets:
+  Riptide:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - path: Rendering/RichContent
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: RiptideCore
+      - package: SwiftMarkdown
+        product: Markdown
+      - package: WebRTC
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.riptide.client
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Riptide
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Riptide uses your microphone only during an outgoing voice call.
+        SWIFT_VERSION: "6.0"
+  RiptideUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: Riptide
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: app.riptide.client.uitests
+        SWIFT_VERSION: "6.0"
+schemes:
+  Riptide:
+    build:
+      targets:
+        Riptide: all
+    test:
+      targets: [RiptideUITests]

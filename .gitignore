@@ -1,0 +1,12 @@
+.build/
+.swiftpm/
+DerivedData/
+Riptide.xcodeproj/
+**/xcuserdata/
+.DS_Store
+.env
+.env.*
+!.env.example
+Rendering/node_modules/
+Rendering/RichContent/
+__pycache__/
