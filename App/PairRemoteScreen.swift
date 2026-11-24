@@ -75,38 +75,3 @@ struct PairRemoteScreen: View {
         }
     }
 }
-
-struct PairedRemoteScreen: View {
-    let profile: RemoteProfile
-    let store: RemoteStore
-    @State private var acp: AgentChatModel?
-
-    var body: some View {
-        Group {
-            if let bearer = store.bearer(for: profile) {
-                if let codex = CodexLocalEndpoint(remote: profile, bearer: bearer) {
-                    CodexChatsScreen(endpoint: codex, name: profile.name, selectionKey: profile.id.uuidString)
-                } else if let acp {
-                    ChatScreen(model: acp, voiceRemote: profile, remoteStore: store)
-                } else {
-                    ProgressView().task { openACP(bearer: bearer) }
-                }
-            } else {
-                ContentUnavailableView("Token unavailable", systemImage: "lock",
-                                       description: Text("Unlock this device or forget and pair the remote again."))
-            }
-        }
-    }
-
-    private func openACP(bearer: String) {
-        guard let main = profile.mainSessionID else { return }
-        let target = AgentTarget(id: profile.id.uuidString, name: profile.name, mainSessionID: main, cwd: profile.workspace)
-        acp = AgentChatModel(target: target, connect: { profile.makeACPClient(bearer: bearer)
-            ?? ACPClient(transport: FailedRemoteTransport()) })
-    }
-}
-
-private struct FailedRemoteTransport: JSONMessageTransport {
-    let incoming = AsyncThrowingStream<Data, any Error> { $0.finish(throwing: ACPError.disconnected) }
-    func send(_ message: Data) async throws { throw ACPError.disconnected }
-}

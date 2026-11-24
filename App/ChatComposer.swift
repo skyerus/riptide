@@ -8,6 +8,7 @@ struct ChatComposer: View {
 
     @State private var showModels = false
     @State private var showContext = false
+    @FocusState private var editorFocused: Bool
 
     private var modelName: String? {
         model.selected.configOptions.first(where: { $0.category == .model })?.currentName
@@ -19,9 +20,11 @@ struct ChatComposer: View {
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 22)
+        let prompt = "Message \(model.target.name)"
         VStack(alignment: .leading, spacing: 0) {
-            TextField("Message \(model.target.name)", text: $draft, axis: .vertical)
+            TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
+                .focused($editorFocused)
                 .padding(.horizontal, 15)
                 .padding(.top, 13)
                 .padding(.bottom, 4)
@@ -52,6 +55,7 @@ struct ChatComposer: View {
         .onChange(of: model.selectedID) {
             showModels = false
             showContext = false
+            editorFocused = false
         }
     }
 
@@ -129,6 +133,7 @@ struct ChatComposer: View {
             } else {
                 model.submit(draft)
                 draft = ""
+                editorFocused = false
                 didSend()
             }
         } label: {

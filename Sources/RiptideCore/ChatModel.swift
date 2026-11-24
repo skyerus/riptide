@@ -52,7 +52,7 @@ public struct Transcript: Equatable, Sendable {
                 toolIndices[activity.id] = entries.count
                 entries.append(ChatEntry(content: .tool(activity)))
             }
-        case .permission, .permissionClosed, .configOptions, .context:
+        case .permission, .permissionClosed, .configOptions, .context, .plan:
             break
         }
     }
@@ -68,6 +68,9 @@ public final class AgentChatModel {
     public private(set) var refreshingList = false
     public private(set) var creatingChat = false
     private var chats: [String: ChatState] = [:]
+    public private(set) var completedReplies: [String: Date] = [:]
+    public private(set) var pendingApprovalSince: [String: Date] = [:]
+    public private(set) var workingChats = Set<String>()
     private var newlyCreatedOpenClawKeys: [String: String] = [:]
     @ObservationIgnored private var client: ACPClient?
     @ObservationIgnored private var makeClient: (@Sendable () -> ACPClient)?
@@ -86,6 +89,7 @@ public final class AgentChatModel {
         public fileprivate(set) var stopping = false
         public fileprivate(set) var error: String?
         public fileprivate(set) var notice: String?
+        public fileprivate(set) var plan: [TurnPlanStep] = []
 
         fileprivate mutating func receive(_ event: ACPEvent) {
             switch event {
@@ -93,6 +97,8 @@ public final class AgentChatModel {
                 break
             case .message, .tool:
                 transcript.apply(event)
+            case .plan(_, let steps):
+                plan = steps
             case .configOptions(_, let options):
                 configOptions = options
             case .context(_, let usage):
@@ -127,16 +133,18 @@ public final class AgentChatModel {
     deinit { observer?.cancel() }
 
     public var selected: ChatState { chats[selectedID] ?? ChatState() }
+
+    public func title(for sessionID: String) -> String {
+        sessionID == target.mainSessionID ? "Main Chat" :
+            sessions.first { $0.id == sessionID }?.title ?? "Untitled chat"
+    }
     public var mainActivity: String? {
         guard let main = chats[target.mainSessionID] else { return nil }
         if !main.permissions.isEmpty { return "Needs approval" }
         if main.working { return "Working" }
         return nil
     }
-    public var title: String {
-        selectedID == target.mainSessionID ? "Main Chat" :
-            sessions.first { $0.id == selectedID }?.title ?? "Untitled chat"
-    }
+    public var title: String { title(for: selectedID) }
 
     public func selectMain() { selectedID = target.mainSessionID }
 
@@ -164,17 +172,26 @@ public final class AgentChatModel {
         }
     }
 
-    public func refreshSessions() async {
+    public func refreshSessions(maximumPages: Int? = nil) async {
         guard !refreshingList else { return }
-        guard let client else { listError = selected.error; return }
+        let existing = client
+        guard let lookup = existing ?? makeClient?() else { listError = selected.error; return }
         refreshingList = true
         listError = nil
         defer { refreshingList = false }
         do {
-            let listed = try await client.sessions()
-            sessions = makeClient == nil ? listed : listed.filter { $0.cwd == target.cwd }
+            let listed = try await lookup.sessions(maximumPages: maximumPages)
+            try Task.checkCancellation()
+            let scoped = makeClient == nil ? listed : listed.filter { $0.cwd == target.cwd }
+            if maximumPages != nil {
+                let indexed = Set(scoped.map(\.id))
+                sessions = scoped + sessions.filter { !indexed.contains($0.id) }
+            } else {
+                sessions = scoped
+            }
         }
         catch { if !Task.isCancelled { listError = error.localizedDescription } }
+        if existing == nil { await lookup.close() }
     }
 
     public func refreshTalkHistory(in sessionID: String) async {
@@ -255,7 +272,10 @@ public final class AgentChatModel {
             defer { finishPrompt(sessionID, from: client) }
             do {
                 switch try await client.prompt(text, sessionID: sessionID) {
-                case "end_turn": break
+                case "end_turn":
+                    if chats[sessionID]?.transcript.latestAssistantEntryID != nil {
+                        completedReplies[sessionID] = .now
+                    }
                 case "cancelled": chats[sessionID]?.notice = "Reply stopped."
                 case "max_tokens": chats[sessionID]?.notice = "The agent reached its reply limit."
                 default: chats[sessionID]?.notice = "The agent ended this turn early."
@@ -301,6 +321,8 @@ public final class AgentChatModel {
         observe(client)
         chats[sessionID]?.transcript.addPrompt(text)
         chats[sessionID]?.working = true
+        workingChats.insert(sessionID)
+        chats[sessionID]?.plan = []
         chats[sessionID]?.error = nil
         chats[sessionID]?.notice = nil
         return client
@@ -309,6 +331,7 @@ public final class AgentChatModel {
     private func finishPrompt(_ sessionID: String, from client: ACPClient) {
         guard self.client === client else { return }
         chats[sessionID]?.working = false
+        workingChats.remove(sessionID)
         chats[sessionID]?.stopping = false
     }
 
@@ -335,9 +358,19 @@ public final class AgentChatModel {
             for await event in client.events {
                 guard let self else { break }
                 chats[event.sessionID, default: ChatState()].receive(event)
+                switch event {
+                case .permission:
+                    if pendingApprovalSince[event.sessionID] == nil { pendingApprovalSince[event.sessionID] = .now }
+                case .permissionClosed:
+                    if chats[event.sessionID]?.permissions.isEmpty == true { pendingApprovalSince[event.sessionID] = nil }
+                default:
+                    break
+                }
             }
             guard let self, self.makeClient != nil, self.client === client, !Task.isCancelled else { return }
             self.client = nil
+            self.pendingApprovalSince.removeAll()
+            self.workingChats.removeAll()
             self.newlyCreatedOpenClawKeys.removeAll()
             self.observer = nil
             for id in Array(self.chats.keys) {

@@ -5,6 +5,7 @@ struct CodexChatsScreen: View {
     let endpoint: CodexLocalEndpoint
     let name: String
     private let opensLastChat: Bool
+    private let workspaceID: String
     @AppStorage private var lastChat: String
     @State private var chats: [CodexChatSummary] = []
     @State private var selected: CodexChatSummary?
@@ -13,11 +14,15 @@ struct CodexChatsScreen: View {
     @State private var failure: String?
     @State private var newChat = false
     @State private var directCall = false
+    @State private var query = ""
+    @Environment(WorkspaceState.self) private var workspace
 
-    init(endpoint: CodexLocalEndpoint, name: String, selectionKey: String? = nil) {
+    init(endpoint: CodexLocalEndpoint, name: String, selectionKey: String? = nil,
+         workspaceID: String = WorkspaceState.localID) {
         self.endpoint = endpoint
         self.name = name
         opensLastChat = selectionKey != nil
+        self.workspaceID = workspaceID
         _lastChat = AppStorage(wrappedValue: "", "codex.last-chat.\(selectionKey ?? "local-test")")
     }
 
@@ -26,11 +31,12 @@ struct CodexChatsScreen: View {
             if chats.isEmpty && !loading && failure == nil {
                 Text("No saved chats in this workspace.").foregroundStyle(.secondary)
             }
-            ForEach(chats) { chat in
+            ForEach(chats.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) }) { chat in
                 Button { selected = chat } label: {
-                    Label(chat.title, systemImage: "bubble.left")
+                    WorkspaceRow(title: chat.title, subtitle: status(chat.status), symbol: "bubble.left")
                 }
                 .accessibilityIdentifier("codex-saved-chat")
+                .contextMenu { FollowUpButton(chat: .init(workspace: workspaceID, chat: chat.id), title: chat.title) }
             }
             if loading { ProgressView("Opening chats…") }
             if let failure {
@@ -43,6 +49,7 @@ struct CodexChatsScreen: View {
         .background(ChatTheme.background)
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $query, prompt: "Find a Codex chat")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button("Call Codex directly", systemImage: "phone") { directCall = true }
@@ -55,10 +62,10 @@ struct CodexChatsScreen: View {
         }
         .sheet(isPresented: $directCall) { CodexVoiceScreen(endpoint: endpoint) }
         .navigationDestination(item: $selected) { chat in
-            CodexSavedChatScreen(endpoint: endpoint, initialChat: chat) { lastChat = $0.id }
+            CodexSavedChatScreen(endpoint: endpoint, initialChat: chat, workspaceID: workspaceID) { lastChat = $0.id }
         }
         .navigationDestination(isPresented: $newChat) {
-            CodexSavedChatScreen(endpoint: endpoint, initialChat: nil) { chat in
+            CodexSavedChatScreen(endpoint: endpoint, initialChat: nil, workspaceID: workspaceID) { chat in
                 lastChat = chat.id
                 if !chats.contains(where: { $0.id == chat.id }) { chats.insert(chat, at: 0) }
             }
@@ -74,9 +81,10 @@ struct CodexChatsScreen: View {
         let client = endpoint.makeClient()
         do {
             chats = try await client.listSavedChats()
-            if opensLastChat && !didOpen {
+            _ = workspace.updateCodexChats(chats, workspaceID: workspaceID)
+            if !didOpen {
                 didOpen = true
-                selected = chats.first { $0.id == lastChat }
+                if opensLastChat { selected = chats.first { $0.id == lastChat } }
             }
         } catch {
             if !Task.isCancelled { failure = error.localizedDescription }
@@ -84,30 +92,53 @@ struct CodexChatsScreen: View {
         await client.close()
         loading = false
     }
+
+    private func status(_ status: CodexChatStatus) -> String {
+        switch status {
+        case .approval: "Approval needed"
+        case .input: "Waiting for input"
+        case .active: "In progress"
+        case .idle, .unknown: ""
+        }
+    }
 }
 
-private struct CodexSavedChatScreen: View {
+struct CodexSavedChatScreen: View {
     let endpoint: CodexLocalEndpoint
     let initialChat: CodexChatSummary?
+    let workspaceID: String
+    var includesSwitcher = true
     let onOpen: (CodexChatSummary) -> Void
-    @State private var chat: CodexChatSummary?
-    @State private var client: CodexLiveClient?
-    @State private var messages: [CodexChatMessage] = []
-    @State private var approvals: [CodexChatApproval] = []
-    @State private var responding = Set<UUID>()
-    @State private var ready = false
-    @State private var working = false
-    @State private var sending = false
-    @State private var attempt = 0
+    @State private var session: CodexWorkspaceSession?
     @State private var draft = ""
-    @State private var issue: String?
+    @State private var showChats = false
     @State private var showCall = false
-    @State private var hasOlderTurns = false
-    @State private var diff: String?
-    @State private var nearBottom = true
+    @State private var viewport = TranscriptViewport()
+    @FocusState private var composerFocused: Bool
+    @Environment(WorkspaceState.self) private var workspace
+
+    private var chat: CodexChatSummary? { session?.chat }
+    private var messages: [CodexChatMessage] { session?.messages ?? [] }
+    private var approvals: [CodexChatApproval] { session?.approvals ?? [] }
+    private var responding: Set<UUID> { session?.responding ?? [] }
+    private var ready: Bool { session?.ready == true }
+    private var working: Bool { session?.working == true }
+    private var stopping: Bool { session?.stopping == true }
+    private var sending: Bool { session?.sending == true }
+    private var progress: CodexTurnProgress { session?.progress ?? .init() }
+
+    private var chatKey: WorkspaceChatID? {
+        (chat ?? initialChat).map { .init(workspace: workspaceID, chat: $0.id) }
+    }
+
+    private var editor: Binding<String> {
+        guard let chatKey else { return $draft }
+        return Binding(get: { workspace.drafts[chatKey] }, set: { workspace.drafts[chatKey] = $0 })
+    }
 
     var body: some View {
         VStack(spacing: 0) {
+            if includesSwitcher { WorkspaceRail(selected: workspaceID) }
             transcript
             if ready { composer }
         }
@@ -115,7 +146,27 @@ private struct CodexSavedChatScreen: View {
         .navigationTitle(chat?.title ?? initialChat?.title ?? "New chat")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .principal) {
+                let name = workspace.agent(workspaceID)?.name ?? "Codex"
+                let title = chat?.title ?? initialChat?.title ?? "New chat"
+                Button { showChats = true } label: {
+                    WorkspaceChatHeading(title: title, workspaceName: name)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title)
+                .accessibilityValue(name)
+                .accessibilityHint("Open saved Codex chats")
+                .accessibilityIdentifier("codex-chat-heading")
+            }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if includesSwitcher { WorkspaceSwitcherButton() }
+                if let chat, let chatKey {
+                    Menu {
+                        FollowUpButton(chat: chatKey, title: chat.title)
+                        Button("Open Inbox", systemImage: "tray") { workspace.showingInbox = true }
+                    } label: { Label("Chat actions", systemImage: "ellipsis.circle") }
+                    .accessibilityIdentifier("codex-chat-actions")
+                }
                 Button("Call in this chat", systemImage: "phone") { showCall = true }
                     .labelStyle(.iconOnly)
                     .disabled(!ready || chat == nil)
@@ -123,21 +174,49 @@ private struct CodexSavedChatScreen: View {
             }
         }
         .sheet(isPresented: $showCall) {
-            if let chat, let client { CodexVoiceScreen(endpoint: endpoint, chat: chat, client: client) }
+            if let chat, let client = session?.client { CodexVoiceScreen(endpoint: endpoint, chat: chat, client: client) }
         }
-        .task(id: attempt) { await watch() }
+        .navigationDestination(isPresented: $showChats) {
+            CodexChatsScreen(endpoint: endpoint, name: workspace.agent(workspaceID)?.name ?? "Codex", workspaceID: workspaceID)
+        }
+        .task {
+            let active = session ?? workspace.codexSession(endpoint: endpoint, initialChat: initialChat, workspaceID: workspaceID)
+            session = active
+            workspace.retain(active)
+            active.start()
+            visitIfReady()
+        }
+        .onChange(of: ready) { visitIfReady() }
+        .onChange(of: chat?.id) { visitIfReady() }
+        .onDisappear {
+            if let chatKey { workspace.leave(chatKey) }
+        }
+    }
+
+    private func visitIfReady() {
+        guard ready, let chat, let chatKey else { return }
+        onOpen(chat)
+        workspace.visit(chatKey, title: chat.title)
     }
 
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    if hasOlderTurns {
+                    if session?.hasOlderTurns == true {
                         Text("Showing the latest 30 turns.").font(.caption).foregroundStyle(.secondary)
                     }
                     ForEach(messages) { message in
                         if message.role == .assistant {
-                            ChatMarkdown(source: message.text, streaming: message.streaming)
+                            if !message.text.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    if message.phase == .commentary {
+                                        Label("Progress update", systemImage: "waveform").font(.caption.weight(.medium))
+                                            .foregroundStyle(ChatTheme.muted)
+                                    }
+                                    ChatMarkdown(source: message.text, streaming: message.streaming)
+                                }
+                            }
                         } else {
                             Text(message.text)
                                 .textSelection(.enabled)
@@ -147,47 +226,91 @@ private struct CodexSavedChatScreen: View {
                                 .frame(maxWidth: .infinity, alignment: .trailing)
                         }
                     }
-                    if let diff {
+                    if let diff = session?.diff {
                         DisclosureGroup("Changes") { DiffPreview(source: diff, title: "Turn diff") }
                     }
-                    ForEach(approvals) { approval in approvalCard(approval) }
-                    if let issue {
+                    ForEach(approvals) { approval in
+                        if let questions = approval.questions {
+                            CodexInputCard(questions: questions, responding: responding.contains(approval.id)) { values in
+                                session?.answerInput(approval, values: values)
+                            }
+                        } else {
+                            approvalCard(approval)
+                        }
+                    }
+                    if let issue = session?.issue {
                         Text(issue).font(.footnote).foregroundStyle(.secondary)
-                        if !ready { Button("Reconnect") { attempt += 1 } }
+                        if !ready { Button("Reconnect") { session?.start() } }
                     } else if !ready {
                         ProgressView("Opening chat…")
                     } else if messages.isEmpty && !working {
                         Text("Start a conversation").foregroundStyle(.secondary)
                     }
-                    if working { Text("Working…").font(.footnote).foregroundStyle(.secondary) }
+                    if progress.hasContent { CodexActivityCard(progress: progress) }
+                    if !approvals.isEmpty {
+                        TurnPulse(title: approvals.allSatisfy(\.isInput) ? "Waiting for your input" : "Waiting for approval",
+                                  waitingForUser: true)
+                    }
+                    else if working || sending {
+                        TurnPulse(title: workingLabel)
+                    }
                     Color.clear.frame(height: 1).id("codex-saved-bottom").accessibilityHidden(true)
                 }
                 .padding(20)
             }
             .scrollDismissesKeyboard(.interactively)
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height - geometry.visibleRect.maxY < 110
-            } action: { _, atBottom in nearBottom = atBottom }
+            .transcriptViewport($viewport, chat: ready ? chatKey : nil)
             .onChange(of: messages) {
-                if nearBottom { proxy.scrollTo("codex-saved-bottom", anchor: .bottom) }
+                if viewport.follow.canScrollAutomatically { proxy.scrollTo("codex-saved-bottom", anchor: .bottom) }
             }
             .onChange(of: approvals) {
-                if nearBottom { proxy.scrollTo("codex-saved-bottom", anchor: .bottom) }
+                if viewport.follow.canScrollAutomatically { proxy.scrollTo("codex-saved-bottom", anchor: .bottom) }
+            }
+            .onChange(of: progress.items.count) {
+                if viewport.follow.canScrollAutomatically { proxy.scrollTo("codex-saved-bottom", anchor: .bottom) }
+            }
+            .onChange(of: progress.plan.count) {
+                if viewport.follow.canScrollAutomatically { proxy.scrollTo("codex-saved-bottom", anchor: .bottom) }
             }
         }
     }
 
+    private var workingLabel: String {
+        if stopping { return "Stopping…" }
+        switch progress.current?.kind {
+        case .command: return "Running a command…"
+        case .changes: return "Updating files…"
+        case .tool: return "Using a tool…"
+        case .search: return "Searching…"
+        case .planning: return "Planning…"
+        case .summary: return "Reviewing…"
+        case nil: return messages.last?.streaming == true ? "Writing reply…" : "Preparing reply…"
+        }
+    }
+
     private var composer: some View {
-        HStack(spacing: 8) {
-            TextField(working ? "Steer this turn" : "Message Codex", text: $draft, axis: .vertical)
+        let prompt = working ? "Steer this turn" : "Message Codex"
+        return HStack(spacing: 8) {
+            TextField(prompt, text: editor, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...4)
+                .focused($composerFocused)
                 .padding(.horizontal, 12)
                 .frame(minHeight: 44)
-            Button(working ? "Steer" : "Send") { Task { await send() } }
+                .accessibilityIdentifier("codex-composer")
+            Button(working ? "Steer" : "Send") {
+                composerFocused = false
+                Task { await send() }
+            }
                 .buttonStyle(.borderedProminent)
                 .padding(.trailing, 6)
-                .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(sending || stopping || editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if working {
+                Button("Stop turn", systemImage: "stop.fill") { Task { await session?.interrupt() } }
+                    .labelStyle(.iconOnly)
+                    .frame(width: 44, height: 44)
+                    .disabled(stopping)
+                    .accessibilityIdentifier("stop-codex-turn")
+            }
         }
         .contentPanel()
         .padding(.horizontal, 16)
@@ -196,17 +319,21 @@ private struct CodexSavedChatScreen: View {
 
     private func approvalCard(_ approval: CodexChatApproval) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Approval requested").font(.subheadline.weight(.semibold))
+            Text(approval.isInput ? "Input requested" : "Approval requested")
+                .font(.subheadline.weight(.semibold)).foregroundStyle(ChatTheme.warning)
             if let reason = approval.reason { Text(reason).font(.footnote) }
             if let command = approval.command { CodePreview(source: command, language: "shell") }
             if let cwd = approval.cwd { Text(cwd).font(.caption).foregroundStyle(.secondary) }
-            if !approval.canAllow { Text("Review this action in Codex on the host.").font(.footnote) }
+            if !approval.canAllow {
+                Text(approval.isInput ? "Answer this request in Codex on the host." : "Review this action in Codex on the host.")
+                    .font(.footnote)
+            }
             HStack {
                 if approval.canAllow {
-                    Button("Allow once") { answer(approval, allow: true) }.buttonStyle(.bordered)
+                    Button("Allow once") { session?.answer(approval, allow: true) }.buttonStyle(.bordered)
                 }
                 if approval.canDecline {
-                    Button("Decline") { answer(approval, allow: false) }.buttonStyle(.bordered)
+                    Button("Decline") { session?.answer(approval, allow: false) }.buttonStyle(.bordered)
                 }
             }
             .disabled(responding.contains(approval.id))
@@ -216,104 +343,78 @@ private struct CodexSavedChatScreen: View {
         .contentPanel()
     }
 
-    private func watch() async {
-        let peer = endpoint.makeClient()
-        ready = false
-        approvals = []
-        responding = []
-        issue = nil
-        client = peer
-        do {
-            if let existing = chat ?? initialChat {
-                let snapshot = try await peer.openSavedChat(existing.id)
-                messages = snapshot.messages
-                working = snapshot.working
-                hasOlderTurns = snapshot.hasOlderTurns
-                chat = existing
-            } else {
-                chat = try await peer.createSavedChat()
-            }
-            try Task.checkCancellation()
-            if let chat { onOpen(chat) }
-            ready = true
-            for try await event in peer.chatEvents { apply(event) }
-            if !Task.isCancelled { issue = "Connection closed." }
-        } catch {
-            if !Task.isCancelled { issue = error.localizedDescription }
-        }
-        if client === peer {
-            ready = false
-            working = false
-            approvals = []
-            responding = []
-            client = nil
-        }
-        await peer.close()
-    }
-
-    private func apply(_ event: CodexChatEvent) {
-        switch event {
-        case .message(let message):
-            upsert(message)
-        case .turnStarted:
-            working = true
-            diff = nil
-        case .approval(let approval):
-            approvals.append(approval)
-        case .approvalResolved(let id):
-            approvals.removeAll { $0.id == id }
-            responding.remove(id)
-        case .live(let update):
-            switch update {
-            case .assistantDelta(_, let item, let text):
-                if let index = messages.firstIndex(where: { $0.id == item }) {
-                    if messages[index].streaming { messages[index].text += text }
-                } else {
-                    messages.append(CodexChatMessage(id: item, role: .assistant, text: text, streaming: true))
-                }
-            case .assistantCompleted(_, let item, let text):
-                upsert(CodexChatMessage(id: item, role: .assistant, text: text, streaming: false))
-            case .completed:
-                working = false
-                for index in messages.indices { messages[index].streaming = false }
-            case .diff(_, let patch):
-                diff = patch.isEmpty ? nil : patch
-            case .output:
-                break
-            }
-        }
-    }
-
-    private func upsert(_ message: CodexChatMessage) {
-        if let index = messages.firstIndex(where: { $0.id == message.id }) {
-            messages[index] = message
-        } else {
-            messages.append(message)
-        }
-    }
-
     private func send() async {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let client, ready, !sending, !text.isEmpty else { return }
-        sending = true
-        issue = nil
-        defer { sending = false }
-        do {
-            try await client.sendToSavedChat(text)
-            if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
-        } catch {
-            issue = error.localizedDescription
+        let text = editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let chatKey { workspace.rememberReadingOffset(nil, for: chatKey) }
+        viewport.restore(nil)
+        if await session?.send(text) == true, editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+            editor.wrappedValue = ""
         }
     }
+}
 
-    private func answer(_ approval: CodexChatApproval, allow: Bool) {
-        guard let client, ready, responding.insert(approval.id).inserted else { return }
-        Task {
-            do { try await client.answer(approval, allow: allow) }
-            catch {
-                issue = error.localizedDescription
-                responding.remove(approval.id)
+private struct CodexInputCard: View {
+    let questions: [CodexInputQuestion]
+    let responding: Bool
+    let submit: ([String: String]) -> Void
+    @State private var choices: [String: String] = [:]
+    @State private var custom: [String: String] = [:]
+
+    private var answers: [String: String] {
+        Dictionary(uniqueKeysWithValues: questions.compactMap {
+            let text = choices[$0.id] ?? custom[$0.id]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let text, !text.isEmpty else { return nil }
+            return ($0.id, text)
+        })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Codex needs your input", systemImage: "text.bubble")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ChatTheme.warning)
+            ForEach(questions) { question in
+                VStack(alignment: .leading, spacing: 8) {
+                    if !question.header.isEmpty { Text(question.header).font(.caption.weight(.semibold)).foregroundStyle(ChatTheme.muted) }
+                    Text(question.prompt).font(.subheadline)
+                    ForEach(question.options) { option in
+                        Button {
+                            choices[question.id] = option.label
+                            custom[question.id] = nil
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(option.label).font(.subheadline.weight(.semibold))
+                                    if !option.detail.isEmpty { Text(option.detail).font(.caption).foregroundStyle(ChatTheme.muted) }
+                                }
+                                Spacer()
+                                Image(systemName: choices[question.id] == option.label ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(ChatTheme.accent)
+                                    .accessibilityHidden(true)
+                            }
+                            .padding(10)
+                            .frame(minHeight: 44)
+                            .background(ChatTheme.raised, in: RoundedRectangle(cornerRadius: 10))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(choices[question.id] == option.label ? .isSelected : [])
+                    }
+                    if question.acceptsFreeText {
+                        TextField(question.options.isEmpty ? "Your answer" : "Other answer", text: Binding(
+                            get: { custom[question.id, default: ""] },
+                            set: { custom[question.id] = String($0.prefix(1_000)); choices[question.id] = nil }
+                        ), axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(1...4)
+                    }
+                }
             }
+            Button(responding ? "Sending…" : "Submit answers") { submit(answers) }
+                .buttonStyle(.borderedProminent)
+                .disabled(answers.count != questions.count || responding)
         }
+        .disabled(responding)
+        .padding(14)
+        .contentPanel()
     }
 }

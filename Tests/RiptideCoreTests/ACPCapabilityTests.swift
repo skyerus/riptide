@@ -3,6 +3,62 @@ import Testing
 @testable import RiptideCore
 
 struct ACPCapabilityTests {
+    @Test func codexInputAndStopAreScopedToTheCurrentRequestAndTurn() async throws {
+        let thread: JSON = ["id": "selected", "cwd": "/disposable"]
+        let transport = ScriptedTransport { request in
+            let method = request["method"]?.string
+            if method == "initialized" { return [] }
+            let id = try #require(request["id"])
+            let params = request["params"]
+            switch method {
+            case "initialize":
+                return [.reply(id, result: [:])]
+            case "thread/read", "thread/resume":
+                return [.reply(id, result: ["thread": thread])]
+            case "thread/turns/list":
+                let choices: JSON = .array([["id": "choice", "header": "Pick", "question": "What should I use?",
+                                            "options": .array([["label": "This one", "description": "One option"]])]])
+                return [.request("item/tool/requestUserInput", id: "input-wire", params: [
+                    "threadId": "selected", "turnId": "current", "questions": choices
+                ]), .reply(id, result: ["data": .array([["id": "current", "status": "inProgress"]])])]
+            case "turn/interrupt":
+                #expect(params?["threadId"] == "selected")
+                #expect(params?["turnId"] == "current")
+                return [.reply(id, result: [:])]
+            case nil:
+                #expect(id == "input-wire")
+                #expect(request["result"]?["answers"]?["choice"]?["answers"] == .array(["This one"]))
+                return [.notification("serverRequest/resolved", params: ["threadId": "selected", "requestId": id])]
+            default:
+                Issue.record("Unexpected Codex request")
+                return []
+            }
+        }
+        let client = CodexLiveClient(transport: transport, workspace: "/disposable")
+        _ = try await client.openSavedChat("selected")
+        var events = client.chatEvents.makeAsyncIterator()
+        guard case .approval(let request) = try await events.next() else {
+            Issue.record("Expected a scoped input request")
+            return
+        }
+        #expect(request.isInput)
+        #expect(request.questions?.first?.options.map(\.label) == ["This one"])
+        await #expect(throws: CodexLiveError.rejected("Answer each question using an offered choice or an allowed text response.")) {
+            try await client.answerInput(request, values: ["choice": "unoffered"])
+        }
+        try await client.answerInput(request, values: ["choice": "This one"])
+        guard case .approvalResolved(let resolved) = try await events.next() else {
+            Issue.record("Expected acknowledgement from Codex")
+            return
+        }
+        #expect(resolved == request.id)
+        await #expect(throws: CodexLiveError.expiredApproval) {
+            try await client.answerInput(request, values: ["choice": "This one"])
+        }
+        try await client.interruptSavedTurn()
+        await client.close()
+    }
+
     @Test func aSavedCodexChatCannotReopenAfterAccountSwitch() async throws {
         let transport = ScriptedTransport { request in
             let method = request["method"]?.string

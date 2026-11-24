@@ -47,6 +47,7 @@ public struct PermissionRequest: Identifiable, Sendable, Equatable {
 public enum ACPEvent: Sendable, Equatable {
     case message(sessionID: String, messageID: String?, role: ChatRole, text: String)
     case tool(sessionID: String, activity: ToolActivity)
+    case plan(sessionID: String, steps: [TurnPlanStep])
     case configOptions(sessionID: String, options: [SessionConfigOption])
     case context(sessionID: String, usage: ContextUsage)
     case permission(PermissionRequest)
@@ -55,7 +56,7 @@ public enum ACPEvent: Sendable, Equatable {
     var sessionID: String {
         switch self {
         case .message(let sessionID, _, _, _), .tool(let sessionID, _), .configOptions(let sessionID, _),
-             .context(let sessionID, _), .permissionClosed(let sessionID, _):
+             .context(let sessionID, _), .permissionClosed(let sessionID, _), .plan(let sessionID, _):
             sessionID
         case .permission(let request):
             request.sessionID
@@ -114,7 +115,7 @@ public actor ACPClient {
         disconnect()
     }
 
-    public func sessions() async throws -> [SessionSummary] {
+    public func sessions(maximumPages: Int? = nil) async throws -> [SessionSummary] {
         let capabilities = try await initialize()
         guard case .object? = capabilities["sessionCapabilities"]?["list"] else {
             throw ACPError.sessionListUnavailable
@@ -122,8 +123,10 @@ public actor ACPClient {
         var sessions: [SessionSummary] = []
         var cursor: String?
         var seenCursors = Set<String>()
+        var pages = 0
         var seenSessions = Set<String>()
         repeat {
+            try Task.checkCancellation()
             let params: JSON = cursor.map { ["cursor": .string($0)] } ?? [:]
             let response = try await call("session/list", params)
             guard let entries = response["sessions"]?.array else { throw ACPError.malformedResponse }
@@ -138,7 +141,8 @@ public actor ACPClient {
             }
             cursor = response["nextCursor"]?.string
             if let cursor, !seenCursors.insert(cursor).inserted { throw ACPError.malformedResponse }
-        } while cursor != nil
+            pages += 1
+        } while cursor != nil && pages < (maximumPages ?? .max)
         return sessions
     }
 
@@ -338,6 +342,9 @@ public actor ACPClient {
 
     private static func event(_ update: JSON, sessionID: String) -> ACPEvent? {
         switch update["sessionUpdate"]?.string {
+        case "plan":
+            guard let steps = update["entries"]?.array else { return nil }
+            return .plan(sessionID: sessionID, steps: steps.prefix(24).compactMap { TurnPlanStep($0) })
         case "agent_message_chunk", "user_message_chunk":
             guard update["content"]?["type"] == "text", let text = update["content"]?["text"]?.string else { return nil }
             let role: ChatRole = update["sessionUpdate"] == "agent_message_chunk" ? .assistant : .user

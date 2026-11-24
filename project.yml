@@ -16,7 +16,8 @@ targets:
     type: application
     platform: iOS
     sources:
-      - App
+      - path: App
+        excludes: [BuildInfo.plist, RiptidePush.entitlements]
       - path: Rendering/RichContent
         type: folder
         buildPhase: resources
@@ -28,11 +29,14 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.riptide.client
+        INFOPLIST_FILE: App/BuildInfo.plist
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Riptide
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Riptide uses your microphone only during an outgoing voice call.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Riptide connects to agents and notification relays you pair on your private network.
+        RIPTIDE_PUSH_ENVIRONMENT: ""
         SWIFT_VERSION: "6.0"
   RiptideUITests:
     type: bundle.ui-testing
