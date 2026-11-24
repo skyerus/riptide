@@ -124,7 +124,7 @@ public actor CodexLiveClient {
 
     deinit { reader?.cancel(); emit.finish(); emitVoice?.finish(); emitChat.finish() }
 
-    public func listSavedChats() async throws -> [CodexChatSummary] {
+    public func listSavedChats(maximumPages: Int = 20) async throws -> [CodexChatSummary] {
         if reader == nil { try await connect(experimental: true) }
         let account = try await checkedAccount()
         guard account["account"]?["type"]?.string != nil else { throw CodexLiveError.notSignedIn }
@@ -145,7 +145,7 @@ public actor CodexLiveClient {
             }
             page = response["nextCursor"]?.string
             if let page, !cursors.insert(page).inserted { throw CodexLiveError.invalidResponse }
-        } while page != nil && cursors.count < 20
+        } while page != nil && cursors.count < max(1, min(20, maximumPages))
         return chats
     }
 
@@ -159,6 +159,21 @@ public actor CodexLiveClient {
         savedChat = true
         verifiedChat = true
         return chat
+    }
+
+    public func hasLatestReply(in chatID: String) async throws -> Bool {
+        if reader == nil { try await connect(experimental: true) }
+        if accountFingerprint != nil { _ = try await checkedAccount() }
+        let result = try await call("thread/read", ["threadId": .string(chatID), "includeTurns": .boolean(false)])
+        guard result["thread"]?["id"]?.string == chatID,
+              result["thread"]?["cwd"]?.string == workspace else { throw CodexLiveError.wrongWorkspace }
+        let history = try await call("thread/turns/list", [
+            "threadId": .string(chatID), "limit": .integer(1), "itemsView": "full", "sortDirection": "desc"
+        ])
+        guard let turn = history["data"]?.array?.first, turn["status"] == "completed" else { return false }
+        return (turn["items"]?.array ?? []).contains {
+            $0["type"] == "agentMessage" && $0["phase"] != "commentary" && $0["text"]?.string?.isEmpty == false
+        }
     }
 
     public func openSavedChat(_ id: String) async throws -> CodexChatSnapshot {
@@ -184,8 +199,15 @@ public actor CodexLiveClient {
                 return message
             }
         }
+        var progress = CodexTurnProgress()
+        if let current = turns.first(where: { $0["id"]?.string == activeTurnID }), activeTurnID != nil {
+            for item in current["items"]?.array ?? [] {
+                let done = ["completed", "failed", "declined"].contains(item["status"]?.string ?? "")
+                if let work = CodexWorkItem(item, completed: done) { progress.apply(.item(work)) }
+            }
+        }
         return CodexChatSnapshot(messages: messages, working: activeTurnID != nil,
-                                 hasOlderTurns: history["nextCursor"]?.string != nil)
+                                 hasOlderTurns: history["nextCursor"]?.string != nil, progress: progress)
     }
 
     public func sendToSavedChat(_ text: String) async throws {
@@ -215,6 +237,31 @@ public actor CodexLiveClient {
             responsesInFlight.remove(id)
             throw error
         }
+    }
+
+    public func answerInput(_ request: CodexChatApproval, values: [String: String]) async throws {
+        guard verifiedChat, !closed, let id = approvals.first(where: { $0.value.id == request.id })?.key,
+              let current = approvals[id], current.isInput, let questions = current.questions,
+              questions.count == values.count else { throw CodexLiveError.expiredApproval }
+        var answers: [String: JSON] = [:]
+        for question in questions {
+            guard let value = values[question.id], question.accepts(value) else {
+                throw CodexLiveError.rejected("Answer each question using an offered choice or an allowed text response.")
+            }
+            answers[question.id] = ["answers": .array([.string(value)])]
+        }
+        guard responsesInFlight.insert(id).inserted else { throw CodexLiveError.expiredApproval }
+        do {
+            try await send(JSON.reply(id, result: ["answers": .object(answers)]))
+        } catch {
+            responsesInFlight.remove(id)
+            throw error
+        }
+    }
+
+    public func interruptSavedTurn() async throws {
+        guard verifiedChat, let threadID, let activeTurnID else { throw CodexLiveError.noActiveTurn }
+        _ = try await call("turn/interrupt", ["threadId": .string(threadID), "turnId": .string(activeTurnID)])
     }
 
     public func pairingFingerprint() async throws -> String {
@@ -466,17 +513,25 @@ public actor CodexLiveClient {
     private func receiveSavedChat(_ method: String, requestID: JSON?, params: JSON) {
         if let requestID, requestID.rpcID {
             guard approvals[requestID] == nil else { return }
+            if let turnID = params["turnId"]?.string,
+               turnID == latestCompletedTurn || (activeTurnID != nil && turnID != activeTurnID) { return }
             let command = params["command"]?.string
             let kind = params["kind"]?.string ?? "command"
             let decisions = params["availableDecisions"]?.array
             let plainCommand = method == "item/commandExecution/requestApproval" && kind == "command" &&
                 params["networkApprovalContext"]?.isObject != true &&
                 params["additionalPermissions"]?.isObject != true && command?.isEmpty == false
+            let isInput = method == "item/tool/requestUserInput"
+            let rawQuestions = params["questions"]?.array ?? []
+            let parsed = isInput && (1...3).contains(rawQuestions.count) ? rawQuestions.compactMap { CodexInputQuestion($0) } : []
+            let questions = !parsed.isEmpty && parsed.count == rawQuestions.count &&
+                Set(parsed.map(\.id)).count == parsed.count ? parsed : nil
             let approval = CodexChatApproval(
                 id: UUID(), command: command, cwd: params["cwd"]?.string, reason: params["reason"]?.string,
                 canAllow: plainCommand && (decisions?.contains("accept") ?? true),
                 canDecline: (method == "item/commandExecution/requestApproval" || method == "item/fileChange/requestApproval")
-                    && (decisions?.contains("decline") ?? true)
+                    && (decisions?.contains("decline") ?? true),
+                isInput: isInput, questions: questions
             )
             approvals[requestID] = approval
             emitChat.yield(.approval(approval))
@@ -493,9 +548,22 @@ public actor CodexLiveClient {
             emitChat.yield(.turnStarted)
             return
         }
-        if method == "item/completed", let item = params["item"], let message = CodexChatMessage(item),
-           message.role == .user {
+        if let reportedTurn = params["turnId"]?.string,
+           reportedTurn == latestCompletedTurn || (activeTurnID != nil && reportedTurn != activeTurnID) { return }
+        if method == "turn/completed", let reportedTurn = params["turn"]?["id"]?.string,
+           reportedTurn == latestCompletedTurn || (activeTurnID != nil && reportedTurn != activeTurnID) { return }
+        if let progress = CodexWorkDecoder.decode(method, params) { emitChat.yield(.progress(progress)) }
+        if method == "error", let message = params["error"]?["message"]?.string {
+            emitChat.yield(.issue(params["willRetry"] == .boolean(true)
+                                  ? "Codex is reconnecting…" : String(message.prefix(600))))
+        }
+        if method == "item/started", let item = params["item"], item["type"] == "agentMessage",
+           let message = CodexChatMessage(item, starting: true) {
             emitChat.yield(.message(message))
+        }
+        if method == "item/completed", let item = params["item"], let message = CodexChatMessage(item) {
+            emitChat.yield(.message(message))
+            if message.role == .assistant { return }
         }
         if method == "thread/realtime/item/completed", let item = params["item"],
            item["type"] == "transcriptSegment", let id = item["id"]?.string,

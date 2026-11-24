@@ -5,25 +5,46 @@ struct ChatScreen: View {
     let model: AgentChatModel
     var voiceRemote: RemoteProfile? = nil
     var remoteStore: RemoteStore? = nil
+    var initialChatID: String? = nil
     @State private var showChats = false
-    @State private var drafts: [String: String] = [:]
-    @State private var nearBottom = true
+    @State private var landing = true
+    @State private var couldNotOpen = false
+    @State private var viewport = TranscriptViewport()
     @State private var pairingVoice = false
     @State private var activeCall: ChatCall?
     @State private var voiceError: String?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(WorkspaceState.self) private var workspace
+
+    private var chatKey: WorkspaceChatID { .init(workspace: model.target.id, chat: model.selectedID) }
 
     var body: some View {
         VStack(spacing: 0) {
-            transcript.id(model.selectedID)
-            ChatComposer(
-                model: model,
-                draft: Binding(
-                    get: { drafts[model.selectedID, default: ""] },
-                    set: { drafts[model.selectedID] = $0 }
-                ),
-                didSend: { nearBottom = true }
-            )
+            if landing {
+                ProgressView("Opening chat…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if couldNotOpen {
+                ContentUnavailableView {
+                    Label("Chat unavailable", systemImage: "bubble.left")
+                } description: {
+                    Text("This connector didn’t list the saved chat.")
+                } actions: {
+                    Button("Open Main Chat") { Task { await model.showMain(); couldNotOpen = false; visit() } }
+                        .buttonStyle(.bordered)
+                }
+            } else {
+                transcript.id(model.selectedID)
+                ChatComposer(
+                    model: model,
+                    draft: Binding(
+                        get: { workspace.drafts[chatKey] },
+                        set: { workspace.drafts[chatKey] = $0 }
+                    ),
+                    didSend: {
+                        workspace.rememberReadingOffset(nil, for: chatKey)
+                        viewport.restore(nil)
+                    }
+                )
+            }
         }
         .background(ChatTheme.background.ignoresSafeArea())
         .navigationTitle(model.title)
@@ -34,29 +55,25 @@ struct ChatScreen: View {
                 Button {
                     showChats = true
                 } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 5) {
-                            Text(model.title).font(.headline).lineLimit(1)
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                        Text(model.target.name)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
+                    WorkspaceChatHeading(title: model.title, workspaceName: model.target.name)
                 }
                 .buttonStyle(.plain)
+                .workspaceFlickNavigation(model.target.id)
                 .accessibilityLabel(model.title)
                 .accessibilityValue(model.target.name)
                 .accessibilityHint("Switch or start a chat")
                 .accessibilityIdentifier("chats-button")
             }
-            if voiceRemote != nil {
-                ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    FollowUpButton(chat: chatKey, title: model.title)
+                    Button("Open Inbox", systemImage: "tray") { workspace.showingInbox = true }
+                } label: {
+                    Label("Chat actions", systemImage: "ellipsis.circle")
+                }
+                .disabled(landing || couldNotOpen || !model.selected.loaded)
+                .accessibilityIdentifier("chat-actions")
+                if voiceRemote != nil {
                     Button("Call in this chat", systemImage: "phone") { startCall() }
                         .labelStyle(.iconOnly)
                         .disabled(!model.selected.loaded || activeCall != nil)
@@ -98,7 +115,29 @@ struct ChatScreen: View {
             Button("Voice settings") { pairingVoice = true }
             Button("Cancel", role: .cancel) {}
         } message: { Text(voiceError ?? "") }
-        .task { await model.showMain() }
+        .task {
+            if let id = initialChatID, id != model.target.mainSessionID {
+                if !model.sessions.contains(where: { $0.id == id }) {
+                    await model.showMain()
+                    await model.refreshSessions()
+                }
+                if model.sessions.contains(where: { $0.id == id }) { await model.open(id) }
+                else { couldNotOpen = true }
+            } else {
+                await model.showMain()
+            }
+            guard !Task.isCancelled else { return }
+            landing = false
+            visit()
+        }
+        .onChange(of: model.selectedID) { visit() }
+        .onChange(of: model.title) { visit() }
+        .onChange(of: model.selected.loaded) { visit() }
+        .onDisappear { workspace.leave(chatKey) }
+    }
+
+    private func visit() {
+        if !landing, !couldNotOpen, model.selected.loaded { workspace.visit(chatKey, title: model.title) }
     }
 
     private struct ChatCall: Identifiable {
@@ -164,31 +203,40 @@ struct ChatScreen: View {
                     if let notice = model.selected.notice {
                         Text(notice).font(.footnote).foregroundStyle(.secondary)
                     }
-                    if model.selected.working && model.selected.permissions.isEmpty {
-                        Text("Working…").font(.footnote).foregroundStyle(.secondary)
+                    if !model.selected.plan.isEmpty {
+                        TurnPlanCard(steps: model.selected.plan)
+                    }
+                    if !model.selected.permissions.isEmpty {
+                        TurnPulse(title: "Waiting for approval", waitingForUser: true)
+                    } else if model.selected.working {
+                        TurnPulse(title: workingLabel)
                     }
                     Color.clear.frame(height: 1).id("chat-bottom").accessibilityHidden(true)
                 }
                 .padding(20)
             }
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
             .scrollDismissesKeyboard(.interactively)
-            .onAppear { nearBottom = true }
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height - geometry.visibleRect.maxY < 110
-            } action: { _, atBottom in
-                nearBottom = atBottom
-            }
+            .accessibilityIdentifier("chat-transcript")
+            .transcriptViewport($viewport, chat: model.selected.loaded ? chatKey : nil)
             .onChange(of: model.selected.transcript.entries) {
-                if nearBottom { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                if viewport.follow.canScrollAutomatically { proxy.scrollTo("chat-bottom", anchor: .bottom) }
             }
             .onChange(of: model.selected.permissions) {
-                if nearBottom { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                if viewport.follow.canScrollAutomatically { proxy.scrollTo("chat-bottom", anchor: .bottom) }
             }
             .onChange(of: model.selected.working) {
-                if nearBottom { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                if viewport.follow.canScrollAutomatically { proxy.scrollTo("chat-bottom", anchor: .bottom) }
             }
         }
+    }
+
+    private var workingLabel: String {
+        if model.selected.stopping { return "Stopping…" }
+        if let entry = model.selected.transcript.entries.last,
+           case .tool(let tool) = entry.content, tool.status == "in_progress" {
+            return tool.title ?? "Running a tool…"
+        }
+        return model.selected.transcript.latestAssistantEntryID != nil ? "Writing reply…" : "Preparing reply…"
     }
 
     private func toolRow(_ activity: ToolActivity) -> some View {
@@ -245,13 +293,15 @@ private struct ChatPicker: View {
     let model: AgentChatModel
     let openClaw: Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(WorkspaceState.self) private var workspace
+    @State private var search = ""
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    row("Main Chat", id: model.target.mainSessionID)
-                    ForEach(model.sessions.filter { $0.id != model.target.mainSessionID }) { session in
+                    if matches("Main Chat") { row("Main Chat", id: model.target.mainSessionID) }
+                    ForEach(model.sessions.filter { $0.id != model.target.mainSessionID && matches($0.title) }) { session in
                         row(session.title, id: session.id)
                     }
                     if model.refreshingList { ProgressView("Loading chats…") }
@@ -265,6 +315,7 @@ private struct ChatPicker: View {
             .background(ChatTheme.background)
             .navigationTitle("Chats")
             .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $search, prompt: "Find a chat")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -289,6 +340,10 @@ private struct ChatPicker: View {
         }
     }
 
+    private func matches(_ title: String) -> Bool {
+        search.isEmpty || title.localizedCaseInsensitiveContains(search)
+    }
+
     private func row(_ title: String, id: String) -> some View {
         Button {
             Task { await model.open(id) }
@@ -306,6 +361,7 @@ private struct ChatPicker: View {
         }
         .accessibilityLabel(title)
         .accessibilityAddTraits(id == model.selectedID ? .isSelected : [])
+        .contextMenu { FollowUpButton(chat: .init(workspace: model.target.id, chat: id), title: title) }
         .listRowBackground(ChatTheme.background)
     }
 }

@@ -1,5 +1,6 @@
 import RiptideCore
 import SwiftUI
+import UIKit
 
 private enum RosterLayout: String, CaseIterable, Identifiable {
     case grid = "Grid"
@@ -15,8 +16,9 @@ struct AgentRoster: View {
     @AppStorage("roster.layout") private var layout = RosterLayout.grid
     @AppStorage("roster.pinned") private var savedPins = Data()
     @Environment(\.dynamicTypeSize) private var typeSize
-    @State private var selectedTarget: AgentTarget?
+    @Environment(WorkspaceState.self) private var workspace
     @State private var editing = false
+    @State private var showDemos = false
     @State private var pairing = false
     @State private var forgetting: RemoteProfile?
     @State private var remoteError: String?
@@ -39,25 +41,36 @@ struct AgentRoster: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Agents")
-                        .font(.title.weight(.semibold))
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("CONTROL ROOM", systemImage: "water.waves")
+                        .font(.caption.weight(.bold))
+                        .tracking(2)
+                        .foregroundStyle(ChatTheme.accent)
+                        .accessibilityHidden(true)
+                    Text("Workspaces")
+                        .font(.largeTitle.weight(.semibold))
+                        .foregroundStyle(ChatTheme.ink)
                         .accessibilityAddTraits(.isHeader)
-                    Text(remotes.profiles.isEmpty ? "Demo workspace" : "Your remotes")
+                    Text(remotes.profiles.isEmpty ? "Pair an agent or explore the demos." : "Your agents and conversations, together.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ChatTheme.muted)
                 }
-                ForEach(remotes.profiles) { remote in
-                    NavigationLink {
-                        PairedRemoteScreen(profile: remote, store: remotes)
+                inboxButton
+                ForEach(workspace.orderedProfiles) { remote in
+                    Button {
+                        workspace.open(remote.id.uuidString, resume: false)
                     } label: {
                         HStack {
                             Image(systemName: "server.rack").accessibilityHidden(true)
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(remote.name).font(.headline)
-                                Text(remote.kind.name).font(.caption).foregroundStyle(.secondary)
+                                Text(remote.name).font(.headline).foregroundStyle(ChatTheme.ink)
+                                Text(remote.kind.name).font(.caption).foregroundStyle(ChatTheme.muted)
                             }
                             Spacer()
+                            if workspace.favorites.contains(remote.id.uuidString) {
+                                Image(systemName: "pin.fill").font(.caption).foregroundStyle(ChatTheme.accent)
+                                    .accessibilityLabel("Pinned")
+                            }
                             chevron
                         }
                         .padding(14)
@@ -65,14 +78,21 @@ struct AgentRoster: View {
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
+                        let pinned = workspace.favorites.contains(remote.id.uuidString)
+                        Button(pinned ? "Unpin workspace" : "Pin workspace", systemImage: pinned ? "pin.slash" : "pin") {
+                            workspace.toggleFavorite(remote.id.uuidString)
+                        }
+                        Button("Copy workspace ID", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = remote.id.uuidString
+                        }
                         Button("Forget remote", systemImage: "trash", role: .destructive) { forgetting = remote }
                     }
                     .accessibilityIdentifier("paired-\(remote.id.uuidString)")
                 }
                 if let remoteError { Text(remoteError).font(.footnote).foregroundStyle(.secondary) }
-                if let localCodex {
-                    NavigationLink {
-                        CodexLiveScreen(endpoint: localCodex)
+                if localCodex != nil {
+                    Button {
+                        workspace.open(WorkspaceState.localID, resume: false)
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "desktopcomputer")
@@ -93,23 +113,14 @@ struct AgentRoster: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("local-codex")
                 }
-                if layout == .grid, !pinned.isEmpty {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12),
-                                               count: typeSize.isAccessibilitySize ? 1 : 2), spacing: 12) {
-                        ForEach(pinned, id: \.target.id) { agent in agentButton(agent, tile: true) }
+                if remotes.profiles.isEmpty || showDemos { demoAgents }
+                if !remotes.profiles.isEmpty {
+                    Button(showDemos ? "Hide demo agents" : "Explore demo agents", systemImage: showDemos ? "chevron.up" : "chevron.down") {
+                        showDemos.toggle()
                     }
-                }
-                let rowAgents = layout == .list ? pinned + unpinned : unpinned
-                if !rowAgents.isEmpty {
-                    VStack(alignment: .leading, spacing: 0) {
-                        if layout == .grid, !pinned.isEmpty {
-                            Text("Other agents")
-                                .font(.footnote.weight(.medium))
-                                .foregroundStyle(.secondary)
-                                .padding(.bottom, 8)
-                        }
-                        ForEach(rowAgents, id: \.target.id) { agent in agentButton(agent, tile: false) }
-                    }
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(ChatTheme.muted)
+                    .frame(minHeight: 44, alignment: .leading)
                 }
             }
             .padding(20)
@@ -121,6 +132,7 @@ struct AgentRoster: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                WorkspaceSwitcherButton()
                 Button("Pair remote", systemImage: "plus") { pairing = true }
                     .labelStyle(.iconOnly)
                     .accessibilityIdentifier("pair-remote")
@@ -133,7 +145,11 @@ struct AgentRoster: View {
             get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }
         ), titleVisibility: .visible, presenting: forgetting) { remote in
             Button("Forget", role: .destructive) {
-                do { try remotes.forget(remote); remoteError = nil }
+                do {
+                    try remotes.forget(remote)
+                    workspace.forgot(remote.id.uuidString)
+                    remoteError = nil
+                }
                 catch { remoteError = error.localizedDescription }
                 forgetting = nil
             }
@@ -150,18 +166,58 @@ struct AgentRoster: View {
                 layout: $layout
             )
         }
-        .navigationDestination(item: $selectedTarget) { target in
-            if let model = roster.first(where: { $0.target == target }) {
-                ChatScreen(model: model)
+    }
+
+    @ViewBuilder
+    private var demoAgents: some View {
+        if layout == .grid, !pinned.isEmpty {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12),
+                                       count: typeSize.isAccessibilitySize ? 1 : 2), spacing: 12) {
+                ForEach(pinned, id: \.target.id) { agent in agentButton(agent, tile: true) }
             }
         }
+        let rowAgents = layout == .list ? pinned + unpinned : unpinned
+        if !rowAgents.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                if layout == .grid, !pinned.isEmpty {
+                    Text("Other agents")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(ChatTheme.muted)
+                        .padding(.bottom, 8)
+                }
+                ForEach(rowAgents, id: \.target.id) { agent in agentButton(agent, tile: false) }
+            }
+        }
+    }
+
+    private var inboxButton: some View {
+        Button {
+            workspace.showingInbox = true
+        } label: {
+            HStack {
+                WorkspaceRow(title: "Inbox", subtitle: "Approvals, replies and saved chats", symbol: "tray")
+                if !workspace.inboxRows.isEmpty {
+                    Text(workspace.inboxRows.count, format: .number)
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .foregroundStyle(ChatTheme.accent)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(ChatTheme.selected, in: Capsule())
+                }
+                chevron
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
+            .contentPanel()
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("open-inbox")
     }
 
     private func agentButton(_ agent: AgentChatModel, tile: Bool) -> some View {
         let shape = RoundedRectangle(cornerRadius: 18)
         return Button {
-            agent.selectMain()
-            selectedTarget = agent.target
+            workspace.open(agent.target.id, resume: false)
         } label: {
             if tile {
                 VStack(alignment: .leading, spacing: 14) {

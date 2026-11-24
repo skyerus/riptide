@@ -42,10 +42,11 @@ public actor FixtureTransport: ACPTransport {
         let id: JSON
         let toolID: String
         let showsRichContent: Bool
+        let showsLongStream: Bool
         var work: Task<Void, Never>?
     }
 
-    public init(target: AgentTarget, file: URL? = nil, pace: Duration = .milliseconds(280)) throws {
+    public init(target: AgentTarget, file: URL? = nil, pace: Duration = .milliseconds(280), catalog: [String] = []) throws {
         (incoming, output) = AsyncThrowingStream.makeStream()
         self.file = file
         self.pace = pace
@@ -61,6 +62,12 @@ public actor FixtureTransport: ACPTransport {
                         + "Ask me for a quick project rundown, or start another chat to keep a topic separate.")
                 ])
             ]
+            sessions += catalog.enumerated().map { index, title in
+                let id = "\(target.id)-sample-\(index + 1)"
+                return SavedSession(id: id, title: title, updates: [
+                    Self.chunk("agent_message_chunk", id: "arrival-\(id)", text: "Fixture chat: \(title)")
+                ])
+            }
         }
     }
 
@@ -142,7 +149,9 @@ public actor FixtureTransport: ACPTransport {
                     "sessionUpdate": "tool_call", "toolCallId": .string(toolID),
                     "title": "Review context", "status": "pending"
                 ], in: sessionID)
-                turns[sessionID] = Turn(id: id, toolID: toolID, showsRichContent: text.localizedCaseInsensitiveContains("formatting demo"))
+                turns[sessionID] = Turn(id: id, toolID: toolID,
+                    showsRichContent: text.localizedCaseInsensitiveContains("formatting demo"),
+                    showsLongStream: text.localizedCaseInsensitiveContains("streaming demo"))
                 prepare(in: sessionID, id: id, needsApproval: text.localizedCaseInsensitiveContains("approval"))
             default:
                 emit(.failure(id, code: -32601, message: "Unsupported fixture method."))
@@ -193,7 +202,7 @@ public actor FixtureTransport: ACPTransport {
         catch { fail(sessionID); return }
         turns[sessionID]?.work = Task { [weak self, pace] in
             let messageID = UUID().uuidString
-            let chunks = turn.showsRichContent ? Self.richContentChunks : [
+            let chunks = turn.showsLongStream ? Self.longStreamChunks : turn.showsRichContent ? Self.richContentChunks : [
                 "Here’s a quick rundown of the demo workspace.\n\n",
                 "| Area | Sta",
                 "tus |\n| --- | --- |\n| Main chat | Ready |\n",
@@ -219,6 +228,11 @@ public actor FixtureTransport: ACPTransport {
         "@@ -4,2 +4,2 @@\n let turn = activeTurn\n- reconnect(to: turn)\n+ watch(turn)\n~~~\n\n",
         "Formatting demo complete."
     ]
+
+    private static let longStreamChunks = (1...27).map { index in
+        "## Update \(index)\n\nThe simulated agent is checking the next part of the workspace. "
+        + "This paragraph adds new content without changing previous updates.\n\n"
+    } + ["Long stream complete."]
 
     private func append(_ text: String, messageID: String, in sessionID: String, id: JSON) -> Bool {
         guard turns[sessionID]?.id == id else { return false }

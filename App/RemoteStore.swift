@@ -161,7 +161,7 @@ enum PairingFailure: LocalizedError {
     }
 }
 
-private enum KeychainToken {
+enum KeychainToken {
     private static func query(_ id: UUID, purpose: String?) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "app.riptide.client.remote" + (purpose.map { ".\($0)" } ?? ""),
