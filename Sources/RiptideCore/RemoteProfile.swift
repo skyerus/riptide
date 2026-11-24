@@ -19,21 +19,30 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
     public let address: String
     public let workspace: String
     public let mainSessionID: String?
+    public let sshHostFingerprint: String?
     public private(set) var accountFingerprint: String?
 
-    public init?(kind: RemoteKind, name: String, address: String, workspace: String, mainSessionID: String?) {
+    public init?(kind: RemoteKind, name: String, address: String, workspace: String, mainSessionID: String?,
+                 sshHostFingerprint: String? = nil) {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let workspace = workspace.trimmingCharacters(in: .whitespacesAndNewlines)
         let mainSessionID = mainSessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 80,
-              let url = Self.secureURL(address),
               workspace.hasPrefix("/"), workspace.utf8.count <= 4_096,
               !workspace.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
               kind == .codex || mainSessionID?.isEmpty == false else { return nil }
+        if let sshHostFingerprint {
+            guard kind != .codex, let endpoint = Self.sshEndpoint(address), let pin = SSHHostPin(sshHostFingerprint) else { return nil }
+            self.address = endpoint.url.absoluteString
+            self.sshHostFingerprint = pin.fingerprint
+        } else {
+            guard let url = Self.secureURL(address) else { return nil }
+            self.address = url.absoluteString
+            self.sshHostFingerprint = nil
+        }
         id = UUID()
         self.kind = kind
         self.name = name
-        self.address = url.absoluteString
         self.workspace = workspace
         self.mainSessionID = kind == .codex ? nil : mainSessionID
     }
@@ -57,9 +66,24 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
             value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_.~+/=".contains($0)) }
     }
 
-    public func makeACPClient(bearer: String) -> ACPClient? {
-        guard kind != .codex, let url = Self.secureURL(address), Self.validBearer(bearer),
-              mainSessionID != nil else { return nil }
-        return ACPClient(transport: RemoteWebSocketTransport(url: url, bearer: bearer))
+    private static func sshEndpoint(_ address: String) -> (url: URL, host: String, port: Int, username: String)? {
+        guard let parts = URLComponents(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
+              parts.scheme == "ssh", let host = parts.host, !host.isEmpty,
+              let username = parts.user, username.range(of: #"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"#, options: .regularExpression) != nil,
+              parts.password == nil, parts.query == nil, parts.fragment == nil, parts.path.isEmpty,
+              let url = parts.url, (1...65_535).contains(parts.port ?? 22) else { return nil }
+        return (url, host, parts.port ?? 22, username)
+    }
+
+    public func makeACPClient(credential: String) -> ACPClient? {
+        guard kind != .codex, mainSessionID != nil else { return nil }
+        if let sshHostFingerprint {
+            guard let endpoint = Self.sshEndpoint(address), let pin = SSHHostPin(sshHostFingerprint),
+                  let identity = SSHDeviceIdentity(privateCredential: credential) else { return nil }
+            return ACPClient(transport: SSHACPTransport(host: endpoint.host, port: endpoint.port,
+                                                        username: endpoint.username, identity: identity, pin: pin))
+        }
+        guard let url = Self.secureURL(address), Self.validBearer(credential) else { return nil }
+        return ACPClient(transport: RemoteWebSocketTransport(url: url, bearer: credential))
     }
 }

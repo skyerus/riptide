@@ -281,7 +281,7 @@ final class WorkspaceState {
         guard let main = profile.mainSessionID else { return nil }
         let target = AgentTarget(id: id, name: profile.name, mainSessionID: main, cwd: profile.workspace)
         let model = AgentChatModel(target: target, connect: {
-            profile.makeACPClient(bearer: bearer) ?? ACPClient(transport: UnavailableWorkspaceTransport())
+            profile.makeACPClient(credential: bearer) ?? ACPClient(transport: UnavailableWorkspaceTransport())
         })
         remoteModels[id] = model
         return model
