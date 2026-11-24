@@ -1,9 +1,33 @@
 import RiptideCore
 import SwiftUI
+import UIKit
+import UIKit.UIGestureRecognizerSubclass
 
 extension View {
     func transcriptViewport(_ viewport: Binding<TranscriptViewport>, chat: WorkspaceChatID?) -> some View {
         modifier(TranscriptViewportModifier(viewport: viewport, chat: chat))
+    }
+
+    func transcriptColumn() -> some View {
+        padding(.horizontal, ChatTheme.gutter)
+            .padding(.vertical, 14)
+            .frame(maxWidth: ChatTheme.readingWidth, alignment: .leading)
+            .frame(maxWidth: .infinity)
+    }
+}
+
+struct TranscriptUserMessage: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .textSelection(.enabled)
+            .foregroundStyle(ChatTheme.ink)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 9)
+            .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 15))
+            .padding(.leading, 32)
+            .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
 
@@ -21,10 +45,13 @@ private struct TranscriptViewportModifier: ViewModifier {
     @Binding var viewport: TranscriptViewport
     let chat: WorkspaceChatID?
     @Environment(WorkspaceState.self) private var workspace
+    @State private var fingerDown = false
+    @State private var latestOffset: CGFloat = 0
 
     func body(content: Content) -> some View {
         content
             .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.top, for: .alignment)
             .scrollPosition($viewport.position)
             .onChange(of: chat, initial: true) {
                 viewport.restore(chat.flatMap { workspace.readingOffset(for: $0) })
@@ -34,24 +61,84 @@ private struct TranscriptViewportModifier: ViewModifier {
             } action: { _, atBottom in
                 viewport.follow.geometryChanged(nearBottom: atBottom)
             }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                Self.liveOffset(geometry)
+            } action: { _, offset in
+                latestOffset = offset
+                if viewport.follow.canScrollAutomatically { viewport.position.scrollTo(y: offset) }
+            }
             .onScrollPhaseChange { _, phase, context in
-                let userGesture = phase == .tracking || phase == .interacting || phase == .decelerating
-                let settled = viewport.follow.interacting && !userGesture
+                let scrolling = phase == .interacting || phase == .decelerating
+                let interaction: TranscriptFollow.Interaction = scrolling ? .scrolling : fingerDown ? .touching : .idle
+                let previous = viewport.follow.interaction
                 let geometry = context.geometry
                 let nearBottom = geometry.contentSize.height - geometry.visibleRect.maxY <= 112
-                viewport.follow.phaseChanged(userGesture: userGesture, nearBottom: nearBottom)
-                if settled, let chat {
-                    workspace.rememberReadingOffset(nearBottom ? nil : max(0, geometry.visibleRect.minY), for: chat)
+                viewport.follow.phaseChanged(interaction, nearBottom: nearBottom)
+                if previous == .idle && interaction != .idle {
+                    viewport.position = ScrollPosition()
+                } else if previous == .scrolling && interaction != .scrolling {
+                    if viewport.follow.canScrollAutomatically { viewport.position.scrollTo(y: Self.liveOffset(geometry)) }
+                    if let chat {
+                        workspace.rememberReadingOffset(viewport.follow.following ? nil : max(0, geometry.visibleRect.minY), for: chat)
+                    }
                 }
             }
+            .contentShape(Rectangle())
+            .gesture(TranscriptContact { down in
+                fingerDown = down
+                guard viewport.follow.interaction != .scrolling else { return }
+                viewport.follow.phaseChanged(down ? .touching : .idle, nearBottom: false)
+                if down {
+                    viewport.position = ScrollPosition()
+                } else if viewport.follow.canScrollAutomatically {
+                    viewport.position.scrollTo(y: latestOffset)
+                }
+            })
             .overlay(alignment: .bottomTrailing) {
                 if !viewport.follow.following {
                     JumpToLatest {
                         if let chat { workspace.rememberReadingOffset(nil, for: chat) }
                         viewport.restore(nil)
-                    }.padding(12)
+                    }.padding(.trailing, ChatTheme.gutter).padding(.bottom, 6)
                 }
             }
+    }
+
+    private nonisolated static func liveOffset(_ geometry: ScrollGeometry) -> CGFloat {
+        max(0, geometry.contentSize.height - geometry.containerSize.height + geometry.contentInsets.bottom)
+    }
+}
+
+private struct TranscriptContact: UIGestureRecognizerRepresentable {
+    let changed: (Bool) -> Void
+
+    func makeUIGestureRecognizer(context: Context) -> ContactRecognizer {
+        let recognizer = ContactRecognizer()
+        recognizer.cancelsTouchesInView = false
+        recognizer.delaysTouchesEnded = false
+        return recognizer
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: ContactRecognizer, context: Context) {
+        switch recognizer.state {
+        case .began: changed(true)
+        case .ended, .cancelled, .failed: changed(false)
+        default: break
+        }
+    }
+
+    final class ContactRecognizer: UIGestureRecognizer {
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+            if state == .possible { state = .began }
+        }
+
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+            if numberOfTouches <= touches.count { state = .ended }
+        }
+
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { state = .cancelled }
+        override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+        override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
     }
 }
 
@@ -75,10 +162,8 @@ struct TurnPulse: View {
                 .font(.footnote.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .foregroundStyle(waitingForUser ? ChatTheme.warning : ChatTheme.accent)
-        .padding(.horizontal, 11)
-        .padding(.vertical, 8)
-        .background(waitingForUser ? ChatTheme.warning.opacity(0.09) : ChatTheme.selected.opacity(0.65), in: RoundedRectangle(cornerRadius: 11))
+        .foregroundStyle(waitingForUser ? ChatTheme.warning : ChatTheme.muted)
+        .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("turn-progress")
     }

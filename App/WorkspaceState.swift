@@ -2,9 +2,20 @@ import Observation
 import RiptideCore
 import SwiftUI
 
+enum WorkspaceTab: Hashable {
+    case inbox
+    case agent(String)
+
+    var agentID: String? {
+        if case .agent(let id) = self { return id }
+        return nil
+    }
+}
+
 struct WorkspaceRoute: Hashable {
     let workspace: String
     var chat: String?
+    var startsNewChat = false
 }
 
 struct WorkspaceAgent: Identifiable, Equatable {
@@ -40,14 +51,17 @@ final class WorkspaceState {
     let drafts = WorkspaceDrafts()
     private let defaults: UserDefaults
     var path: [WorkspaceRoute] = []
+    private(set) var sidebarTab: WorkspaceTab = .inbox
+    private(set) var inboxReset = 0
     var showingSwitcher = false
-    var showingInbox = false
     var showingAlerts = false
     var inboxRequested = false
     var alertsRequested = false
     private(set) var visibleChat: WorkspaceChatID?
     private(set) var recent: [WorkspaceVisit]
     private(set) var favorites: [String]
+    private(set) var demoPins: [String]
+    private(set) var showDemoAgents: Bool
     private var savedAttention: [WorkspaceAttention]
     private var remoteModels: [String: AgentChatModel] = [:]
     private var codexChats: [String: [CodexChatSummary]] = [:]
@@ -83,6 +97,11 @@ final class WorkspaceState {
                                                    from: defaults.data(forKey: "workspace.attention") ?? Data())) ?? []
         readRelayReplies = defaults.stringArray(forKey: "workspace.relay-read") ?? []
         favorites = defaults.stringArray(forKey: "workspace.favorites") ?? []
+        let availableDemos = Set(roster.map(\.target.id))
+        let storedPins = (try? JSONDecoder().decode([String].self, from: defaults.data(forKey: "roster.pinned") ?? Data()))
+            ?? Array(roster.prefix(4).map(\.target.id))
+        demoPins = storedPins.filter(availableDemos.contains)
+        showDemoAgents = defaults.bool(forKey: "roster.show-demos")
     }
 
     var agents: [WorkspaceAgent] {
@@ -94,7 +113,7 @@ final class WorkspaceState {
         ]
         return paired + desktop + roster.map {
             WorkspaceAgent(id: $0.target.id, name: $0.target.name, connector: "Demo",
-                           symbol: $0.target.id == "hermes" ? "sparkle" : "terminal")
+                           symbol: $0.target.id == "hermes" ? "waveform" : "terminal")
         }
     }
 
@@ -210,12 +229,38 @@ final class WorkspaceState {
     func profile(_ id: String) -> RemoteProfile? { remotes.profiles.first { $0.id.uuidString == id } }
 
     func isMainChat(_ chat: WorkspaceChatID) -> Bool {
-        (models.first { $0.target.id == chat.workspace }?.target.mainSessionID ?? profile(chat.workspace)?.mainSessionID) == chat.chat
+        mainChatID(for: chat.workspace) == chat.chat
+    }
+
+    func mainChatID(for workspaceID: String) -> String? {
+        roster.first { $0.target.id == workspaceID }?.target.mainSessionID ?? profile(workspaceID)?.mainSessionID
+    }
+
+    func sidebarChats(for workspaceID: String) -> [WorkspaceVisit] {
+        knownChats.filter { $0.id.workspace == workspaceID && !isMainChat($0.id) }
+    }
+
+    func codexEndpoint(for workspaceID: String) -> CodexLocalEndpoint? {
+        if workspaceID == Self.localID { return localCodex }
+        guard let profile = profile(workspaceID), let bearer = remotes.bearer(for: profile) else { return nil }
+        return CodexLocalEndpoint(remote: profile, bearer: bearer)
+    }
+
+    func sidebarACPModel(for workspaceID: String) -> AgentChatModel? {
+        if let demo = roster.first(where: { $0.target.id == workspaceID }) { return demo }
+        guard let profile = profile(workspaceID), let bearer = remotes.bearer(for: profile) else { return nil }
+        return configuredModel(profile, bearer: bearer)
+    }
+
+    func rememberCodexCatalog(_ chats: [CodexChatSummary], workspaceID: String) {
+        guard agent(workspaceID) != nil else { return }
+        codexSearchCatalog[workspaceID] = chats
     }
 
     func displayName(for locator: WorkspaceChatID) -> String {
         recent.first { $0.id == locator }?.title ??
             codexChats[locator.workspace]?.first { $0.id == locator.chat }?.title ??
+            codexSearchCatalog[locator.workspace]?.first { $0.id == locator.chat }?.title ??
             models.first { $0.target.id == locator.workspace }?.title(for: locator.chat) ??
             agent(locator.workspace)?.name ?? "Saved chat"
     }
@@ -244,14 +289,29 @@ final class WorkspaceState {
 
     func open(_ workspaceID: String, chat: String? = nil, resume: Bool = true) {
         guard agent(workspaceID) != nil else { return }
-        showingSwitcher = false
-        showingInbox = false
         let cachedChat = resume ? recent.first { $0.id.workspace == workspaceID }?.id.chat : nil
-        let route = WorkspaceRoute(workspace: workspaceID, chat: chat ?? cachedChat)
+        push(WorkspaceRoute(workspace: workspaceID, chat: chat ?? cachedChat))
+    }
+
+    func startCodexChat(_ workspaceID: String) {
+        guard codexEndpoint(for: workspaceID) != nil else { return }
+        push(WorkspaceRoute(workspace: workspaceID, chat: nil, startsNewChat: true))
+    }
+
+    private func push(_ route: WorkspaceRoute) {
+        showingSwitcher = false
         if path != [route] {
             visibleChat = nil
             path = [route]
         }
+    }
+
+    func showSidebar(_ tab: WorkspaceTab) {
+        sidebarTab = tab
+        if tab == .inbox { inboxReset += 1 }
+        visibleChat = nil
+        showingSwitcher = false
+        if !path.isEmpty { path = [] }
     }
 
     func step(from workspaceID: String, by direction: Int) {
@@ -260,10 +320,27 @@ final class WorkspaceState {
         open(list[(index + direction + list.count) % list.count].id)
     }
 
-    func railAgents(selected: String) -> [WorkspaceAgent] {
+    func railAgents(selected: String?) -> [WorkspaceAgent] {
         let all = agents
-        if profile(selected) == nil || remotes.profiles.isEmpty { return all }
-        return all.filter { $0.connector != "Demo" }
+        let paired = all.filter { $0.connector != "Demo" }
+        let demos = all.filter { $0.connector == "Demo" }
+        guard remotes.profiles.isEmpty || showDemoAgents else {
+            return paired + demos.filter { $0.id == selected }
+        }
+        let byID = Dictionary(uniqueKeysWithValues: demos.map { ($0.id, $0) })
+        return paired + demoPins.compactMap { byID[$0] } + demos.filter { !demoPins.contains($0.id) }
+    }
+
+    func setDemoPins(_ pins: [String]) {
+        demoPins = pins
+        if let data = try? JSONEncoder().encode(pins) { defaults.set(data, forKey: "roster.pinned") }
+    }
+
+    func setShowDemoAgents(_ value: Bool) {
+        showDemoAgents = value
+        defaults.set(value, forKey: "roster.show-demos")
+        if !value, !remotes.profiles.isEmpty, let selected = sidebarTab.agentID,
+           roster.contains(where: { $0.target.id == selected }) { sidebarTab = .inbox }
     }
 
     func visit(_ chat: WorkspaceChatID, title: String) {
@@ -309,6 +386,7 @@ final class WorkspaceState {
     }
 
     func forgot(_ workspaceID: String) {
+        if sidebarTab == .agent(workspaceID) { sidebarTab = .inbox }
         for key in codexRecency.filter({ $0.workspace == workspaceID }) {
             codexSessions.removeValue(forKey: key)?.detach()
         }
@@ -511,7 +589,7 @@ final class WorkspaceState {
 
     private func recordReply(_ chat: WorkspaceChatID, title: String, date: Date) -> WorkspaceAttention? {
         guard let agent = agent(chat.workspace), agent.connector != "Demo",
-              !(sceneIsActive && visibleChat == chat && !showingInbox && !showingSwitcher && !showingAlerts) else { return nil }
+              !(sceneIsActive && visibleChat == chat && !showingSwitcher && !showingAlerts) else { return nil }
         let entry = WorkspaceAttention(chat: chat, title: String(title.prefix(180)), reason: .reply, date: date)
         store(entry)
         return entry
@@ -545,7 +623,7 @@ final class WorkspaceState {
     private static func icon(_ kind: RemoteKind) -> String {
         switch kind {
         case .codex: "chevron.left.forwardslash.chevron.right"
-        case .hermes: "sparkle"
+        case .hermes: "waveform"
         case .openClaw: "terminal"
         }
     }

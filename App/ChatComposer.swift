@@ -19,35 +19,22 @@ struct ChatComposer: View {
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 22)
         let prompt = "Message \(model.target.name)"
-        VStack(alignment: .leading, spacing: 0) {
+        ComposerSurface(focused: editorFocused) {
             TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
                 .focused($editorFocused)
-                .padding(.horizontal, 15)
-                .padding(.top, 13)
-                .padding(.bottom, 4)
                 .disabled(!model.selected.loaded)
                 .accessibilityIdentifier("chat-composer")
-            HStack(spacing: 2) {
-                if let usage = model.selected.context {
-                    contextButton(usage)
-                }
-                if !model.selected.configOptions.isEmpty {
-                    modelButton
-                }
-                Spacer(minLength: 4)
-                actionButton
+        } controls: {
+            if let usage = model.selected.context {
+                contextButton(usage)
             }
-            .padding(.horizontal, 4)
-            .padding(.bottom, 3)
+            if !model.selected.configOptions.isEmpty {
+                modelButton
+            }
+            actionButton
         }
-        .background(ChatTheme.surface, in: shape)
-        .overlay { shape.strokeBorder(ChatTheme.border, lineWidth: 0.5).allowsHitTesting(false) }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(ChatTheme.background)
         .sheet(isPresented: $showModels) {
             ModelPicker(model: model, sessionID: model.selectedID)
                 .presentationDetents([.medium, .large])
@@ -127,7 +114,8 @@ struct ChatComposer: View {
         let working = model.selected.working
         let disabled = working ? model.selected.stopping : !model.selected.loaded || model.selected.configuring
             || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return Button {
+        return ComposerAction(working ? "Stop reply" : "Send", symbol: working ? "stop.fill" : "arrow.up",
+                              disabled: disabled) {
             if working {
                 Task { await model.stop() }
             } else {
@@ -136,19 +124,68 @@ struct ChatComposer: View {
                 editorFocused = false
                 didSend()
             }
-        } label: {
-            Image(systemName: working ? "stop.fill" : "arrow.up")
-                .font(.system(size: 14, weight: .semibold))
+        }
+        .accessibilityIdentifier(working ? "stop-reply" : "send-message")
+    }
+}
+
+struct ComposerSurface<Field: View, Controls: View>: View {
+    let focused: Bool
+    @ViewBuilder let field: Field
+    @ViewBuilder let controls: Controls
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 24)
+        VStack(alignment: .leading, spacing: 2) {
+            field
+                .font(.body)
+                .foregroundStyle(ChatTheme.ink)
+                .tint(ChatTheme.ink)
+                .padding(.horizontal, 15)
+                .padding(.top, 13)
+                .padding(.bottom, 1)
+            HStack(spacing: 0) {
+                Spacer(minLength: 4)
+                controls
+            }
+            .padding(.horizontal, 5)
+            .padding(.bottom, 4)
+        }
+        .background(ChatTheme.surface, in: shape)
+        .overlay { shape.strokeBorder(focused ? ChatTheme.muted.opacity(0.52) : ChatTheme.border).allowsHitTesting(false) }
+        .frame(maxWidth: ChatTheme.readingWidth)
+        .padding(.horizontal, 14)
+        .padding(.top, 5)
+        .padding(.bottom, 7)
+    }
+}
+
+struct ComposerAction: View {
+    let title: String
+    let symbol: String
+    let disabled: Bool
+    let action: () -> Void
+
+    init(_ title: String, symbol: String, disabled: Bool, action: @escaping () -> Void) {
+        self.title = title
+        self.symbol = symbol
+        self.disabled = disabled
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: symbol == "stop.fill" ? 12 : 17, weight: .semibold))
+                .foregroundStyle(disabled ? ChatTheme.muted : ChatTheme.background)
                 .frame(width: 34, height: 34)
-                .foregroundStyle(disabled ? Color.secondary : ChatTheme.background)
-                .background(disabled ? ChatTheme.inset : ChatTheme.accent, in: Circle())
+                .background(disabled ? ChatTheme.raised : ChatTheme.ink, in: Circle())
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-        .accessibilityLabel(working ? "Stop reply" : "Send")
-        .accessibilityIdentifier(working ? "stop-reply" : "send-message")
+        .accessibilityLabel(title)
     }
 }
 

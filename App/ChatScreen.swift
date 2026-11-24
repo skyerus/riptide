@@ -67,7 +67,7 @@ struct ChatScreen: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
                     FollowUpButton(chat: chatKey, title: model.title)
-                    Button("Open Inbox", systemImage: "tray") { workspace.showingInbox = true }
+                    Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                 } label: {
                     Label("Chat actions", systemImage: "ellipsis.circle")
                 }
@@ -159,75 +159,57 @@ struct ChatScreen: View {
     }
 
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    if model.selected.loading {
-                        ProgressView("Opening chat…")
-                    } else if model.selected.loaded && model.selected.transcript.entries.isEmpty {
-                        Text("Start a conversation")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 24)
-                            .accessibilityIdentifier("empty-chat")
-                    }
-                    ForEach(model.selected.transcript.entries) { entry in
-                        switch entry.content {
-                        case .message(.user, let text):
-                            Text(text)
-                                .textSelection(.enabled)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 9)
-                                .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 16))
-                                .padding(.leading, 28)
-                                .frame(maxWidth: .infinity, alignment: .trailing)
-                        case .message(.assistant, let text):
-                            ChatMarkdown(
-                                source: text,
-                                streaming: model.selected.working && model.selected.transcript.latestAssistantEntryID == entry.id
-                            )
-                        case .tool(let activity):
-                            toolRow(activity)
-                        }
-                    }
-                    ForEach(model.selected.permissions) { request in
-                        permissionCard(request)
-                    }
-                    if let error = model.selected.error {
-                        Text(error).font(.footnote)
-                        if !model.selected.loaded {
-                            Button("Try again") { Task { await model.open(model.selectedID) } }
-                        }
-                    }
-                    if let notice = model.selected.notice {
-                        Text(notice).font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if !model.selected.plan.isEmpty {
-                        TurnPlanCard(steps: model.selected.plan)
-                    }
-                    if !model.selected.permissions.isEmpty {
-                        TurnPulse(title: "Waiting for approval", waitingForUser: true)
-                    } else if model.selected.working {
-                        TurnPulse(title: workingLabel)
-                    }
-                    Color.clear.frame(height: 1).id("chat-bottom").accessibilityHidden(true)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 20) {
+                if model.selected.loading {
+                    ProgressView("Opening chat…")
+                } else if model.selected.loaded && model.selected.transcript.entries.isEmpty {
+                    Text("Start a conversation")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 24)
+                        .accessibilityIdentifier("empty-chat")
                 }
-                .padding(20)
+                ForEach(model.selected.transcript.entries) { entry in
+                    switch entry.content {
+                    case .message(.user, let text):
+                        TranscriptUserMessage(text: text)
+                    case .message(.assistant, let text):
+                        ChatMarkdown(
+                            source: text,
+                            streaming: model.selected.working && model.selected.transcript.latestAssistantEntryID == entry.id
+                        )
+                    case .tool(let activity):
+                        toolRow(activity)
+                    }
+                }
+                ForEach(model.selected.permissions) { request in
+                    permissionCard(request)
+                }
+                if let error = model.selected.error {
+                    Text(error).font(.footnote)
+                    if !model.selected.loaded {
+                        Button("Try again") { Task { await model.open(model.selectedID) } }
+                    }
+                }
+                if let notice = model.selected.notice {
+                    Text(notice).font(.footnote).foregroundStyle(.secondary)
+                }
+                if !model.selected.plan.isEmpty {
+                    TurnPlanCard(steps: model.selected.plan)
+                }
+                if !model.selected.permissions.isEmpty {
+                    TurnPulse(title: "Waiting for approval", waitingForUser: true)
+                } else if model.selected.working {
+                    TurnPulse(title: workingLabel)
+                }
             }
-            .scrollDismissesKeyboard(.interactively)
-            .accessibilityIdentifier("chat-transcript")
-            .transcriptViewport($viewport, chat: model.selected.loaded ? chatKey : nil)
-            .onChange(of: model.selected.transcript.entries) {
-                if viewport.follow.canScrollAutomatically { proxy.scrollTo("chat-bottom", anchor: .bottom) }
-            }
-            .onChange(of: model.selected.permissions) {
-                if viewport.follow.canScrollAutomatically { proxy.scrollTo("chat-bottom", anchor: .bottom) }
-            }
-            .onChange(of: model.selected.working) {
-                if viewport.follow.canScrollAutomatically { proxy.scrollTo("chat-bottom", anchor: .bottom) }
-            }
+            .transcriptColumn()
         }
+        .scrollDismissesKeyboard(.interactively)
+        .accessibilityIdentifier("chat-transcript")
+        .transcriptViewport($viewport, chat: model.selected.loaded ? chatKey : nil)
     }
 
     private var workingLabel: String {

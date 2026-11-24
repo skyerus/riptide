@@ -79,14 +79,18 @@ struct RiptideApp: App {
 }
 
 enum ChatTheme {
-    static let background = Color(red: 14 / 255, green: 17 / 255, blue: 21 / 255)
-    static let surface = Color(red: 26 / 255, green: 33 / 255, blue: 40 / 255)
-    static let raised = Color(red: 34 / 255, green: 43 / 255, blue: 51 / 255)
-    static let ink = Color(red: 243 / 255, green: 247 / 255, blue: 250 / 255)
-    static let muted = Color(red: 175 / 255, green: 191 / 255, blue: 203 / 255)
-    static let inset = Color.white.opacity(0.08)
-    static let border = Color.white.opacity(0.16)
-    static let accent = Color(red: 127 / 255, green: 234 / 255, blue: 210 / 255)
-    static let selected = Color(red: 28 / 255, green: 63 / 255, blue: 58 / 255)
-    static let warning = Color(red: 255 / 255, green: 215 / 255, blue: 151 / 255)
+    static let background = Color(red: 16 / 255, green: 16 / 255, blue: 17 / 255)
+    static let surface = Color(red: 29 / 255, green: 28 / 255, blue: 30 / 255)
+    static let raised = Color(red: 38 / 255, green: 37 / 255, blue: 39 / 255)
+    static let ink = Color(red: 242 / 255, green: 240 / 255, blue: 241 / 255)
+    static let muted = Color(red: 174 / 255, green: 169 / 255, blue: 177 / 255)
+    static let inset = Color.white.opacity(0.05)
+    static let border = Color.white.opacity(0.13)
+    static let accent = ink
+    static let sidebarAccent = Color(red: 53 / 255, green: 239 / 255, blue: 164 / 255)
+    static let sidebarDivider = Color.white.opacity(0.10)
+    static let selected = raised
+    static let warning = Color(red: 239 / 255, green: 183 / 255, blue: 191 / 255)
+    static let gutter: CGFloat = 20
+    static let readingWidth: CGFloat = 680
 }

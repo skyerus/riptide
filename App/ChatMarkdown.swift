@@ -18,6 +18,7 @@ struct ChatMarkdown: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .lineSpacing(3)
         .textSelection(.enabled)
         .environment(\.openURL, OpenURLAction { url in
             ["http", "https"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
