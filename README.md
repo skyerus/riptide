@@ -59,10 +59,22 @@ Agent targets explicitly map to their backend's existing main session. Pairing c
 
 ## Pair private remotes
 
-Use **pencil → Pair remote** on Workspaces. Provide a name, private `wss://` endpoint, absolute workspace on the host, and the endpoint’s capability token. Both ACP backends also require an existing main session ID. The token is not an OpenAI key: it stays in this device’s Keychain. Codex pairing binds the endpoint to the signed-in ChatGPT account/workspace; re-pair if that identity changes.
+Use **pencil → Pair remote** on Workspaces. For WebSocket connections, provide a name, a private `wss://` endpoint, the absolute workspace on the host, and the endpoint’s capability token. ACP backends also require an existing main session ID. The token is not an OpenAI key: it stays in this device’s Keychain. Codex pairing binds the endpoint to the signed-in ChatGPT account/workspace; re-pair if that identity changes.
 
 - **Codex:** Keep an explicitly authenticated App Server WebSocket on host loopback behind a TLS proxy reachable only on your private network. Use the server’s capability-token mode; do not expose the app server to the internet. In the app, reopen a saved chat or make a new one. Reconnect rejoins by ID, loads up to the latest 30 turns, and displays approvals the server sends for that chat. Simple command approvals offer Allow once and Decline; review broader requests in native Codex.
 - **Hermes or OpenClaw:** Run the backend's supported ACP stdio command on your own host. `Host/acp_bridge.py` exposes one JSON-RPC object per WebSocket text frame on loopback `/acp`; it stores no transcripts and does not replace either backend. Install `Host/requirements.txt`, create a strong per-endpoint bearer in a mode-0600 file, and run `python Host/acp_bridge.py --token-file /path/to/token -- hermes acp` or the equivalent `openclaw acp` command. Put this listener behind your own private TLS proxy and forward the Authorization header. Run it under a least-privilege account; do not use a public ingress. Test `session/list`, `session/load`, and a one-time approval on the actual backend version. The stdio child closes on disconnect; only approvals the backend reissues on load can appear again. See [Hermes ACP internals](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/acp-internals.md) and [OpenClaw ACP compatibility](https://docs.openclaw.ai/cli/acp).
+
+### Direct ACP over SSH
+
+For a host you already reach by SSH, choose **SSH** in the ACP pairing form. Enter `ssh://user@host` (add a port if needed), the workspace, an existing main chat ID, and the OpenSSH SHA-256 host-key fingerprint from a trusted source. On the server you can read the Ed25519 fingerprint with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. A change in fingerprint fails closed.
+
+Copy the public key from Riptide and authorize it for a fixed command in the agent account’s `authorized_keys`. Install `Host/ssh_acp.py` at a trusted, non-writable path, then use a key entry such as:
+
+```text
+restrict,command="/usr/bin/python3 /usr/local/libexec/riptide/ssh_acp.py --workspace /srv/agent-workspace -- /home/agent/.local/bin/hermes-acp" ssh-ed25519 PUBLIC_KEY riptide-device
+```
+
+Use absolute paths for the regular agent account, workspace, and native ACP launcher. This key cannot start a shell, request a terminal, or forward ports. The launcher only admits Riptide’s chat methods: it does not accept client-supplied MCP servers, alternate workspaces, or approval-policy changes. It does not sandbox the agent itself: prompts still reach the regular agent with its configured tools and approvals. Use a trusted device and the least-privilege agent account available. Removing the key on the host revokes access; the private key never leaves the device’s Keychain. SSH pairing is for ACP chat only; voice keeps its separate native endpoint.
 
 ## Local Codex handoff proof
 

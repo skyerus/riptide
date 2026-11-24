@@ -20,9 +20,9 @@ final class RemoteStore {
             .flatMap { try? JSONDecoder().decode([UUID: NativeVoiceProfile].self, from: $0) } ?? [:]
     }
 
-    func pair(_ profile: RemoteProfile, bearer: String) async throws {
+    func pair(_ profile: RemoteProfile, credential: String) async throws {
         var paired = profile
-        if let endpoint = CodexLocalEndpoint(remote: profile, bearer: bearer) {
+        if let endpoint = CodexLocalEndpoint(remote: profile, bearer: credential) {
             let client = endpoint.makeClient()
             do {
                 _ = try await client.listSavedChats()
@@ -32,7 +32,7 @@ final class RemoteStore {
                 await client.close()
                 throw error
             }
-        } else if let client = profile.makeACPClient(bearer: bearer) {
+        } else if let client = profile.makeACPClient(credential: credential) {
             do {
                 let chats = try await client.sessions()
                 guard chats.contains(where: { $0.id == profile.mainSessionID && $0.cwd == profile.workspace }) else {
@@ -49,7 +49,7 @@ final class RemoteStore {
         }
         try Task.checkCancellation()
         let metadata = try JSONEncoder().encode(profiles + [paired])
-        try KeychainToken.save(bearer, for: profile.id)
+        try KeychainToken.save(credential, for: profile.id)
         defaults.set(metadata, forKey: metadataKey)
         profiles.append(paired)
     }
@@ -154,9 +154,9 @@ enum PairingFailure: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalid: "Enter a secure WebSocket URL, absolute workspace, and host token."
+        case .invalid: "Check the endpoint, workspace path, and pairing details."
         case .mainNotFound: "The agent did not list that main chat in the paired workspace."
-        case .keychain: "Riptide couldn’t access this remote’s token in Keychain."
+        case .keychain: "Riptide couldn’t access this remote’s credential in Keychain."
         }
     }
 }
