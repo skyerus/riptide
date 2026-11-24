@@ -2,9 +2,34 @@ import XCTest
 
 final class WorkspaceUXUITests: XCTestCase {
     @MainActor
+    func testTheTranscriptFollowsNewLinesBeforeTheReplyFinishes() {
+        let app = freshApp()
+        openMainChat(in: app)
+        let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap()
+        composer.typeText("streaming demo")
+        capture(app, as: "Composer with send enabled")
+        app.buttons["send-message"].tap()
+
+        let transcript = app.scrollViews["chat-transcript"]
+        let earlyUpdate = app.staticTexts["Update 8"]
+        XCTAssertTrue(earlyUpdate.waitForExistence(timeout: 6))
+        XCTAssertTrue(isVisible(earlyUpdate, in: transcript), "Autofollow did not move with the growing reply.")
+        XCTAssertTrue(app.buttons["stop-reply"].exists, "The transcript did not follow until completion.")
+        transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.43)).press(forDuration: 2)
+
+        let final = app.staticTexts["Long stream complete."]
+        XCTAssertTrue(final.waitForExistence(timeout: 9))
+        XCTAssertTrue(isVisible(final, in: transcript), "Releasing a stationary touch did not catch up to the live edge.")
+        XCTAssertFalse(app.buttons["jump-to-latest"].exists)
+        capture(app, as: "Chat follows incoming text")
+    }
+
+    @MainActor
     func testReadingHistoryDoesNotGetPulledToTheEndOfALiveReply() {
         let app = freshApp()
-        app.buttons["agent-openclaw"].tap()
+        openMainChat(in: app)
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         composer.tap()
@@ -26,8 +51,10 @@ final class WorkspaceUXUITests: XCTestCase {
             XCTFail("No streamed update was visible in the reading area.")
             return
         }
-        app.buttons["rail-hermes"].tap()
-        app.buttons["rail-openclaw"].tap()
+        app.navigationBars.buttons["BackButton"].tap()
+        openMainChat(in: app, agent: "hermes")
+        app.navigationBars.buttons["BackButton"].tap()
+        openMainChat(in: app)
         XCTAssertTrue(jump.waitForExistence(timeout: 6), "Returning to the chat lost the reader's place.")
         let restoredHeading = app.staticTexts[heading]
         XCTAssertTrue(restoredHeading.waitForExistence(timeout: 6))
@@ -45,6 +72,7 @@ final class WorkspaceUXUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launchEnvironment["RIPTIDE_BUSY_WORKSPACE"] = "1"
         app.launch()
+        openMainChat(in: app)
         let switcher = app.buttons["workspace-switcher"]
         XCTAssertTrue(switcher.waitForExistence(timeout: 8))
         switcher.tap()
@@ -65,21 +93,92 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
+    func testTheSidebarReachesTheLastAgentAndListsItsChats() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_BUSY_WORKSPACE"] = "1"
+        app.launch()
+        let strip = app.scrollViews["sidebar-workspace-tabs"]
+        XCTAssertTrue(strip.waitForExistence(timeout: 8))
+        let inbox = strip.buttons["sidebar-inbox"]
+        func inboxIsVisible() -> Bool {
+            inbox.exists && !inbox.frame.isEmpty && strip.frame.contains(inbox.frame)
+        }
+        XCTAssertTrue(inboxIsVisible())
+        let last = app.buttons["sidebar-agent-ops-12"]
+        for _ in 0..<10 {
+            if last.exists && !last.frame.isEmpty && strip.frame.contains(last.frame) { break }
+            strip.swipeLeft()
+        }
+        guard last.exists && !last.frame.isEmpty && strip.frame.contains(last.frame) else {
+            XCTFail("The last agent never scrolled into view.")
+            return
+        }
+        last.tap()
+        let main = app.buttons["sidebar-main-chat"]
+        let history = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "sidebar-chat-ops-12-sample-")).firstMatch
+        XCTAssertTrue(main.waitForExistence(timeout: 8))
+        XCTAssertTrue(history.waitForExistence(timeout: 8))
+        XCTAssertLessThan(main.frame.minY, history.frame.minY)
+        XCTAssertTrue(app.staticTexts["Side chats"].exists)
+        XCTAssertFalse(inboxIsVisible(), "Inbox should scroll offscreen with the connector tabs.")
+        capture(app, as: "Sidebar agent and side chats")
+        main.tap()
+        let heading = app.buttons["chats-button"]
+        XCTAssertTrue(heading.waitForExistence(timeout: 8))
+        XCTAssertEqual(heading.value as? String, "Ops 12")
+        app.navigationBars.buttons["BackButton"].tap()
+        XCTAssertTrue(last.waitForExistence(timeout: 8))
+        XCTAssertTrue(last.isSelected)
+        for _ in 0..<10 {
+            if inboxIsVisible() { break }
+            strip.swipeRight()
+        }
+        XCTAssertTrue(inboxIsVisible(), "Swiping back should reveal Inbox again.")
+        inbox.tap()
+        XCTAssertTrue(inbox.isSelected)
+    }
+
+    @MainActor
+    func testHomeInboxOpensTheSelectedChatAndUpdatesTheBadge() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_BUSY_WORKSPACE"] = "1"
+        app.launchEnvironment["RIPTIDE_BUSY_INBOX"] = "1"
+        app.launch()
+        let inbox = app.buttons["sidebar-inbox"]
+        let waiting = NSPredicate(format: "value == %@", "12 waiting")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: waiting, object: inbox)], timeout: 8), .completed)
+
+        XCTAssertTrue(inbox.isSelected)
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "inbox-approval-"))
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 8))
+        let item = app.buttons[rows.firstMatch.identifier]
+        let name = item.staticTexts.firstMatch.label
+        item.tap()
+        let deny = app.buttons["approval-reject_once"]
+        XCTAssertTrue(deny.waitForExistence(timeout: 8))
+        XCTAssertEqual(app.buttons["chats-button"].value as? String, name)
+        deny.tap()
+        XCTAssertTrue(app.staticTexts["I skipped the sample action. Nothing was run."].waitForExistence(timeout: 8))
+        app.navigationBars.buttons["BackButton"].tap()
+        let reduced = NSPredicate(format: "value == %@", "11 waiting")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: reduced, object: inbox)], timeout: 8), .completed)
+        XCTAssertFalse(item.exists)
+    }
+
+    @MainActor
     func testBusyInboxFiltersAndOnlyResolvesTheChosenApproval() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launchEnvironment["RIPTIDE_BUSY_WORKSPACE"] = "1"
         app.launchEnvironment["RIPTIDE_BUSY_INBOX"] = "1"
         app.launch()
-        let switcher = app.buttons["workspace-switcher"]
-        XCTAssertTrue(switcher.waitForExistence(timeout: 8))
-        switcher.tap()
-        XCTAssertTrue(app.staticTexts["Live now"].waitForExistence(timeout: 8))
-        app.buttons["Done"].tap()
-
-        app.buttons["open-inbox"].tap()
-        let search = app.searchFields.firstMatch
-        if !search.isHittable { app.swipeDown() }
+        let inbox = app.buttons["sidebar-inbox"]
+        let waiting = NSPredicate(format: "value == %@", "12 waiting")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: waiting, object: inbox)], timeout: 8), .completed)
+        capture(app, as: "Workspaces with 12 waiting approvals")
+        let search = app.textFields["inbox-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 8))
         search.tap()
         search.typeText("Ops 8")
@@ -92,8 +191,11 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(decline.waitForExistence(timeout: 8))
         decline.tap()
         XCTAssertTrue(app.staticTexts["I skipped the sample action. Nothing was run."].waitForExistence(timeout: 8))
-        app.buttons["chat-actions"].tap()
-        app.buttons["Open Inbox"].tap()
+        app.navigationBars.buttons["BackButton"].tap()
+        XCTAssertTrue(search.waitForExistence(timeout: 8))
+        XCTAssertEqual(search.value as? String, "Ops 8")
+        search.tap()
+        search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "Ops 8".count) + "Ops 9")
         XCTAssertTrue(app.buttons["inbox-approval-ops-9"].waitForExistence(timeout: 8))
         XCTAssertFalse(target.exists)
         capture(app, as: "Busy Inbox keeps unrelated approvals")
@@ -131,8 +233,7 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(reply.waitForExistence(timeout: 12))
         reply.tap()
         XCTAssertTrue(app.staticTexts["A reply finished in the other workspace."].waitForExistence(timeout: 8))
-        app.buttons["codex-chat-actions"].tap()
-        app.buttons["Open Inbox"].tap()
+        app.navigationBars.buttons["BackButton"].tap()
         XCTAssertFalse(reply.exists)
     }
 
@@ -170,45 +271,54 @@ final class WorkspaceUXUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_CODEX_BEARER"] = "fixture-" + String(repeating: "x", count: 40)
         app.launchEnvironment["RIPTIDE_CODEX_WORKSPACE"] = "/riptide-ux-fixture"
         app.launch()
-        app.buttons["local-codex"].tap()
-        let saved = app.buttons["saved-codex-chats"]
-        XCTAssertTrue(saved.waitForExistence(timeout: 8))
-        saved.tap()
-        let row = app.buttons["codex-saved-chat"].firstMatch
+        app.buttons["sidebar-agent-local-codex"].tap()
+        let row = app.buttons["sidebar-chat-busy-fixture-thread"]
         XCTAssertTrue(row.waitForExistence(timeout: 8))
         row.tap()
         let identifiedEditor = app.descendants(matching: .any).matching(identifier: "codex-composer").firstMatch
         let editor = identifiedEditor.waitForExistence(timeout: 5) ? identifiedEditor :
             app.descendants(matching: .any).matching(NSPredicate(format: "placeholderValue == %@", "Message Codex")).firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@", "Inbox")).firstMatch.exists)
         return (app, editor)
     }
 
     @MainActor
+    private func isVisible(_ item: XCUIElement, in transcript: XCUIElement) -> Bool {
+        guard item.exists else { return false }
+        let visible = transcript.frame
+        return visible.minY <= item.frame.midY && item.frame.midY <= visible.maxY
+    }
+
+    @MainActor
     private func navigateAwayFromCodex(_ app: XCUIApplication) throws {
-        let remote = app.buttons["rail-openclaw"]
-        _ = try XCTUnwrap(remote.waitForExistence(timeout: 8) ? remote : nil, "Codex did not show the workspace rail.")
-        remote.tap()
-        let other = app.buttons["chats-button"]
-        _ = try XCTUnwrap(other.waitForExistence(timeout: 8) ? other : nil, "The rail did not switch away from Codex.")
-        XCTAssertEqual(other.value as? String, "OpenClaw")
-        let inbox = app.buttons["rail-inbox"]
+        let back = app.navigationBars.buttons["BackButton"]
+        _ = try XCTUnwrap(back.waitForExistence(timeout: 8) ? back : nil, "Codex did not show Back.")
+        back.tap()
+        let codex = app.buttons["sidebar-agent-local-codex"]
+        XCTAssertTrue(codex.waitForExistence(timeout: 8))
+        XCTAssertTrue(codex.isSelected)
+        let inbox = app.buttons["sidebar-inbox"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 12))
         inbox.tap()
     }
 
     @MainActor
-    func testSwitchRailKeepsTheDraftAndSwitcherFindsAgents() {
+    func testSidebarSwitchKeepsTheDraftAndSwitcherFindsAgents() {
         let app = freshApp()
-        app.buttons["agent-openclaw"].tap()
+        openMainChat(in: app)
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         composer.tap()
         composer.typeText("Keep this draft")
 
-        let hermes = app.buttons["rail-hermes"]
-        XCTAssertTrue(hermes.exists)
-        hermes.tap()
+        XCTAssertFalse(app.scrollViews["sidebar-workspace-tabs"].exists)
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@", "Inbox")).firstMatch.exists)
+        app.navigationBars.buttons["BackButton"].tap()
+        let openClaw = app.buttons["sidebar-agent-openclaw"]
+        XCTAssertTrue(openClaw.waitForExistence(timeout: 8))
+        XCTAssertTrue(openClaw.isSelected)
+        openMainChat(in: app, agent: "hermes")
         XCTAssertTrue(app.buttons["chats-button"].waitForExistence(timeout: 8))
         XCTAssertEqual(app.buttons["chats-button"].value as? String, "Hermes")
         XCTAssertNotEqual(composer.value as? String, "Keep this draft")
@@ -223,13 +333,13 @@ final class WorkspaceUXUITests: XCTestCase {
         result.tap()
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         XCTAssertEqual(composer.value as? String, "Keep this draft")
-        capture(app, as: "Workspace rail and retained draft")
+        capture(app, as: "Chat without connector tabs, with retained draft")
     }
 
     @MainActor
     func testInboxResolvesLiveApprovalAcrossWorkspacesAndRemembersFollowUp() {
         let app = freshApp()
-        app.buttons["agent-openclaw"].tap()
+        openMainChat(in: app)
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         app.buttons["chat-actions"].tap()
@@ -239,11 +349,11 @@ final class WorkspaceUXUITests: XCTestCase {
         app.buttons["send-message"].tap()
         XCTAssertTrue(app.buttons["approval-reject_once"].waitForExistence(timeout: 8))
 
-        app.buttons["rail-hermes"].tap()
-        let actions = app.buttons["chat-actions"]
-        XCTAssertTrue(actions.waitForExistence(timeout: 8))
-        actions.tap()
-        app.buttons["Open Inbox"].tap()
+        app.navigationBars.buttons["BackButton"].tap()
+        let hermes = app.buttons["sidebar-agent-hermes"]
+        XCTAssertTrue(hermes.waitForExistence(timeout: 8))
+        hermes.tap()
+        app.buttons["sidebar-inbox"].tap()
         let approval = app.buttons["inbox-approval-openclaw"]
         XCTAssertTrue(approval.waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["inbox-followUp-openclaw"].exists)
@@ -253,20 +363,17 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(deny.waitForExistence(timeout: 8))
         deny.tap()
         XCTAssertTrue(app.staticTexts["I skipped the sample action. Nothing was run."].waitForExistence(timeout: 8))
-        actions.tap()
-        app.buttons["Open Inbox"].tap()
+        app.navigationBars.buttons["BackButton"].tap()
         XCTAssertTrue(app.buttons["inbox-followUp-openclaw"].waitForExistence(timeout: 8))
         XCTAssertFalse(approval.exists)
         app.terminate()
         app.launch()
-        app.buttons["open-inbox"].tap()
         XCTAssertTrue(app.buttons["inbox-followUp-openclaw"].waitForExistence(timeout: 8))
     }
 
     @MainActor
     func testAwayModeIsDiscoverableFromInbox() {
         let app = freshApp()
-        app.buttons["open-inbox"].tap()
         let settings = app.buttons["inbox-notifications"]
         XCTAssertTrue(settings.waitForExistence(timeout: 8))
         settings.tap()
@@ -278,7 +385,7 @@ final class WorkspaceUXUITests: XCTestCase {
     @MainActor
     func testFlickingTheChatHeaderSwitchesWorkspaces() {
         let app = freshApp()
-        app.buttons["agent-openclaw"].tap()
+        openMainChat(in: app)
         let title = app.buttons["chats-button"]
         XCTAssertTrue(title.waitForExistence(timeout: 8))
         title.swipeLeft()
@@ -291,8 +398,18 @@ final class WorkspaceUXUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launch()
-        XCTAssertTrue(app.buttons["agent-openclaw"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["sidebar-agent-openclaw"].waitForExistence(timeout: 8))
         return app
+    }
+
+    @MainActor
+    private func openMainChat(in app: XCUIApplication, agent: String = "openclaw") {
+        let tab = app.buttons["sidebar-agent-\(agent)"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 8))
+        if !tab.isSelected { tab.tap() }
+        let main = app.buttons["sidebar-main-chat"]
+        XCTAssertTrue(main.waitForExistence(timeout: 8))
+        main.tap()
     }
 
     @MainActor

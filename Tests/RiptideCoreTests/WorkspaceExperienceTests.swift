@@ -7,15 +7,33 @@ struct WorkspaceExperienceTests {
         var follow = TranscriptFollow()
         follow.geometryChanged(nearBottom: false)
         #expect(follow.canScrollAutomatically)
-        follow.phaseChanged(userGesture: true, nearBottom: true)
+        follow.phaseChanged(.scrolling, nearBottom: true)
         #expect(!follow.canScrollAutomatically)
         follow.geometryChanged(nearBottom: false)
-        follow.phaseChanged(userGesture: false, nearBottom: false)
+        follow.phaseChanged(.idle, nearBottom: false)
         #expect(!follow.following)
         follow.geometryChanged(nearBottom: true)
         #expect(!follow.following)
         follow.jumpToLatest()
         #expect(follow.canScrollAutomatically)
+    }
+
+    @Test func holdingTheTranscriptPausesUntilReleaseWithoutChangingReadingIntent() {
+        var live = TranscriptFollow()
+        live.phaseChanged(.touching, nearBottom: true)
+        #expect(!live.canScrollAutomatically)
+        live.geometryChanged(nearBottom: false)
+        live.phaseChanged(.idle, nearBottom: false)
+        #expect(live.canScrollAutomatically)
+
+        var reading = TranscriptFollow(following: false)
+        reading.phaseChanged(.touching, nearBottom: false)
+        reading.phaseChanged(.idle, nearBottom: false)
+        #expect(!reading.canScrollAutomatically)
+        reading.phaseChanged(.scrolling, nearBottom: true)
+        #expect(!reading.canScrollAutomatically)
+        reading.phaseChanged(.idle, nearBottom: true)
+        #expect(reading.canScrollAutomatically)
     }
 
     @Test func searchCanCombineWorkspaceAndChatTermsAndPrefersExactNumbers() throws {

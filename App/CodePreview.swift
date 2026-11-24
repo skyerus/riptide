@@ -75,8 +75,8 @@ struct DiffPreview: View {
                 Image(systemName: "plus.forwardslash.minus").accessibilityHidden(true)
                 Text(title).font(.caption.weight(.semibold))
                 Spacer()
-                Text("+\(diff.additions)").foregroundStyle(ChatTheme.accent)
-                Text("−\(diff.deletions)").foregroundStyle(Color(red: 1, green: 0.57, blue: 0.65))
+                Text("+\(diff.additions)").foregroundStyle(foreground(.addition))
+                Text("−\(diff.deletions)").foregroundStyle(foreground(.deletion))
                 Button {
                     UIPasteboard.general.string = source
                     copied = true
@@ -138,8 +138,8 @@ struct DiffPreview: View {
 
     private func foreground(_ kind: UnifiedDiff.Kind) -> Color {
         switch kind {
-        case .addition: Color(red: 0.66, green: 0.93, blue: 0.78)
-        case .deletion: Color(red: 1, green: 0.69, blue: 0.73)
+        case .addition: Color(red: 0.73, green: 0.83, blue: 0.69)
+        case .deletion: ChatTheme.warning
         case .hunk: Color(red: 0.68, green: 0.77, blue: 1)
         case .file: .secondary
         default: .primary

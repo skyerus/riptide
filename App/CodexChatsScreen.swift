@@ -138,7 +138,6 @@ struct CodexSavedChatScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if includesSwitcher { WorkspaceRail(selected: workspaceID) }
             transcript
             if ready { composer }
         }
@@ -163,7 +162,7 @@ struct CodexSavedChatScreen: View {
                 if let chat, let chatKey {
                     Menu {
                         FollowUpButton(chat: chatKey, title: chat.title)
-                        Button("Open Inbox", systemImage: "tray") { workspace.showingInbox = true }
+                        Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                     } label: { Label("Chat actions", systemImage: "ellipsis.circle") }
                     .accessibilityIdentifier("codex-chat-actions")
                 }
@@ -200,79 +199,60 @@ struct CodexSavedChatScreen: View {
     }
 
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    if session?.hasOlderTurns == true {
-                        Text("Showing the latest 30 turns.").font(.caption).foregroundStyle(.secondary)
-                    }
-                    ForEach(messages) { message in
-                        if message.role == .assistant {
-                            if !message.text.isEmpty {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    if message.phase == .commentary {
-                                        Label("Progress update", systemImage: "waveform").font(.caption.weight(.medium))
-                                            .foregroundStyle(ChatTheme.muted)
-                                    }
-                                    ChatMarkdown(source: message.text, streaming: message.streaming)
-                                }
-                            }
-                        } else {
-                            Text(message.text)
-                                .textSelection(.enabled)
-                                .padding(12)
-                                .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 14))
-                                .padding(.leading, 30)
-                                .frame(maxWidth: .infinity, alignment: .trailing)
-                        }
-                    }
-                    if let diff = session?.diff {
-                        DisclosureGroup("Changes") { DiffPreview(source: diff, title: "Turn diff") }
-                    }
-                    ForEach(approvals) { approval in
-                        if let questions = approval.questions {
-                            CodexInputCard(questions: questions, responding: responding.contains(approval.id)) { values in
-                                session?.answerInput(approval, values: values)
-                            }
-                        } else {
-                            approvalCard(approval)
-                        }
-                    }
-                    if let issue = session?.issue {
-                        Text(issue).font(.footnote).foregroundStyle(.secondary)
-                        if !ready { Button("Reconnect") { session?.start() } }
-                    } else if !ready {
-                        ProgressView("Opening chat…")
-                    } else if messages.isEmpty && !working {
-                        Text("Start a conversation").foregroundStyle(.secondary)
-                    }
-                    if progress.hasContent { CodexActivityCard(progress: progress) }
-                    if !approvals.isEmpty {
-                        TurnPulse(title: approvals.allSatisfy(\.isInput) ? "Waiting for your input" : "Waiting for approval",
-                                  waitingForUser: true)
-                    }
-                    else if working || sending {
-                        TurnPulse(title: workingLabel)
-                    }
-                    Color.clear.frame(height: 1).id("codex-saved-bottom").accessibilityHidden(true)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 18) {
+                if session?.hasOlderTurns == true {
+                    Text("Showing the latest 30 turns.").font(.caption).foregroundStyle(.secondary)
                 }
-                .padding(20)
+                ForEach(messages) { message in
+                    if message.role == .assistant {
+                        if !message.text.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                if message.phase == .commentary {
+                                    Label("Progress update", systemImage: "waveform").font(.caption.weight(.medium))
+                                        .foregroundStyle(ChatTheme.muted)
+                                }
+                                ChatMarkdown(source: message.text, streaming: message.streaming)
+                            }
+                        }
+                    } else {
+                        TranscriptUserMessage(text: message.text)
+                    }
+                }
+                if let diff = session?.diff {
+                    DisclosureGroup("Changes") { DiffPreview(source: diff, title: "Turn diff") }
+                }
+                ForEach(approvals) { approval in
+                    if let questions = approval.questions {
+                        CodexInputCard(questions: questions, responding: responding.contains(approval.id)) { values in
+                            session?.answerInput(approval, values: values)
+                        }
+                    } else {
+                        approvalCard(approval)
+                    }
+                }
+                if let issue = session?.issue {
+                    Text(issue).font(.footnote).foregroundStyle(.secondary)
+                    if !ready { Button("Reconnect") { session?.start() } }
+                } else if !ready {
+                    ProgressView("Opening chat…")
+                } else if messages.isEmpty && !working {
+                    Text("Start a conversation").foregroundStyle(.secondary)
+                }
+                if progress.hasContent { CodexActivityCard(progress: progress) }
+                if !approvals.isEmpty {
+                    TurnPulse(title: approvals.allSatisfy(\.isInput) ? "Waiting for your input" : "Waiting for approval",
+                              waitingForUser: true)
+                }
+                else if working || sending {
+                    TurnPulse(title: workingLabel)
+                }
             }
-            .scrollDismissesKeyboard(.interactively)
-            .transcriptViewport($viewport, chat: ready ? chatKey : nil)
-            .onChange(of: messages) {
-                if viewport.follow.canScrollAutomatically { proxy.scrollTo("codex-saved-bottom", anchor: .bottom) }
-            }
-            .onChange(of: approvals) {
-                if viewport.follow.canScrollAutomatically { proxy.scrollTo("codex-saved-bottom", anchor: .bottom) }
-            }
-            .onChange(of: progress.items.count) {
-                if viewport.follow.canScrollAutomatically { proxy.scrollTo("codex-saved-bottom", anchor: .bottom) }
-            }
-            .onChange(of: progress.plan.count) {
-                if viewport.follow.canScrollAutomatically { proxy.scrollTo("codex-saved-bottom", anchor: .bottom) }
-            }
+            .transcriptColumn()
         }
+        .scrollDismissesKeyboard(.interactively)
+        .accessibilityIdentifier("codex-saved-transcript")
+        .transcriptViewport($viewport, chat: ready ? chatKey : nil)
     }
 
     private var workingLabel: String {
@@ -290,31 +270,33 @@ struct CodexSavedChatScreen: View {
 
     private var composer: some View {
         let prompt = working ? "Steer this turn" : "Message Codex"
-        return HStack(spacing: 8) {
+        let disabled = sending || stopping || editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return ComposerSurface(focused: composerFocused) {
             TextField(prompt, text: editor, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
-                .lineLimit(1...4)
+                .lineLimit(1...6)
                 .focused($composerFocused)
-                .padding(.horizontal, 12)
-                .frame(minHeight: 44)
                 .accessibilityIdentifier("codex-composer")
-            Button(working ? "Steer" : "Send") {
+        } controls: {
+            if working {
+                Button {
+                    Task { await session?.interrupt() }
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(ChatTheme.muted)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(stopping)
+                .accessibilityLabel("Stop turn")
+                .accessibilityIdentifier("stop-codex-turn")
+            }
+            ComposerAction(working ? "Steer" : "Send", symbol: "arrow.up", disabled: disabled) {
                 composerFocused = false
                 Task { await send() }
             }
-                .buttonStyle(.borderedProminent)
-                .padding(.trailing, 6)
-                .disabled(sending || stopping || editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            if working {
-                Button("Stop turn", systemImage: "stop.fill") { Task { await session?.interrupt() } }
-                    .labelStyle(.iconOnly)
-                    .frame(width: 44, height: 44)
-                    .disabled(stopping)
-                    .accessibilityIdentifier("stop-codex-turn")
-            }
         }
-        .contentPanel()
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
     }
 
     private func approvalCard(_ approval: CodexChatApproval) -> some View {

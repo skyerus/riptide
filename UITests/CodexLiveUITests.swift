@@ -19,13 +19,10 @@ final class CodexLiveUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_CODEX_VOICE_CHECK"] = "1"
         app.launch()
 
-        let localCodex = app.buttons["local-codex"]
+        let localCodex = app.buttons["sidebar-agent-local-codex"]
         XCTAssertTrue(localCodex.waitForExistence(timeout: 10))
         localCodex.tap()
-        let chats = app.buttons["saved-codex-chats"]
-        XCTAssertTrue(chats.waitForExistence(timeout: 6))
-        chats.tap()
-        let saved = app.buttons.matching(identifier: "codex-saved-chat")
+        let saved = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "sidebar-chat-"))
             .matching(NSPredicate(format: "label == %@", title)).firstMatch
         XCTAssertTrue(saved.waitForExistence(timeout: 12))
         saved.tap()
@@ -66,9 +63,10 @@ final class CodexLiveUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_CODEX_VOICE_CHECK"] = "1"
         app.launch()
 
-        let localCodex = app.buttons["local-codex"]
+        let localCodex = app.buttons["sidebar-agent-local-codex"]
         XCTAssertTrue(localCodex.waitForExistence(timeout: 10))
         localCodex.tap()
+        app.buttons["watch-desktop-codex"].tap()
         let call = app.buttons["call-codex"]
         XCTAssertTrue(call.waitForExistence(timeout: 5))
         call.tap()
@@ -101,9 +99,10 @@ final class CodexLiveUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_CODEX_WORKSPACE"] = proof.appending(path: "proof").path
         app.launch()
 
-        let localCodex = app.buttons["local-codex"]
+        let localCodex = app.buttons["sidebar-agent-local-codex"]
         XCTAssertTrue(localCodex.waitForExistence(timeout: 10))
         localCodex.tap()
+        app.buttons["watch-desktop-codex"].tap()
 
         let status = app.staticTexts["codex-turn-status"]
         let watching = XCTNSPredicateExpectation(

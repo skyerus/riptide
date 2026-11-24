@@ -17,6 +17,8 @@ struct CodexLiveScreen: View {
     @State private var outputEvents = 0
     @State private var replies: [Reply] = []
     @State private var patch: String?
+    @State private var viewport = TranscriptViewport()
+    @FocusState private var editorFocused: Bool
 
     private struct Reply: Identifiable {
         let id: String
@@ -26,80 +28,68 @@ struct CodexLiveScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(status).font(.headline)
-                                .foregroundStyle(active ? ChatTheme.accent : Color.primary)
-                                .accessibilityIdentifier("codex-turn-status")
-                            if let turn {
-                                Text("\(turn.model ?? "Codex") · Turn \(turn.turnID.suffix(8))")
-                                    .font(.footnote.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                                    .accessibilityIdentifier("codex-turn-id")
-                            }
-                        }
-                        if let prompt = turn?.prompt {
-                            Text(prompt)
-                                .font(.subheadline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(status).font(.headline)
+                            .foregroundStyle(active ? ChatTheme.accent : Color.primary)
+                            .accessibilityIdentifier("codex-turn-status")
+                        if let turn {
+                            Text("\(turn.model ?? "Codex") · Turn \(turn.turnID.suffix(8))")
+                                .font(.footnote.monospacedDigit())
                                 .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
+                                .accessibilityIdentifier("codex-turn-id")
                         }
-                        if outputEvents > 0 {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Live output · \(outputEvents) updates")
-                                    .font(.footnote.weight(.medium))
-                                    .foregroundStyle(.secondary)
-                                    .accessibilityIdentifier("codex-live-updates")
-                                Text(output.trimmingCharacters(in: .newlines))
-                                    .font(.system(.footnote, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .accessibilityIdentifier("codex-live-output")
-                            }
-                            .padding(12)
-                            .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 12))
-                        }
-                        ForEach(replies) { reply in
-                            ChatMarkdown(source: reply.text, streaming: active && !reply.finished)
-                                .accessibilityIdentifier("codex-assistant-reply")
-                        }
-                        if let patch, !patch.isEmpty {
-                            DisclosureGroup("Changes") {
-                                DiffPreview(source: patch, title: "Turn diff")
-                                    .padding(.top, 8)
-                            }
-                            .font(.subheadline)
-                        }
-                        if let receipt {
-                            Text(receipt).font(.footnote).foregroundStyle(ChatTheme.accent)
-                                .accessibilityIdentifier("codex-steer-receipt")
-                        }
-                        if let failure {
-                            Text(failure).font(.footnote).foregroundStyle(.secondary)
-                            if !active {
-                                Button("Join running turn") { attempt += 1 }
-                                    .buttonStyle(.bordered)
-                                    .accessibilityIdentifier("codex-reconnect")
-                            }
-                        }
-                        Color.clear.frame(height: 1).id("live-bottom").accessibilityHidden(true)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(20)
+                    if let prompt = turn?.prompt {
+                        Text(prompt)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    if outputEvents > 0 {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Live output · \(outputEvents) updates")
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("codex-live-updates")
+                            Text(output.trimmingCharacters(in: .newlines))
+                                .font(.system(.footnote, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityIdentifier("codex-live-output")
+                        }
+                        .padding(12)
+                        .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    ForEach(replies) { reply in
+                        ChatMarkdown(source: reply.text, streaming: active && !reply.finished)
+                            .accessibilityIdentifier("codex-assistant-reply")
+                    }
+                    if let patch, !patch.isEmpty {
+                        DisclosureGroup("Changes") {
+                            DiffPreview(source: patch, title: "Turn diff")
+                                .padding(.top, 8)
+                        }
+                        .font(.subheadline)
+                    }
+                    if let receipt {
+                        Text(receipt).font(.footnote).foregroundStyle(ChatTheme.accent)
+                            .accessibilityIdentifier("codex-steer-receipt")
+                    }
+                    if let failure {
+                        Text(failure).font(.footnote).foregroundStyle(.secondary)
+                        if !active {
+                            Button("Join running turn") { attempt += 1 }
+                                .buttonStyle(.bordered)
+                                .accessibilityIdentifier("codex-reconnect")
+                        }
+                    }
                 }
-                .scrollDismissesKeyboard(.interactively)
-                .onChange(of: outputEvents) { _, count in
-                    if count == 1 { proxy.scrollTo("live-bottom", anchor: .bottom) }
-                }
-                .onChange(of: receipt) { _, value in
-                    if value != nil { proxy.scrollTo("live-bottom", anchor: .bottom) }
-                }
-                .onChange(of: active) { _, isActive in
-                    if !isActive { proxy.scrollTo("live-bottom", anchor: .bottom) }
-                }
+                .transcriptColumn()
             }
+            .scrollDismissesKeyboard(.interactively)
+            .transcriptViewport($viewport, chat: nil)
             if active { composer }
         }
         .background(ChatTheme.background.ignoresSafeArea())
@@ -123,24 +113,24 @@ struct CodexLiveScreen: View {
     }
 
     private var composer: some View {
-        HStack(spacing: 8) {
-            TextField("Steer this turn", text: $draft, axis: .vertical)
-                .lineLimit(1...3)
-                .frame(minHeight: 44)
-                .padding(.leading, 12)
+        let prompt = "Steer this turn"
+        let disabled = steering || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return ComposerSurface(focused: editorFocused) {
+            TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
+                .lineLimit(1...6)
+                .focused($editorFocused)
                 .accessibilityIdentifier("codex-steer-input")
-            Button("Steer") { Task { await steer() } }
-                .buttonStyle(.borderedProminent)
-                .disabled(steering || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier("codex-steer-send")
-                .padding(.trailing, 6)
+        } controls: {
+            ComposerAction("Steer", symbol: "arrow.up", disabled: disabled) {
+                editorFocused = false
+                Task { await steer() }
+            }
+            .accessibilityIdentifier("codex-steer-send")
         }
-        .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 18))
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
     }
 
     private func watch() async {
+        viewport.restore(nil)
         let peer = endpoint.makeClient()
         client = peer
         turn = nil

@@ -8,7 +8,7 @@ struct WorkspaceNavigation: View {
 
     var body: some View {
         NavigationStack(path: $workspace.path) {
-            AgentRoster(roster: workspace.roster, localCodex: workspace.localCodex, remotes: workspace.remotes)
+            WorkspaceSidebar()
                 .navigationDestination(for: WorkspaceRoute.self) { route in
                     WorkspaceDestination(route: route)
                         .id(route)
@@ -17,12 +17,9 @@ struct WorkspaceNavigation: View {
         .environment(workspace)
         .environment(alerts)
         .sheet(isPresented: $workspace.showingSwitcher, onDismiss: {
-            if workspace.inboxRequested { workspace.inboxRequested = false; workspace.showingInbox = true }
+            if workspace.inboxRequested { workspace.inboxRequested = false; workspace.showSidebar(.inbox) }
             else if workspace.alertsRequested { workspace.alertsRequested = false; workspace.showingAlerts = true }
         }) { WorkspaceSwitcher().environment(workspace) }
-        .sheet(isPresented: $workspace.showingInbox, onDismiss: {
-            if workspace.alertsRequested { workspace.alertsRequested = false; workspace.showingAlerts = true }
-        }) { AttentionInbox().environment(workspace).environment(alerts) }
         .sheet(isPresented: $workspace.showingAlerts) { WorkspaceAlertSettings().environment(alerts) }
         .onChange(of: workspace.approvalIDs) {
             notify(workspace.newApprovals())
@@ -44,7 +41,7 @@ struct WorkspaceNavigation: View {
                     if let chat, workspace.agent(chat.workspace) != nil {
                         workspace.open(chat.workspace, chat: chat.chat)
                     } else {
-                        workspace.showingInbox = true
+                        workspace.showSidebar(.inbox)
                     }
                 }
                 alerts.activate()
@@ -75,37 +72,31 @@ private struct WorkspaceDestination: View {
     @Environment(WorkspaceState.self) private var workspace
 
     var body: some View {
-        VStack(spacing: 0) {
-            WorkspaceRail(selected: route.workspace)
-            destination
-        }
-        .background(ChatTheme.background)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { WorkspaceSwitcherButton() }
-        }
+        destination
+            .background(ChatTheme.background)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { WorkspaceSwitcherButton() }
+            }
     }
 
     @ViewBuilder
     private var destination: some View {
         if let model = workspace.roster.first(where: { $0.target.id == route.workspace }) {
             ChatScreen(model: model, initialChatID: route.chat)
-        } else if route.workspace == WorkspaceState.localID, let endpoint = workspace.localCodex {
-            if let chat = route.chat {
+        } else if let endpoint = workspace.codexEndpoint(for: route.workspace) {
+            if route.startsNewChat {
+                CodexSavedChatScreen(endpoint: endpoint, initialChat: nil, workspaceID: route.workspace, includesSwitcher: false) { _ in }
+            } else if let chat = route.chat {
                 focusedCodex(endpoint, chat: chat)
-            } else {
+            } else if route.workspace == WorkspaceState.localID {
                 CodexLiveScreen(endpoint: endpoint)
-            }
-        } else if let profile = workspace.profile(route.workspace), let bearer = workspace.remotes.bearer(for: profile) {
-            if let endpoint = CodexLocalEndpoint(remote: profile, bearer: bearer) {
-                if let chat = route.chat {
-                    focusedCodex(endpoint, chat: chat)
-                } else {
-                    CodexChatsScreen(endpoint: endpoint, name: profile.name, selectionKey: route.workspace,
-                                     workspaceID: route.workspace)
-                }
             } else {
-                WorkspaceACPDestination(profile: profile, bearer: bearer, chatID: route.chat)
+                CodexChatsScreen(endpoint: endpoint, name: workspace.agent(route.workspace)?.name ?? "Codex",
+                                 selectionKey: route.workspace, workspaceID: route.workspace)
             }
+        } else if let profile = workspace.profile(route.workspace), profile.kind != .codex,
+                  let bearer = workspace.remotes.bearer(for: profile) {
+            WorkspaceACPDestination(profile: profile, bearer: bearer, chatID: route.chat)
         } else {
             ContentUnavailableView("Workspace unavailable", systemImage: "lock",
                                    description: Text("Unlock this device or pair the remote again."))
@@ -150,7 +141,7 @@ struct WorkspaceSwitcherButton: View {
                 if let previous = workspace.previousWorkspace {
                     Button("Back to \(previous.name)", systemImage: "arrow.uturn.backward") { workspace.open(previous.id) }
                 }
-                Button("Open Inbox", systemImage: "tray") { workspace.showingInbox = true }
+                Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
             }
     }
 }
@@ -198,99 +189,86 @@ private struct WorkspaceFlickNavigation: ViewModifier {
 }
 
 struct WorkspaceRail: View {
-    let selected: String
+    let selected: WorkspaceTab
     @Environment(WorkspaceState.self) private var workspace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var canScroll = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            agentStrip
-            inboxShortcut
-        }
-        .background(ChatTheme.background)
-        .sensoryFeedback(.selection, trigger: selected)
-        .overlay(alignment: .bottom) { Rectangle().fill(ChatTheme.border).frame(height: 1).allowsHitTesting(false) }
-    }
-
-    private var agentStrip: some View {
+        let waiting = workspace.inboxRows.count
         let urgent = Set(workspace.approvalIDs.map(\.chat.workspace))
-        return ScrollViewReader { proxy in
+        ScrollViewReader { proxy in
             ScrollView(.horizontal) {
-                HStack(spacing: 7) {
-                    ForEach(workspace.railAgents(selected: selected)) { agent in
-                        Button {
-                            if agent.id != selected { workspace.open(agent.id) }
-                        } label: {
-                            Label(agent.name, systemImage: agent.symbol)
-                                .font(.subheadline.weight(agent.id == selected ? .semibold : .medium))
-                                .foregroundStyle(agent.id == selected ? ChatTheme.accent : ChatTheme.muted)
-                                .lineLimit(1)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(agent.id == selected ? ChatTheme.selected : .clear, in: Capsule())
-                                .overlay(alignment: .topTrailing) {
-                                    if urgent.contains(agent.id) {
-                                        Circle().fill(ChatTheme.warning).frame(width: 6, height: 6).padding(4)
-                                            .accessibilityHidden(true)
-                                    }
-                                }
-                                .frame(minHeight: 44)
-                                .contentShape(Rectangle())
+                HStack(spacing: 4) {
+                    tab(.inbox, title: "Inbox", symbol: "tray", identifier: "sidebar-inbox",
+                        value: waiting == 0 ? "All caught up" : "\(waiting) waiting") {
+                        if waiting > 0 {
+                            Text(waiting > 99 ? "99+" : waiting.formatted())
+                                .font(.caption2.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(ChatTheme.sidebarAccent)
+                                .accessibilityHidden(true)
                         }
-                        .buttonStyle(.plain)
-                        .id(agent.id)
-                        .accessibilityAddTraits(agent.id == selected ? .isSelected : [])
-                        .accessibilityIdentifier("rail-\(agent.id)")
+                    }
+                    .padding(.leading, ChatTheme.gutter)
+                    .id(WorkspaceTab.inbox)
+                    ForEach(workspace.railAgents(selected: selected.agentID)) { agent in
+                        tab(.agent(agent.id), title: agent.name, symbol: agent.symbol,
+                            identifier: "sidebar-agent-\(agent.id)",
+                            value: urgent.contains(agent.id) ? "Needs attention" : "") {
+                            if urgent.contains(agent.id) {
+                                Circle().fill(ChatTheme.warning).frame(width: 5, height: 5)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                        .id(WorkspaceTab.agent(agent.id))
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.trailing, ChatTheme.gutter)
             }
             .scrollIndicators(.hidden)
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.width > geometry.containerSize.width + 4
-            } action: { _, overflow in canScroll = overflow }
-            .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { value in
-                guard !canScroll, abs(value.translation.width) >= 48,
-                      abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }
-                workspace.step(from: selected, by: value.translation.width < 0 ? 1 : -1)
-            })
-            .onAppear { proxy.scrollTo(selected, anchor: .center) }
+            .accessibilityIdentifier("sidebar-workspace-tabs")
+            .onAppear { proxy.scrollTo(selected, anchor: selected == .inbox ? .leading : .center) }
             .onChange(of: selected) {
-                withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) { proxy.scrollTo(selected, anchor: .center) }
+                withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                    proxy.scrollTo(selected, anchor: selected == .inbox ? .leading : .center)
+                }
             }
-            .accessibilityLabel("Workspaces")
-            .accessibilityAction(named: "Previous workspace") { workspace.step(from: selected, by: -1) }
-            .accessibilityAction(named: "Next workspace") { workspace.step(from: selected, by: 1) }
         }
+        .padding(.vertical, 4)
+        .background(ChatTheme.background)
+        .sensoryFeedback(.selection, trigger: selected)
     }
 
-    @ViewBuilder private var inboxShortcut: some View {
-        let waiting = workspace.inboxRows.filter { $0.reason != .followUp }.count
-        if waiting > 0 {
-            Button { workspace.showingInbox = true } label: {
-                Image(systemName: "tray")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(ChatTheme.ink)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-                    .overlay(alignment: .topTrailing) {
-                        Text(waiting > 99 ? "99+" : waiting.formatted())
-                            .font(.caption2.weight(.bold).monospacedDigit())
-                            .foregroundStyle(ChatTheme.background)
-                            .padding(.horizontal, 4)
-                            .frame(minWidth: 16, minHeight: 16)
-                            .background(ChatTheme.accent, in: Capsule())
-                            .accessibilityHidden(true)
-                            .allowsHitTesting(false)
-                    }
+    private func tab<Accessory: View>(
+        _ target: WorkspaceTab, title: String, symbol: String, identifier: String, value: String,
+        @ViewBuilder accessory: () -> Accessory
+    ) -> some View {
+        let isSelected = selected == target
+        return Button {
+            guard !isSelected else { return }
+            workspace.showSidebar(target)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(isSelected ? ChatTheme.sidebarAccent : ChatTheme.muted)
+                    .accessibilityHidden(true)
+                Text(title).lineLimit(1)
+                accessory()
             }
-            .padding(.trailing, 14)
-            .buttonStyle(.plain)
-            .accessibilityLabel("Inbox")
-            .accessibilityValue("\(waiting) waiting")
-            .accessibilityIdentifier("rail-inbox")
+            .font(.subheadline.weight(isSelected ? .semibold : .medium))
+            .foregroundStyle(isSelected ? ChatTheme.ink : ChatTheme.muted)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .frame(minHeight: 36)
+            .background(isSelected ? ChatTheme.sidebarAccent.opacity(0.12) : .clear, in: Capsule())
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier(identifier)
     }
 }
 
@@ -366,6 +344,7 @@ private struct WorkspaceSwitcher: View {
                     ContentUnavailableView.search(text: query)
                 }
             }
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(ChatTheme.background)
             .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find an agent or chat")
@@ -422,27 +401,47 @@ private struct WorkspaceSwitcher: View {
 }
 
 struct WorkspaceRow: View {
+    private static let iconWidth: CGFloat = 25
+    private static let spacing: CGFloat = 11
+    static let textInset = iconWidth + spacing
+
     let title: String
     let subtitle: String
     let symbol: String
     var color: Color = ChatTheme.accent
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Self.spacing) {
             Image(systemName: symbol)
-                .font(.subheadline.weight(.semibold))
+                .font(.body.weight(.medium))
                 .foregroundStyle(color)
-                .frame(width: 36, height: 36)
-                .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+                .frame(minWidth: Self.iconWidth, alignment: .leading)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.body.weight(.semibold)).foregroundStyle(ChatTheme.ink)
+                Text(title).font(.body.weight(.medium)).foregroundStyle(ChatTheme.ink)
                 if !subtitle.isEmpty { Text(subtitle).font(.footnote).foregroundStyle(ChatTheme.muted) }
             }
             Spacer(minLength: 4)
         }
-        .frame(minHeight: 44)
+        .frame(minHeight: 46)
         .contentShape(Rectangle())
+    }
+}
+
+struct InboxItemLabel: View {
+    let item: WorkspaceAttention
+    var accentUrgentItems = true
+    @Environment(WorkspaceState.self) private var workspace
+
+    var body: some View {
+        let name = workspace.agent(item.chat.workspace)?.name
+        let isMain = workspace.isMainChat(item.chat)
+        let title = isMain ? name ?? item.title : item.title
+        let subtitle = [isMain || name == title ? nil : name, item.reason.title].compactMap { $0 }.joined(separator: " · ")
+        let urgent = item.reason == .approval || item.reason == .input
+        WorkspaceRow(title: title, subtitle: subtitle,
+                     symbol: item.reason == .followUp ? "bookmark" : item.reason == .reply ? "bubble.left" : "bell.badge",
+                     color: accentUrgentItems && urgent ? ChatTheme.warning : ChatTheme.muted)
     }
 }
 
@@ -460,77 +459,68 @@ struct FollowUpButton: View {
     }
 }
 
-private struct AttentionInbox: View {
+struct WorkspaceInboxList: View {
     @Environment(WorkspaceState.self) private var workspace
     @Environment(WorkspaceAlerts.self) private var alerts
-    @Environment(\.dismiss) private var dismiss
     @State private var query = ""
 
     var body: some View {
-        NavigationStack {
-            List {
-                let search = WorkspaceSearch(query)
-                let names = Dictionary(uniqueKeysWithValues: workspace.agents.map { ($0.id, $0.name) })
-                let entries = workspace.inboxRows.filter { entry in
-                    search.score(title: entry.title,
-                                 context: "\(names[entry.chat.workspace] ?? "") \(entry.reason.title)") != nil
-                }
-                if entries.isEmpty {
-                    if search.isEmpty {
-                        ContentUnavailableView("You’re caught up", systemImage: "tray",
-                                               description: Text("Approvals, replies you missed, and chats you save for later appear here."))
-                            .listRowBackground(Color.clear)
-                    } else {
-                        ContentUnavailableView.search(text: query).listRowBackground(Color.clear)
-                    }
-                }
-                section("Needs you", items: entries.filter { $0.reason == .approval || $0.reason == .input })
-                section("Replies", items: entries.filter { $0.reason == .reply })
-                section("Saved for later", items: entries.filter { $0.reason == .followUp })
-            }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            .background(ChatTheme.background)
-            .navigationTitle("Inbox")
-            .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $query, prompt: "Search Inbox")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Notification settings", systemImage: "bell") {
-                        workspace.alertsRequested = true
-                        dismiss()
-                    }
-                    .labelStyle(.iconOnly)
-                    .accessibilityIdentifier("inbox-notifications")
-                }
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
-            .refreshable {
-                _ = await workspace.pollCodex()
-                if let entries = await alerts.relayInbox() { workspace.updateRelayInbox(entries) }
-                else { workspace.expireRelayInbox() }
-            }
+        let items = workspace.inboxRows
+        let search = WorkspaceSearch(query)
+        let names = Dictionary(uniqueKeysWithValues: workspace.agents.map { ($0.id, $0.name) })
+        let entries = items.filter { entry in
+            search.score(title: entry.title, context: "\(names[entry.chat.workspace] ?? "") \(entry.reason.title)") != nil
         }
-        .presentationDragIndicator(.visible)
-        .accessibilityIdentifier("workspace-inbox")
+        List {
+            if items.count >= 6 || !query.isEmpty {
+                HStack(spacing: 9) {
+                    Image(systemName: "magnifyingglass").accessibilityHidden(true)
+                    TextField("Search Inbox", text: $query)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .accessibilityIdentifier("inbox-search")
+                }
+                .font(.subheadline)
+                .foregroundStyle(ChatTheme.muted)
+                .sidebarRowStyle()
+            }
+            if entries.isEmpty {
+                if search.isEmpty {
+                    Text("You’re caught up")
+                        .font(.subheadline)
+                        .foregroundStyle(ChatTheme.muted)
+                        .sidebarRowStyle()
+                } else {
+                    ContentUnavailableView.search(text: query)
+                        .sidebarRowStyle()
+                }
+            }
+            section("Needs you", items: entries.filter { $0.reason == .approval || $0.reason == .input })
+            section("Replies", items: entries.filter { $0.reason == .reply })
+            section("Saved for later", items: entries.filter { $0.reason == .followUp })
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(ChatTheme.background)
+        .scrollDismissesKeyboard(.interactively)
+        .refreshable {
+            _ = await workspace.pollCodex()
+            if let entries = await alerts.relayInbox() { workspace.updateRelayInbox(entries) }
+            else { workspace.expireRelayInbox() }
+        }
     }
 
     @ViewBuilder
     private func section(_ title: String, items: [WorkspaceAttention]) -> some View {
         if !items.isEmpty {
-            Section(title) {
+            Section {
                 ForEach(items) { item in
-                    let name = workspace.agent(item.chat.workspace)?.name
-                    let isMain = workspace.isMainChat(item.chat)
-                    let title = isMain ? name ?? item.title : item.title
-                    let subtitle = [isMain || name == title ? nil : name, item.reason.title].compactMap { $0 }.joined(separator: " · ")
                     Button { workspace.open(item.chat.workspace, chat: item.chat.chat) } label: {
-                        WorkspaceRow(title: title, subtitle: subtitle,
-                                     symbol: item.reason == .followUp ? "bookmark" : item.reason == .reply ? "bubble.left" : "bell.badge",
-                                     color: item.reason == .approval || item.reason == .input ? ChatTheme.warning : ChatTheme.accent)
+                        InboxItemLabel(item: item, accentUrgentItems: false)
                     }
+                    .buttonStyle(.plain)
                     .accessibilityIdentifier("inbox-\(item.reason.rawValue)-\(item.chat.workspace)")
-                    .listRowBackground(ChatTheme.surface)
+                    .sidebarRowStyle(divider: item.id != items.last?.id)
                     .swipeActions {
                         if item.reason == .followUp || item.reason == .reply {
                             Button("Clear", systemImage: "checkmark") { workspace.clear(item.chat, reason: item.reason) }
@@ -538,7 +528,13 @@ private struct AttentionInbox: View {
                         }
                     }
                 }
+            } header: {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ChatTheme.ink)
+                    .textCase(nil)
             }
+            .listSectionSeparator(.hidden)
         }
     }
 }

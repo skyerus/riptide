@@ -49,15 +49,19 @@ final class AgentChatsUITests: XCTestCase {
         app.terminate()
         app.launch()
 
-        openOpenClaw(app)
-        XCTAssertEqual(title(app).label, "Main Chat")
-        app.buttons["chats-button"].tap()
+        app.buttons["sidebar-agent-openclaw"].tap()
+        let main = app.buttons["sidebar-main-chat"]
+        XCTAssertTrue(main.waitForExistence(timeout: 5))
         let saved = app.buttons["Project overview"]
         XCTAssertTrue(saved.waitForExistence(timeout: 5))
+        XCTAssertLessThan(main.frame.minY, saved.frame.minY)
+        capture(app, as: "Main chat above a saved side chat")
         saved.tap()
         XCTAssertTrue(app.staticTexts["Saved separately"].waitForExistence(timeout: 5))
         XCTAssertEqual(title(app).label, "Project overview")
         capture(app, as: "Reopened chat")
+        app.navigationBars.buttons["BackButton"].tap()
+        XCTAssertTrue(app.buttons["sidebar-agent-openclaw"].isSelected)
     }
 
     @MainActor
@@ -79,25 +83,32 @@ final class AgentChatsUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launch()
 
-        let openClaw = app.buttons["agent-openclaw"]
-        let hermes = app.buttons["agent-hermes"]
+        let openClaw = app.buttons["sidebar-agent-openclaw"]
+        let hermes = app.buttons["sidebar-agent-hermes"]
         XCTAssertTrue(openClaw.waitForExistence(timeout: 5))
         XCTAssertTrue(hermes.exists)
         XCTAssertEqual(openClaw.frame.minY, hermes.frame.minY, accuracy: 1)
+        XCTAssertEqual(app.buttons["sidebar-inbox"].value as? String, "All caught up")
+        XCTAssertTrue(app.buttons["sidebar-inbox"].isSelected)
+        XCTAssertTrue(app.scrollViews["sidebar-workspace-tabs"].exists)
+        XCTAssertFalse(app.buttons["workspace-switcher"].exists)
+        capture(app, as: "Workspaces without waiting items")
 
         app.buttons["edit-roster"].tap()
+        app.buttons["pair-remote"].tap()
+        XCTAssertTrue(app.navigationBars["Pair remote"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
         let unpin = app.buttons["unpin-hermes"]
         XCTAssertTrue(unpin.waitForExistence(timeout: 5))
         unpin.tap()
         XCTAssertTrue(app.buttons["pin-hermes"].waitForExistence(timeout: 5))
-        app.buttons["List"].tap()
         app.buttons["Done"].tap()
-        XCTAssertLessThan(openClaw.frame.minY, hermes.frame.minY)
+        XCTAssertLessThan(openClaw.frame.minX, hermes.frame.minX)
         app.terminate()
         app.launch()
 
         XCTAssertTrue(openClaw.waitForExistence(timeout: 5))
-        XCTAssertLessThan(openClaw.frame.minY, hermes.frame.minY)
+        XCTAssertLessThan(openClaw.frame.minX, hermes.frame.minX)
         openOpenClaw(app)
         let modelOptions = app.buttons["model-options"]
         XCTAssertTrue(modelOptions.waitForExistence(timeout: 5))
@@ -117,7 +128,10 @@ final class AgentChatsUITests: XCTestCase {
 
     @MainActor
     private func openOpenClaw(_ app: XCUIApplication) {
-        let row = app.buttons["agent-openclaw"]
+        let tab = app.buttons["sidebar-agent-openclaw"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 5))
+        tab.tap()
+        let row = app.buttons["sidebar-main-chat"]
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         row.tap()
         XCTAssertTrue(title(app).waitForExistence(timeout: 5))

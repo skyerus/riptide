@@ -11,11 +11,11 @@ mermaid.initialize({
   darkMode: true,
   themeVariables: {
     darkMode: true,
-    background: "#191f25",
-    primaryColor: "#23333c",
-    primaryTextColor: "#eff4f8",
-    primaryBorderColor: "#76dcc7",
-    lineColor: "#9aaeb9",
+    background: "#1d1c1e",
+    primaryColor: "#262527",
+    primaryTextColor: "#f2f0f1",
+    primaryBorderColor: "#aea9b1",
+    lineColor: "#aea9b1",
     fontFamily: "-apple-system, sans-serif"
   }
 });
