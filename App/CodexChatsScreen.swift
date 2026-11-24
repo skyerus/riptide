@@ -240,11 +240,7 @@ struct CodexSavedChatScreen: View {
                     Text("Start a conversation").foregroundStyle(.secondary)
                 }
                 if progress.hasContent { CodexActivityCard(progress: progress) }
-                if !approvals.isEmpty {
-                    TurnPulse(title: approvals.allSatisfy(\.isInput) ? "Waiting for your input" : "Waiting for approval",
-                              waitingForUser: true)
-                }
-                else if working || sending {
+                if approvals.isEmpty && (working || sending) {
                     TurnPulse(title: workingLabel)
                 }
             }
@@ -276,7 +272,7 @@ struct CodexSavedChatScreen: View {
                 .lineLimit(1...6)
                 .focused($composerFocused)
                 .accessibilityIdentifier("codex-composer")
-        } controls: {
+        } actions: {
             if working {
                 Button {
                     Task { await session?.interrupt() }
@@ -302,7 +298,7 @@ struct CodexSavedChatScreen: View {
     private func approvalCard(_ approval: CodexChatApproval) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(approval.isInput ? "Input requested" : "Approval requested")
-                .font(.subheadline.weight(.semibold)).foregroundStyle(ChatTheme.warning)
+                .font(.subheadline.weight(.semibold)).foregroundStyle(ChatTheme.attention)
             if let reason = approval.reason { Text(reason).font(.footnote) }
             if let command = approval.command { CodePreview(source: command, language: "shell") }
             if let cwd = approval.cwd { Text(cwd).font(.caption).foregroundStyle(.secondary) }

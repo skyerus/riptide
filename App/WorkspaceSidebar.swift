@@ -7,11 +7,12 @@ struct WorkspaceSidebar: View {
     @State private var editing = false
 
     var body: some View {
+        let selectedAgent = workspace.sidebarTab.agentID.flatMap { workspace.agent($0) }
         VStack(spacing: 0) {
-            header
+            header(title: selectedAgent?.name ?? "Inbox", showsNotifications: selectedAgent == nil)
             WorkspaceRail(selected: workspace.sidebarTab)
-            if let id = workspace.sidebarTab.agentID, let agent = workspace.agent(id) {
-                SidebarAgentChats(agent: agent).id(id)
+            if let selectedAgent {
+                SidebarAgentChats(agent: selectedAgent).id(selectedAgent.id)
             } else {
                 WorkspaceInboxList().id(workspace.inboxReset)
             }
@@ -29,29 +30,40 @@ struct WorkspaceSidebar: View {
         .sheet(isPresented: $editing) { WorkspaceEditor().environment(workspace) }
     }
 
-    private var header: some View {
-        HStack {
-            Button("Manage agents", systemImage: "pencil") { editing = true }
-                .labelStyle(.iconOnly)
-                .frame(width: 44, height: 44)
-                .accessibilityIdentifier("edit-roster")
-            Spacer(minLength: 8)
-            Text("Riptide")
-                .font(.headline.weight(.semibold))
+    private func header(title: String, showsNotifications: Bool) -> some View {
+        HStack(alignment: .center, spacing: 4) {
+            Text(title)
+                .font(.largeTitle.weight(.semibold))
+                .lineLimit(2)
+                .layoutPriority(1)
                 .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: 8)
-            Button("Notification settings", systemImage: "bell") { workspace.showingAlerts = true }
-                .labelStyle(.iconOnly)
+                .accessibilityIdentifier("sidebar-heading")
+            Spacer(minLength: 6)
+            if showsNotifications {
+                sidebarAction("Notification settings", symbol: "bell") { workspace.showingAlerts = true }
+                    .accessibilityIdentifier("inbox-notifications")
+            }
+            sidebarAction("Manage agents", symbol: "pencil") { editing = true }
+                .accessibilityIdentifier("edit-roster")
+        }
+        .foregroundStyle(ChatTheme.ink)
+        .padding(.leading, ChatTheme.gutter)
+        .padding(.trailing, ChatTheme.gutter - 4)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+    }
+
+    private func sidebarAction(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.subheadline.weight(.medium))
+                .frame(width: 34, height: 34)
+                .background(ChatTheme.surface, in: Circle())
                 .frame(width: 44, height: 44)
-                .accessibilityIdentifier("inbox-notifications")
-                .opacity(workspace.sidebarTab == .inbox ? 1 : 0)
-                .disabled(workspace.sidebarTab != .inbox)
-                .accessibilityHidden(workspace.sidebarTab != .inbox)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(ChatTheme.ink)
-        .padding(.horizontal, 12)
-        .frame(minHeight: 52)
+        .accessibilityLabel(title)
     }
 }
 
@@ -95,9 +107,7 @@ private struct SidebarAgentChats: View {
                 }
             } header: {
                 HStack {
-                    Text(isCodex ? "Chats" : "Side chats")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(ChatTheme.ink)
+                    SidebarSectionTitle(isCodex ? "Chats" : "Side chats")
                     Spacer()
                     if isCodex, let endpoint = workspace.codexEndpoint(for: agent.id) {
                         Menu {
@@ -115,7 +125,7 @@ private struct SidebarAgentChats: View {
                         }
                     }
                 }
-                .textCase(nil)
+                .sidebarHeaderStyle()
             }
             .listSectionSeparator(.hidden)
             if agent.id == WorkspaceState.localID {
@@ -128,6 +138,7 @@ private struct SidebarAgentChats: View {
             }
         }
         .listStyle(.plain)
+        .listSectionSpacing(12)
         .scrollContentBackground(.hidden)
         .background(ChatTheme.background)
         .task { await reload() }
@@ -143,7 +154,7 @@ private struct SidebarAgentChats: View {
             workspace.open(chat.id.workspace, chat: chat.id.chat)
         } label: {
             WorkspaceRow(title: chat.title, subtitle: status ?? "", symbol: isMain ? "bubble.left.fill" : "bubble.left",
-                         color: isMain ? ChatTheme.sidebarAccent : ChatTheme.muted)
+                         color: isMain ? ChatTheme.sidebarAccent : ChatTheme.muted, featured: isMain)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(identifier)
@@ -174,9 +185,28 @@ private struct SidebarAgentChats: View {
     }
 }
 
+struct SidebarSectionTitle: View {
+    let title: String
+
+    init(_ title: String) { self.title = title }
+
+    var body: some View {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ChatTheme.ink)
+            .textCase(nil)
+            .accessibilityAddTraits(.isHeader)
+            .padding(.top, 4)
+    }
+}
+
 extension View {
+    func sidebarHeaderStyle() -> some View {
+        listRowInsets(EdgeInsets(top: 0, leading: ChatTheme.gutter, bottom: 0, trailing: ChatTheme.gutter))
+    }
+
     func sidebarRowStyle(divider: Bool = false) -> some View {
-        listRowInsets(EdgeInsets(top: 8, leading: ChatTheme.gutter, bottom: 8, trailing: ChatTheme.gutter))
+        listRowInsets(EdgeInsets(top: 5, leading: ChatTheme.gutter, bottom: 5, trailing: ChatTheme.gutter))
             .listRowBackground(ChatTheme.background)
             .listRowSeparator(.hidden, edges: .top)
             .listRowSeparator(divider ? .visible : .hidden, edges: .bottom)

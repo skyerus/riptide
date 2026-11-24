@@ -120,7 +120,7 @@ struct CodexLiveScreen: View {
                 .lineLimit(1...6)
                 .focused($editorFocused)
                 .accessibilityIdentifier("codex-steer-input")
-        } controls: {
+        } actions: {
             ComposerAction("Steer", symbol: "arrow.up", disabled: disabled) {
                 editorFocused = false
                 Task { await steer() }

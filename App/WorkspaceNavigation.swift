@@ -215,7 +215,7 @@ struct WorkspaceRail: View {
                             identifier: "sidebar-agent-\(agent.id)",
                             value: urgent.contains(agent.id) ? "Needs attention" : "") {
                             if urgent.contains(agent.id) {
-                                Circle().fill(ChatTheme.warning).frame(width: 5, height: 5)
+                                Circle().fill(ChatTheme.attention).frame(width: 5, height: 5)
                                     .accessibilityHidden(true)
                             }
                         }
@@ -233,7 +233,7 @@ struct WorkspaceRail: View {
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.bottom, 10)
         .background(ChatTheme.background)
         .sensoryFeedback(.selection, trigger: selected)
     }
@@ -260,7 +260,7 @@ struct WorkspaceRail: View {
             .padding(.horizontal, 11)
             .padding(.vertical, 8)
             .frame(minHeight: 36)
-            .background(isSelected ? ChatTheme.sidebarAccent.opacity(0.12) : .clear, in: Capsule())
+            .background(isSelected ? ChatTheme.raised : .clear, in: Capsule())
             .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
@@ -401,36 +401,47 @@ private struct WorkspaceSwitcher: View {
 }
 
 struct WorkspaceRow: View {
-    private static let iconWidth: CGFloat = 25
-    private static let spacing: CGFloat = 11
+    private static let iconWidth: CGFloat = 24
+    private static let spacing: CGFloat = 10
     static let textInset = iconWidth + spacing
 
     let title: String
     let subtitle: String
     let symbol: String
     var color: Color = ChatTheme.accent
+    var featured = false
 
     var body: some View {
         HStack(spacing: Self.spacing) {
             Image(systemName: symbol)
-                .font(.body.weight(.medium))
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(color)
-                .frame(minWidth: Self.iconWidth, alignment: .leading)
+                .frame(minWidth: Self.iconWidth)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.body.weight(.medium)).foregroundStyle(ChatTheme.ink)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.body.weight(featured ? .semibold : .medium))
+                    .foregroundStyle(ChatTheme.ink)
                 if !subtitle.isEmpty { Text(subtitle).font(.footnote).foregroundStyle(ChatTheme.muted) }
             }
-            Spacer(minLength: 4)
+            Spacer(minLength: 8)
+            if featured {
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(ChatTheme.muted)
+                    .accessibilityHidden(true)
+            }
         }
-        .frame(minHeight: 46)
+        .padding(.horizontal, featured ? 14 : 0)
+        .frame(minHeight: featured ? 58 : 44)
+        .padding(.vertical, featured ? 4 : 0)
+        .background(featured ? ChatTheme.surface : .clear, in: RoundedRectangle(cornerRadius: 16))
         .contentShape(Rectangle())
     }
 }
 
 struct InboxItemLabel: View {
     let item: WorkspaceAttention
-    var accentUrgentItems = true
     @Environment(WorkspaceState.self) private var workspace
 
     var body: some View {
@@ -438,10 +449,14 @@ struct InboxItemLabel: View {
         let isMain = workspace.isMainChat(item.chat)
         let title = isMain ? name ?? item.title : item.title
         let subtitle = [isMain || name == title ? nil : name, item.reason.title].compactMap { $0 }.joined(separator: " · ")
-        let urgent = item.reason == .approval || item.reason == .input
+        let appearance: (symbol: String, color: Color) = switch item.reason {
+        case .approval: ("lock.shield.fill", ChatTheme.attention)
+        case .input: ("questionmark.bubble.fill", ChatTheme.attention)
+        case .reply: ("bubble.left.fill", ChatTheme.sidebarAccent)
+        case .followUp: ("bookmark", ChatTheme.muted)
+        }
         WorkspaceRow(title: title, subtitle: subtitle,
-                     symbol: item.reason == .followUp ? "bookmark" : item.reason == .reply ? "bubble.left" : "bell.badge",
-                     color: accentUrgentItems && urgent ? ChatTheme.warning : ChatTheme.muted)
+                     symbol: appearance.symbol, color: appearance.color)
     }
 }
 
@@ -473,22 +488,27 @@ struct WorkspaceInboxList: View {
         }
         List {
             if items.count >= 6 || !query.isEmpty {
-                HStack(spacing: 9) {
-                    Image(systemName: "magnifyingglass").accessibilityHidden(true)
-                    TextField("Search Inbox", text: $query)
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(ChatTheme.muted)
+                        .accessibilityHidden(true)
+                    TextField("Search Inbox", text: $query, prompt: Text("Search Inbox").foregroundStyle(ChatTheme.muted))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .accessibilityIdentifier("inbox-search")
                 }
                 .font(.subheadline)
-                .foregroundStyle(ChatTheme.muted)
+                .foregroundStyle(ChatTheme.ink)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 40)
+                .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 11))
                 .sidebarRowStyle()
             }
             if entries.isEmpty {
                 if search.isEmpty {
-                    Text("You’re caught up")
-                        .font(.subheadline)
-                        .foregroundStyle(ChatTheme.muted)
+                    WorkspaceRow(title: "You’re caught up", subtitle: "New replies and requests will appear here.",
+                                 symbol: "checkmark.circle", color: ChatTheme.muted)
+                        .padding(.vertical, 8)
                         .sidebarRowStyle()
                 } else {
                     ContentUnavailableView.search(text: query)
@@ -500,6 +520,7 @@ struct WorkspaceInboxList: View {
             section("Saved for later", items: entries.filter { $0.reason == .followUp })
         }
         .listStyle(.plain)
+        .listSectionSpacing(12)
         .scrollContentBackground(.hidden)
         .background(ChatTheme.background)
         .scrollDismissesKeyboard(.interactively)
@@ -516,7 +537,7 @@ struct WorkspaceInboxList: View {
             Section {
                 ForEach(items) { item in
                     Button { workspace.open(item.chat.workspace, chat: item.chat.chat) } label: {
-                        InboxItemLabel(item: item, accentUrgentItems: false)
+                        InboxItemLabel(item: item)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("inbox-\(item.reason.rawValue)-\(item.chat.workspace)")
@@ -529,10 +550,8 @@ struct WorkspaceInboxList: View {
                     }
                 }
             } header: {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(ChatTheme.ink)
-                    .textCase(nil)
+                SidebarSectionTitle(title)
+                    .sidebarHeaderStyle()
             }
             .listSectionSeparator(.hidden)
         }

@@ -20,19 +20,21 @@ struct ChatComposer: View {
 
     var body: some View {
         let prompt = "Message \(model.target.name)"
-        ComposerSurface(focused: editorFocused) {
+        ComposerSurface(focused: editorFocused,
+                        showsOptions: model.selected.context != nil || !model.selected.configOptions.isEmpty) {
             TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
                 .focused($editorFocused)
                 .disabled(!model.selected.loaded)
                 .accessibilityIdentifier("chat-composer")
-        } controls: {
+        } options: {
             if let usage = model.selected.context {
                 contextButton(usage)
             }
             if !model.selected.configOptions.isEmpty {
                 modelButton
             }
+        } actions: {
             actionButton
         }
         .sheet(isPresented: $showModels) {
@@ -84,7 +86,7 @@ struct ChatComposer: View {
             ZStack {
                 Circle().strokeBorder(ChatTheme.border, lineWidth: 2)
                 Circle().trim(from: 0, to: usage.fraction)
-                    .stroke(ChatTheme.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .stroke(ChatTheme.sidebarAccent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
             .frame(width: 17, height: 17)
@@ -129,34 +131,62 @@ struct ChatComposer: View {
     }
 }
 
-struct ComposerSurface<Field: View, Controls: View>: View {
+struct ComposerSurface<Field: View, Options: View, Actions: View>: View {
     let focused: Bool
-    @ViewBuilder let field: Field
-    @ViewBuilder let controls: Controls
+    let showsOptions: Bool
+    private let field: Field
+    private let options: Options
+    private let actions: Actions
+
+    init(focused: Bool, showsOptions: Bool, @ViewBuilder field: () -> Field,
+         @ViewBuilder options: () -> Options, @ViewBuilder actions: () -> Actions) {
+        self.focused = focused
+        self.showsOptions = showsOptions
+        self.field = field()
+        self.options = options()
+        self.actions = actions()
+    }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 24)
-        VStack(alignment: .leading, spacing: 2) {
+        let shape = RoundedRectangle(cornerRadius: 20)
+        let layout = showsOptions ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
+            : AnyLayout(HStackLayout(alignment: .bottom, spacing: 8))
+        layout {
             field
                 .font(.body)
                 .foregroundStyle(ChatTheme.ink)
                 .tint(ChatTheme.ink)
-                .padding(.horizontal, 15)
-                .padding(.top, 13)
-                .padding(.bottom, 1)
-            HStack(spacing: 0) {
-                Spacer(minLength: 4)
-                controls
+                .padding(.leading, 15)
+                .padding(.trailing, showsOptions ? 15 : 0)
+                .padding(.vertical, showsOptions ? 8 : 10)
+                .frame(minHeight: 44, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 1) {
+                if showsOptions {
+                    options
+                    Spacer(minLength: 4)
+                }
+                actions
             }
-            .padding(.horizontal, 5)
-            .padding(.bottom, 4)
+            .padding(.leading, showsOptions ? 4 : 0)
+            .padding(.trailing, 4)
         }
+        .padding(.vertical, 3)
         .background(ChatTheme.surface, in: shape)
-        .overlay { shape.strokeBorder(focused ? ChatTheme.muted.opacity(0.52) : ChatTheme.border).allowsHitTesting(false) }
+        .overlay {
+            shape.strokeBorder(focused ? ChatTheme.muted.opacity(0.5) : ChatTheme.sidebarDivider)
+                .allowsHitTesting(false)
+        }
         .frame(maxWidth: ChatTheme.readingWidth)
-        .padding(.horizontal, 14)
-        .padding(.top, 5)
-        .padding(.bottom, 7)
+        .padding(.horizontal, ChatTheme.gutter)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+    }
+}
+
+extension ComposerSurface where Options == EmptyView {
+    init(focused: Bool, @ViewBuilder field: () -> Field, @ViewBuilder actions: () -> Actions) {
+        self.init(focused: focused, showsOptions: false, field: field, options: { EmptyView() }, actions: actions)
     }
 }
 
@@ -176,7 +206,7 @@ struct ComposerAction: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: symbol == "stop.fill" ? 12 : 17, weight: .semibold))
+                .font(.system(size: symbol == "stop.fill" ? 11 : 16, weight: .semibold))
                 .foregroundStyle(disabled ? ChatTheme.muted : ChatTheme.background)
                 .frame(width: 34, height: 34)
                 .background(disabled ? ChatTheme.raised : ChatTheme.ink, in: Circle())

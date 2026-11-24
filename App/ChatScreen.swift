@@ -199,9 +199,8 @@ struct ChatScreen: View {
                 if !model.selected.plan.isEmpty {
                     TurnPlanCard(steps: model.selected.plan)
                 }
-                if !model.selected.permissions.isEmpty {
-                    TurnPulse(title: "Waiting for approval", waitingForUser: true)
-                } else if model.selected.working {
+                if model.selected.permissions.isEmpty && model.selected.working &&
+                    (!hasVisibleRunningTool || model.selected.stopping) {
                     TurnPulse(title: workingLabel)
                 }
             }
@@ -214,11 +213,12 @@ struct ChatScreen: View {
 
     private var workingLabel: String {
         if model.selected.stopping { return "Stopping…" }
-        if let entry = model.selected.transcript.entries.last,
-           case .tool(let tool) = entry.content, tool.status == "in_progress" {
-            return tool.title ?? "Running a tool…"
-        }
         return model.selected.transcript.latestAssistantEntryID != nil ? "Writing reply…" : "Preparing reply…"
+    }
+
+    private var hasVisibleRunningTool: Bool {
+        guard let entry = model.selected.transcript.entries.last, case .tool(let tool) = entry.content else { return false }
+        return tool.status == "in_progress"
     }
 
     private func toolRow(_ activity: ToolActivity) -> some View {
@@ -229,10 +229,10 @@ struct ChatScreen: View {
         case "failed": "Stopped"
         default: activity.status ?? "Updated"
         }
-        return HStack(spacing: 8) {
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: activity.status == "completed" ? "checkmark" : "terminal")
                 .accessibilityHidden(true)
-            Text(activity.title ?? "Tool")
+            Text(activity.title ?? "Tool").fontWeight(.medium)
             Text("·").accessibilityHidden(true)
             Text(status)
         }
@@ -247,7 +247,9 @@ struct ChatScreen: View {
             : AnyLayout(HStackLayout(spacing: 8))
         let shape = RoundedRectangle(cornerRadius: 14)
         return VStack(alignment: .leading, spacing: 8) {
-            Text("Approval requested").font(.subheadline.weight(.semibold))
+            Label("Approval requested", systemImage: "lock.shield.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ChatTheme.attention)
             Text(request.title).font(.subheadline).foregroundStyle(.secondary)
             actions {
                 ForEach(request.options.filter { ["allow_once", "reject_once"].contains($0.kind) }) { option in

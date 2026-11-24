@@ -19,6 +19,10 @@ The composer’s model picker and context ring show session-specific settings an
 
 `swift test` runs the ACP fixture and session tests. Xcode's **Product → Test** also runs the simulator flow.
 
+## UI rehearsal
+
+[Stageshow](.agents/skills/stageshow/SKILL.md) is installed as a project skill, not an app dependency. [The native rehearsal](docs/stageshow-rehearsal.md) describes the reference scenes and the simulator checks for Inbox, workspace navigation, and streaming chat.
+
 ## Switch and triage
 
 - **Inbox** and the connector tabs scroll together in the sidebar. Back returns to the tab you opened from. In a chat, **Switch** (or **⌘K**) finds live, recent and saved chats across workspaces. Search reads a bounded catalog, not message text. Drafts stay in memory when switching; they aren’t written to the host.
