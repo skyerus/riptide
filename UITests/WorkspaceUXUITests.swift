@@ -115,6 +115,7 @@ final class WorkspaceUXUITests: XCTestCase {
             return
         }
         last.tap()
+        XCTAssertEqual(app.staticTexts["sidebar-heading"].label, "Ops 12")
         let main = app.buttons["sidebar-main-chat"]
         let history = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "sidebar-chat-ops-12-sample-")).firstMatch
         XCTAssertTrue(main.waitForExistence(timeout: 8))
@@ -137,6 +138,7 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(inboxIsVisible(), "Swiping back should reveal Inbox again.")
         inbox.tap()
         XCTAssertTrue(inbox.isSelected)
+        XCTAssertEqual(app.staticTexts["sidebar-heading"].label, "Inbox")
     }
 
     @MainActor
@@ -240,6 +242,7 @@ final class WorkspaceUXUITests: XCTestCase {
     @MainActor
     func testCodexShowsProgressAndToolOutputBeforeTheFinalReply() throws {
         let (app, editor) = try openCodexFixture()
+        XCTAssertEqual(editor.frame.midY, app.buttons["Send"].frame.midY, accuracy: 8)
         editor.tap()
         editor.typeText("show live feedback")
         app.buttons["Send"].tap()

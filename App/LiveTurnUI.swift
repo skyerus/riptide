@@ -23,9 +23,9 @@ struct TranscriptUserMessage: View {
         Text(text)
             .textSelection(.enabled)
             .foregroundStyle(ChatTheme.ink)
-            .padding(.horizontal, 13)
-            .padding(.vertical, 9)
-            .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 15))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(ChatTheme.raised, in: RoundedRectangle(cornerRadius: 16))
             .padding(.leading, 32)
             .frame(maxWidth: .infinity, alignment: .trailing)
     }
@@ -144,25 +144,24 @@ private struct TranscriptContact: UIGestureRecognizerRepresentable {
 
 struct TurnPulse: View {
     let title: String
-    var waitingForUser = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 9) {
-            if waitingForUser || reduceMotion {
-                Image(systemName: waitingForUser ? "hand.raised" : "waveform")
+            if reduceMotion {
+                Image(systemName: "waveform")
                     .accessibilityHidden(true)
             } else {
                 ProgressView()
                     .controlSize(.mini)
-                    .tint(ChatTheme.accent)
+                    .tint(ChatTheme.sidebarAccent)
                     .accessibilityHidden(true)
             }
             Text(title)
                 .font(.footnote.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .foregroundStyle(waitingForUser ? ChatTheme.warning : ChatTheme.muted)
+        .foregroundStyle(ChatTheme.muted)
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("turn-progress")

@@ -79,18 +79,19 @@ struct RiptideApp: App {
 }
 
 enum ChatTheme {
-    static let background = Color(red: 16 / 255, green: 16 / 255, blue: 17 / 255)
-    static let surface = Color(red: 29 / 255, green: 28 / 255, blue: 30 / 255)
-    static let raised = Color(red: 38 / 255, green: 37 / 255, blue: 39 / 255)
-    static let ink = Color(red: 242 / 255, green: 240 / 255, blue: 241 / 255)
-    static let muted = Color(red: 174 / 255, green: 169 / 255, blue: 177 / 255)
+    static let background = Color(red: 15 / 255, green: 16 / 255, blue: 17 / 255)
+    static let surface = Color(red: 24 / 255, green: 26 / 255, blue: 27 / 255)
+    static let raised = Color(red: 35 / 255, green: 38 / 255, blue: 39 / 255)
+    static let ink = Color(red: 241 / 255, green: 243 / 255, blue: 242 / 255)
+    static let muted = Color(red: 166 / 255, green: 173 / 255, blue: 170 / 255)
     static let inset = Color.white.opacity(0.05)
     static let border = Color.white.opacity(0.13)
     static let accent = ink
     static let sidebarAccent = Color(red: 53 / 255, green: 239 / 255, blue: 164 / 255)
-    static let sidebarDivider = Color.white.opacity(0.10)
+    static let sidebarDivider = Color.white.opacity(0.09)
     static let selected = raised
     static let warning = Color(red: 239 / 255, green: 183 / 255, blue: 191 / 255)
+    static let attention = Color(red: 240 / 255, green: 199 / 255, blue: 139 / 255)
     static let gutter: CGFloat = 20
     static let readingWidth: CGFloat = 680
 }
