@@ -24,6 +24,7 @@ public actor FixtureTransport: ACPTransport {
     private let output: AsyncThrowingStream<Data, any Error>.Continuation
     private let file: URL?
     private let pace: Duration
+    private let historyDelay: Duration
     private let cwd: String
     private let mainSessionID: String
     private var sessions: [SavedSession]
@@ -46,10 +47,12 @@ public actor FixtureTransport: ACPTransport {
         var work: Task<Void, Never>?
     }
 
-    public init(target: AgentTarget, file: URL? = nil, pace: Duration = .milliseconds(280), catalog: [String] = []) throws {
+    public init(target: AgentTarget, file: URL? = nil, pace: Duration = .milliseconds(280),
+                catalog: [String] = [], historyDelay: Duration = .zero) throws {
         (incoming, output) = AsyncThrowingStream.makeStream()
         self.file = file
         self.pace = pace
+        self.historyDelay = historyDelay
         cwd = target.cwd
         mainSessionID = target.mainSessionID
         if let file, FileManager.default.fileExists(atPath: file.path) {
@@ -108,6 +111,7 @@ public actor FixtureTransport: ACPTransport {
                 emit(.reply(id, result: ["sessionId": .string(newID), "configOptions": configuration(sessions[0])]))
                 reportUsage(for: sessions[0])
             case "session/load":
+                if historyDelay > .zero { try await Task.sleep(for: historyDelay) }
                 guard let index = index(of: sessionID) else {
                     emit(.failure(id, code: -32602, message: "This conversation is no longer available."))
                     return

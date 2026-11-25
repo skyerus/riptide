@@ -23,13 +23,22 @@ struct ChatScreen: View {
     @Environment(WorkspaceState.self) private var workspace
 
     private var chatKey: WorkspaceChatID { .init(workspace: model.target.id, chat: model.selectedID) }
-    private var pickerIsOpen: Bool { showModelPicker && model.selected.hasConfigChoices }
+    private var pickerIsOpen: Bool {
+        showModelPicker && !resolvingInitialChat && model.selected.hasConfigChoices
+    }
+
+    private var resolvingInitialChat: Bool {
+        landing && model.selectedID != (initialChatID ?? model.target.mainSessionID)
+    }
+
+    private var awaitingHistory: Bool {
+        resolvingInitialChat || (!model.selected.loaded && model.selected.error == nil &&
+                                 model.selected.transcript.entries.isEmpty && model.selected.permissions.isEmpty)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            if landing {
-                ProgressView("Opening chat…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if couldNotOpen {
+            if couldNotOpen {
                 ContentUnavailableView {
                     Label("Chat unavailable", systemImage: "bubble.left")
                 } description: {
@@ -180,9 +189,18 @@ struct ChatScreen: View {
     }
 
     private var chat: some View {
-        transcript.id(model.selectedID)
-            .accessibilityHidden(pickerIsOpen)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
+        ZStack {
+            transcript.id(model.selectedID)
+                .opacity(awaitingHistory ? 0 : 1)
+                .accessibilityHidden(awaitingHistory || pickerIsOpen)
+                .allowsHitTesting(!awaitingHistory)
+            if awaitingHistory {
+                ChatHistorySkeleton().transition(.opacity)
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: awaitingHistory)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !resolvingInitialChat {
                 ChatComposer(
                     model: model,
                     draft: Binding(
@@ -198,32 +216,33 @@ struct ChatScreen: View {
                 )
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
             }
-            .overlay(alignment: .bottom) {
-                if pickerIsOpen {
-                    ZStack(alignment: .bottom) {
-                        Button {
-                            showModelPicker = false
-                        } label: {
-                            Color.clear
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Dismiss model controls")
-                        .accessibilityIdentifier("dismiss-model-picker")
-
-                        QuickModelPicker(model: model, sessionID: model.selectedID) {
-                            showModelPicker = false
-                            showAdvancedModelPicker = true
-                        }
-                        .padding(.bottom, 4)
+        }
+        .overlay(alignment: .bottom) {
+            if pickerIsOpen {
+                ZStack(alignment: .bottom) {
+                    Button {
+                        showModelPicker = false
+                    } label: {
+                        Color.clear
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
                     }
-                    .padding(.bottom, composerHeight)
-                    .transition(.opacity)
-                    .accessibilityAction(.escape) { showModelPicker = false }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss model controls")
+                    .accessibilityIdentifier("dismiss-model-picker")
+
+                    QuickModelPicker(model: model, sessionID: model.selectedID) {
+                        showModelPicker = false
+                        showAdvancedModelPicker = true
+                    }
+                    .padding(.bottom, 4)
                 }
+                .padding(.bottom, composerHeight)
+                .transition(.opacity)
+                .accessibilityAction(.escape) { showModelPicker = false }
             }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: pickerIsOpen)
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: pickerIsOpen)
     }
 
     private func visit() {
@@ -269,9 +288,7 @@ struct ChatScreen: View {
     private var transcript: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
-                if model.selected.loading {
-                    ProgressView("Opening chat…")
-                } else if model.selected.loaded && model.selected.transcript.entries.isEmpty {
+                if model.selected.loaded && model.selected.transcript.entries.isEmpty {
                     Text("Start a conversation")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
