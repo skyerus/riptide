@@ -77,7 +77,8 @@ window.hermesScreen = {
       if (canvas) {
         desktopSize = { width: canvas.width, height: canvas.height };
         const fit = () => {
-          if (rfb.viewOnly || canvas.width !== requestedSize?.width) return;
+          if (rfb.viewOnly || canvas.width !== requestedSize?.width ||
+              canvas.height !== requestedSize.height) return;
           windowFit?.disconnect();
           bridge.postMessage("fit");
         };

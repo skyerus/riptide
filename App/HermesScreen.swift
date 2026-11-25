@@ -29,8 +29,24 @@ struct HermesScreen: View {
                             .padding(.vertical, 8)
                         HermesViewer(screen: screen)
                             .id(screen.id)
+                            .accessibilityHidden(!screen.showsBrowser)
+                            .allowsHitTesting(screen.showsBrowser)
                             .overlay {
-                                if !screen.isReady { ProgressView("Opening browser…") }
+                                if !screen.showsBrowser {
+                                    ZStack {
+                                        Color(uiColor: .systemBackground)
+                                        if !screen.isReady {
+                                            ProgressView("Opening browser…")
+                                        } else if screen.isChangingControl {
+                                            ProgressView()
+                                        } else {
+                                            ContentUnavailableView(
+                                                "Browser is closed", systemImage: "safari",
+                                                description: Text("Tap Take over to open Hermes’s browser.")
+                                            )
+                                        }
+                                    }
+                                }
                             }
                     }
                 }
@@ -151,6 +167,10 @@ private final class ScreenConnection {
     private(set) var isChangingControl = false
     private(set) var inUse = false
     private(set) var error: String?
+    var showsBrowser: Bool { isReady && !isChangingControl && browserVisible }
+    private var browserVisible = true
+    @ObservationIgnored private var waitsForFit = false
+    @ObservationIgnored private var fitTimeout: Task<Void, Never>?
     @ObservationIgnored weak var view: WKWebView?
     @ObservationIgnored private var canFitWindow = false
     @ObservationIgnored private var viewerLoaded = false
@@ -167,6 +187,7 @@ private final class ScreenConnection {
         let data: String?
         let held: Bool?
         let in_use: Bool?
+        let browser_visible: Bool?
         let minimum_browser_width: Int?
         let message: String?
     }
@@ -186,6 +207,7 @@ private final class ScreenConnection {
                 if error != nil || Task.isCancelled { group.cancelAll(); break }
             }
         }
+        fitTimeout?.cancel()
         sender.finish()
         self.sender = nil
     }
@@ -219,6 +241,8 @@ private final class ScreenConnection {
         guard error == nil, let view else { return }
         switch message.event {
         case "opened":
+            waitsForFit = message.browser_visible != nil
+            browserVisible = message.browser_visible ?? true
             inUse = message.in_use == true
             _ = try await view.callAsyncJavaScript("hermesScreen.open()", contentWorld: .page)
         case "frame":
@@ -226,15 +250,32 @@ private final class ScreenConnection {
             _ = try await view.callAsyncJavaScript("hermesScreen.frame(data)", arguments: ["data": data], contentWorld: .page)
         case "control":
             isControlling = message.held == true
-            inUse = isControlling
-            isChangingControl = false
+            inUse = message.in_use ?? isControlling
             let minimum = message.minimum_browser_width ?? 0
-            canFitWindow = (280...2_048).contains(minimum)
+            canFitWindow = isControlling && (280...2_048).contains(minimum)
+            if isControlling { browserVisible = true }
+            if waitsForFit && isControlling {
+                guard canFitWindow else {
+                    fail("Hermes could not fit the browser to this screen.")
+                    return
+                }
+                fitTimeout = Task {
+                    do { try await Task.sleep(for: .seconds(8)) } catch { return }
+                    fail("Hermes could not fit the browser to this screen.")
+                }
+            } else {
+                isChangingControl = false
+            }
             _ = try await view.callAsyncJavaScript(
                 "hermesScreen.control(held, minimumWidth)",
                 arguments: ["held": isControlling, "minimumWidth": canFitWindow ? minimum : 0], contentWorld: .page
             )
+        case "fitted":
+            fitTimeout?.cancel()
+            fitTimeout = nil
+            isChangingControl = false
         case "released":
+            if let visible = message.browser_visible { browserVisible = visible }
             isControlling = false
             inUse = message.in_use == true
             _ = try await view.callAsyncJavaScript("hermesScreen.control(false)", contentWorld: .page)
@@ -258,6 +299,7 @@ private final class ScreenConnection {
     func release(then: (() -> Void)? = nil) {
         guard isControlling, !isChangingControl else { return }
         continuation = then
+        canFitWindow = false
         isChangingControl = true
         Task {
             if let view {
@@ -280,6 +322,8 @@ private final class ScreenConnection {
     func fail(_ message: String) {
         guard error == nil else { return }
         error = message
+        fitTimeout?.cancel()
+        fitTimeout = nil
         isReady = false
         isControlling = false
         isChangingControl = false
@@ -295,7 +339,7 @@ private final class ScreenConnection {
             send("open")
         case "connected": isReady = true
         case "disconnected": fail("The Hermes screen disconnected.")
-        case "fit" where canFitWindow && isControlling && !isChangingControl: send("fit")
+        case "fit" where canFitWindow && isControlling: send("fit")
         default:
             if let frame = (body as? [String: String])?["frame"], frame.utf8.count <= 16_384 {
                 send("frame", data: frame)
