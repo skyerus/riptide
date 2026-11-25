@@ -35,7 +35,8 @@ struct ACPCapabilityTests {
             }
         }
         let client = CodexLiveClient(transport: transport, workspace: "/disposable")
-        _ = try await client.openSavedChat("selected")
+        let snapshot = try await client.openSavedChat("selected")
+        #expect(snapshot.activeTurnStartedAt == nil)
         var events = client.chatEvents.makeAsyncIterator()
         guard case .approval(let request) = try await events.next() else {
             Issue.record("Expected a scoped input request")
@@ -161,7 +162,7 @@ struct ACPCapabilityTests {
                 ]
             case "thread/turns/list":
                 return [.reply(id, result: ["data": .array([
-                    ["id": "running", "status": "inProgress", "items": .array([
+                    ["id": "running", "status": "inProgress", "startedAt": .integer(1_795_600_000), "items": .array([
                         ["id": "message-0", "type": "userMessage",
                          "content": .array([["type": "text", "text": "saved conversation"]])]
                     ])],
@@ -195,6 +196,7 @@ struct ACPCapabilityTests {
         let client = CodexLiveClient(transport: transport, workspace: "/disposable")
         let snapshot = try await client.openSavedChat("existing")
         #expect(snapshot.working)
+        #expect(snapshot.activeTurnStartedAt == Date(timeIntervalSince1970: 1_795_600_000))
         #expect(snapshot.messages.last?.text == "saved conversation")
         #expect(snapshot.messages.last?.receipt == .delivered)
         #expect(snapshot.messages.first?.receipt == .seen)

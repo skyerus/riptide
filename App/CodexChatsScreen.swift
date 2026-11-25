@@ -242,11 +242,12 @@ struct CodexSavedChatScreen: View {
                     Text("Start a conversation").foregroundStyle(.secondary)
                 }
                 if !progress.plan.isEmpty { TurnPlanCard(steps: progress.plan) }
-                if let activeTurnID {
+                if let activeTurnID, let startedAt = session?.activeTurnStartedAt {
                     let current = progress.items.last {
                         $0.state == .running && $0.kind != .summary && $0.kind != .planning
                     }
-                    LiveTurnActivity(currentTool: current?.title, hasActivity: !progress.items.isEmpty) {
+                    LiveTurnActivity(startedAt: startedAt, currentTool: current?.title,
+                                     hasActivity: !progress.items.isEmpty) {
                         CodexActivityList(items: progress.items)
                     }
                     .id(activeTurnID)

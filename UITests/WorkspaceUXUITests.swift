@@ -363,7 +363,15 @@ final class WorkspaceUXUITests: XCTestCase {
         let activity = app.buttons["live-turn-activity"]
         XCTAssertEqual(activity.label, "Thinking")
         XCTAssertLessThan(activity.frame.height, 44)
-        XCTAssertEqual(app.staticTexts["turn-working"].label, "Working")
+        let timer = app.staticTexts["turn-working"]
+        let firstReading = timer.label
+        XCTAssertTrue(firstReading.hasPrefix("Working "))
+        let tick = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label BEGINSWITH %@ AND label != %@", "Working ", firstReading),
+            object: timer
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [tick], timeout: 4), .completed)
+        XCTAssertEqual(activity.label, "Thinking")
         capture(app, as: "Codex thinking")
         let step = app.staticTexts["Inspect the fixture workspace"]
         XCTAssertTrue(step.waitForExistence(timeout: 8))
@@ -378,6 +386,7 @@ final class WorkspaceUXUITests: XCTestCase {
         capture(app, as: "Codex turn shows live plan and command output")
         XCTAssertTrue(app.staticTexts["The fixture turn is complete."].waitForExistence(timeout: 16))
         XCTAssertTrue(activity.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(timer.exists)
         XCTAssertTrue(output.waitForNonExistence(timeout: 5))
         app.buttons["codex-chat-actions"].tap()
         app.buttons["Show Tool Calls"].tap()

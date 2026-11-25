@@ -138,7 +138,8 @@ public final class AgentChatModel {
         public fileprivate(set) var configError: String?
         public fileprivate(set) var loading = false
         public fileprivate(set) var loaded = false
-        public fileprivate(set) var working = false
+        public fileprivate(set) var turnStartedAt: Date?
+        public var working: Bool { turnStartedAt != nil }
         public fileprivate(set) var stopping = false
         public fileprivate(set) var error: String?
         public fileprivate(set) var notice: String?
@@ -411,7 +412,7 @@ public final class AgentChatModel {
         }
         observe(client)
         chats[sessionID]?.transcript.addPrompt(text)
-        chats[sessionID]?.working = true
+        chats[sessionID]?.turnStartedAt = .now
         workingChats.insert(sessionID)
         chats[sessionID]?.plan = []
         chats[sessionID]?.error = nil
@@ -422,7 +423,7 @@ public final class AgentChatModel {
     private func finishPrompt(_ sessionID: String, from client: ACPClient) {
         guard self.client === client else { return }
         chats[sessionID]?.transcript.finishPrompt()
-        chats[sessionID]?.working = false
+        chats[sessionID]?.turnStartedAt = nil
         workingChats.remove(sessionID)
         chats[sessionID]?.stopping = false
     }
@@ -468,7 +469,7 @@ public final class AgentChatModel {
             for id in Array(self.chats.keys) {
                 self.chats[id]?.transcript.finishPrompt()
                 self.chats[id]?.loaded = false
-                self.chats[id]?.working = false
+                self.chats[id]?.turnStartedAt = nil
                 self.chats[id]?.stopping = false
                 self.chats[id]?.permissions = []
                 self.chats[id]?.error = "Connection closed. Reconnect to reopen this chat."

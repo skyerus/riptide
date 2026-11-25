@@ -197,7 +197,14 @@ final class AgentChatsUITests: XCTestCase {
         let tool = app.descendants(matching: .any).matching(identifier: "chat-tool-call").firstMatch
         let activity = app.buttons["live-turn-activity"]
         XCTAssertEqual(receipt.label, "Delivered")
-        XCTAssertEqual(app.staticTexts["turn-working"].label, "Working")
+        let timer = app.staticTexts["turn-working"]
+        let firstReading = timer.label
+        XCTAssertTrue(firstReading.hasPrefix("Working "))
+        let tick = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label BEGINSWITH %@ AND label != %@", "Working ", firstReading),
+            object: timer
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [tick], timeout: 4), .completed)
         XCTAssertEqual(activity.label, "Review context")
         XCTAssertTrue(app.buttons["stop-reply"].exists)
         XCTAssertFalse(tool.exists)
@@ -207,6 +214,7 @@ final class AgentChatsUITests: XCTestCase {
         deny.tap()
         XCTAssertTrue(app.staticTexts["I skipped the sample action. Nothing was run."].waitForExistence(timeout: 5))
         XCTAssertTrue(activity.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(timer.exists)
         XCTAssertTrue(tool.waitForNonExistence(timeout: 5))
         XCTAssertEqual(receipt.label, "Seen")
         app.buttons["chat-actions"].tap()

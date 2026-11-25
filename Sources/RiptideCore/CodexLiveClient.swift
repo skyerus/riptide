@@ -207,7 +207,9 @@ public actor CodexLiveClient {
             }
             return entry
         }
+        let activeTurn = activeTurnID.flatMap { id in turns.first { $0["id"]?.string == id } }
         return CodexChatSnapshot(turns: transcript, activeTurnID: activeTurnID,
+                                 activeTurnStartedAt: activeTurn.flatMap(Self.startDate),
                                  hasOlderTurns: history["nextCursor"]?.string != nil)
     }
 
@@ -543,10 +545,10 @@ public actor CodexLiveClient {
             if let approval = approvals.removeValue(forKey: id) { emitChat.yield(.approvalResolved(approval.id)) }
             return
         }
-        if method == "turn/started", let id = params["turn"]?["id"]?.string {
+        if method == "turn/started", let turn = params["turn"], let id = turn["id"]?.string {
             turnChanged = true
             activeTurnID = id
-            emitChat.yield(.turnStarted(id))
+            emitChat.yield(.turnStarted(id, startedAt: Self.startDate(turn)))
             return
         }
         if let reportedTurn = params["turnId"]?.string,
@@ -580,6 +582,11 @@ public actor CodexLiveClient {
             }
             emitChat.yield(.live(event))
         }
+    }
+
+    private static func startDate(_ turn: JSON) -> Date? {
+        guard let startedAt = turn["startedAt"]?.integer, startedAt >= 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(startedAt))
     }
 
     private static func event(_ method: String, _ params: JSON) -> CodexLiveEvent? {
