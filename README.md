@@ -92,6 +92,22 @@ For agent-driven handoffs, use Hermes’s default tool runtime (`model.openai_ru
 
 The Riptide iPhone app bundles a Safari extension that lets an agent continue in the exact tab where you sign in. The agent requests an HTTPS site, waits for you to share the tab, then reads the page and clicks or fills its controls through MCP. Safari uses the existing Riptide SSH pairing and keeps the sign-in session on your phone. Keep the shared tab visible until the agent finishes. **Take back control** stops sharing from Safari at any time. Device builds sign the extension’s bundle ID, app.riptide.client.safari, with the same team as Riptide.
 
+#### Install on an existing Linux SSH host
+
+Pair the agent over SSH first. On the host, sign in as the same OS account that owns the pairing and run this from the Riptide checkout with Python 3.11+, Python’s `venv` module, OpenSSH and a running systemd user manager. Paste the public key shown in Riptide’s SSH setup, including its `ssh-ed25519` prefix.
+
+```sh
+python3 Host/install_safari.py --key 'ssh-ed25519 AAAA... riptide-device'
+```
+
+The installer starts a private user service, checks the Safari SSH route and updates the selected key’s existing forced command. It detects the configured runtime for Hermes. For a custom Hermes profile, pass `--hermes-config /absolute/profile/config.yaml`. For another agent, pass `--runtime stdio` and add the printed MCP server entry to that agent’s configuration. If a persistent Hermes gateway launches Codex, also follow the [Hermes gateway instructions](Host/compat/hermes-gateway-safari.md). The installer scopes the Codex launcher to the paired ACP process.
+
+For the relay to stay up after logout and start at boot, enable lingering for the agent’s OS account if it is not already enabled. An administrator can run `loginctl enable-linger <agent-account>`. Run the installer once per paired key. You can rerun it after updating Riptide. An existing manually configured Safari route stays under manual management. The manual setup below also works on hosts with a different service supervisor.
+
+Reopen the chat in Riptide after installation. In Safari, open **Manage Extensions**, enable **Riptide**, and select the paired agent in the extension if prompted.
+
+#### Manual host setup
+
 1. Put the files from `Host/` on the agent host and run the relay under the same OS account as the MCP process. Python 3.11 or newer is required. Keep this process running with your usual service supervisor.
 
    ```sh
