@@ -44,6 +44,7 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(jump.waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["Long stream complete."].waitForExistence(timeout: 10))
         XCTAssertTrue(jump.exists)
+        transcript.swipeUp(velocity: .slow)
         let readableArea = transcript.frame.insetBy(dx: 0, dy: 55)
         let heading = app.staticTexts.matching(NSPredicate(format: "label MATCHES %@", "Update [0-9]+"))
             .allElementsBoundByIndex.first { (readableArea.minY...readableArea.maxY).contains($0.frame.midY) }?.label
@@ -51,6 +52,7 @@ final class WorkspaceUXUITests: XCTestCase {
             XCTFail("No streamed update was visible in the reading area.")
             return
         }
+        XCTAssertNotEqual(heading, "Update 1", "Save a reading position partway through the transcript.")
         app.navigationBars.buttons["BackButton"].tap()
         openMainChat(in: app, agent: "hermes")
         app.navigationBars.buttons["BackButton"].tap()

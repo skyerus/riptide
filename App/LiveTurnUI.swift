@@ -73,8 +73,9 @@ private struct TranscriptViewportModifier: ViewModifier {
     @State private var latestOffset: CGFloat = 0
 
     func body(content: Content) -> some View {
+        let initialAnchor: UnitPoint = chat.flatMap { workspace.readingOffset(for: $0) } == nil ? .bottom : .top
         content
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(initialAnchor, for: .initialOffset)
             .defaultScrollAnchor(.top, for: .alignment)
             .scrollPosition($viewport.position)
             .onChange(of: chat, initial: true) {
