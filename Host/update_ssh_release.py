@@ -2,6 +2,7 @@
 """Switch one existing restricted Riptide SSH pairing to a versioned host payload."""
 
 import argparse
+import asyncio
 import fcntl
 import json
 import os
@@ -55,7 +56,7 @@ def verify(argv):
     require(run("riptide-hermes-screen", "") == "", "The Hermes screen command did not close cleanly.")
 
 
-def update(keys, fingerprint, releases, previous, revision):
+def update(keys, fingerprint, releases, previous, revision, attention_socket=None):
     directory = releases.lstat()
     require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid() and not directory.st_mode & 0o022,
             "Use an existing release directory controlled by the deployment account.")
@@ -70,13 +71,21 @@ def update(keys, fingerprint, releases, previous, revision):
         old = releases / previous / "Host" / "ssh_acp.py"
         new = releases / revision / "Host" / "ssh_acp.py"
         require(Path(prefix[script]) in (old, new), "The pairing points to an unexpected SSH release.")
-        already_active = Path(prefix[script]) == new
         prefix[script] = str(stage(releases, revision))
+        if attention_socket is not None:
+            from hermes_attention import exchange
+            require(attention_socket.is_absolute(), "Use an absolute notification socket path.")
+            reply = asyncio.run(exchange(attention_socket, {"operation": "health"}))
+            require(reply == {"ok": True}, "The private notification relay did not respond.")
+            if "--attention-socket" in prefix:
+                prefix[prefix.index("--attention-socket") + 1] = str(attention_socket)
+            else:
+                prefix.extend(["--attention-socket", str(attention_socket)])
         argv = [*prefix, "--", *agent]
         verify(argv)
-        if not already_active:
-            command = shlex.join(argv).replace('"', r'\"')
-            after = (source[:start] + f'command="{command}"' + source[end:]).encode()
+        command = shlex.join(argv).replace('"', r'\"')
+        after = (source[:start] + f'command="{command}"' + source[end:]).encode()
+        if after != original:
             Edit(keys, original, after, mode).apply()
     print(f"Verified and activated SSH release {revision} for the selected pairing.")
 
@@ -88,13 +97,15 @@ def main():
     parser.add_argument("--releases-dir", type=Path, required=True)
     parser.add_argument("--previous", required=True)
     parser.add_argument("--revision", required=True)
+    parser.add_argument("--attention-socket", type=Path)
     args = parser.parse_args()
     if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (args.previous, args.revision)):
         parser.error("Pass full Git revisions for --previous and --revision.")
     if not args.releases_dir.is_absolute():
         parser.error("Pass an absolute --releases-dir.")
     try:
-        update(args.authorized_keys, args.fingerprint, args.releases_dir, args.previous, args.revision)
+        update(args.authorized_keys, args.fingerprint, args.releases_dir, args.previous, args.revision,
+               args.attention_socket)
     except subprocess.TimeoutExpired:
         parser.exit(1, "The staged SSH command timed out during verification.\n")
     except (OSError, ValueError) as error:

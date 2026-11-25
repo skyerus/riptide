@@ -48,6 +48,10 @@ targets:
         RIPTIDE_PUSH_ENTITLEMENTS: App/Riptide.entitlements
         RIPTIDE_PUSH_ENVIRONMENT: ""
         SWIFT_VERSION: "6.0"
+      configs:
+        Release:
+          RIPTIDE_PUSH_ENTITLEMENTS: App/RiptidePush.entitlements
+          RIPTIDE_PUSH_ENVIRONMENT: production
   RiptideSafari:
     type: app-extension
     platform: iOS

@@ -3,6 +3,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import stat
@@ -128,6 +129,9 @@ class AttentionState:
         device, token, environment, policy = (body.get(key) for key in ("id", "token", "environment", "policy"))
         if not valid(device, r"[0-9a-fA-F-]{36}") or environment not in ("development", "production"):
             raise ValueError("Invalid device registration.")
+        workspace = body.get("workspace")
+        if workspace is not None and not valid(workspace, WORKSPACE_ID):
+            raise ValueError("Invalid device workspace.")
         if not isinstance(policy, dict) or policy.get("delivery") not in ("off", "whenAway", "always"):
             raise ValueError("Invalid alert settings.")
         if not all(type(policy.get(key)) is bool for key in ("approvals", "replies")):
@@ -146,6 +150,7 @@ class AttentionState:
             "token": token,
             "environment": environment,
             "policy": {field: policy[field] for field in ("delivery", "approvals", "replies")},
+            "workspace": workspace,
         }
         if save:
             self.persist()
@@ -183,8 +188,9 @@ class AttentionState:
         self.inbox[event.target] = (event, now)
         if len(self.inbox) > 100:
             self.inbox.pop(next(iter(self.inbox)))
-        for device in self.devices:
-            self.pending[(device, event.target)] = (event, now, now, 0)
+        for device, registration in self.devices.items():
+            if registration["workspace"] in (None, event.workspace):
+                self.pending[(device, event.target)] = (event, now, now, 0)
         while len(self.pending) > MAX_EVENTS:
             self.pending.pop(next(iter(self.pending)))
 
@@ -289,7 +295,9 @@ class APNs:
         try:
             response = self.client.post(f"https://{host}/3/device/{device['token']}", headers=headers, json=payload)
         except self.network_error:
+            logging.getLogger(__name__).warning("APNs connection failed; delivery will be retried")
             return "retry"
+        logging.getLogger(__name__).info("APNs delivery response: HTTP %d", response.status_code)
         if response.status_code == 200:
             return "sent"
         if response.status_code in (429, 500, 503):

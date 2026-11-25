@@ -105,6 +105,40 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
         return sshTransport(credential: credential, command: "riptide-hermes-screen")
     }
 
+    public func registerHermesNotifications(credential: String, token: String?, environment: String,
+                                            policy: AttentionPolicy) async throws {
+        guard kind == .hermes, let transport = sshTransport(credential: credential, command: "riptide-attention") else {
+            throw URLError(.unsupportedURL)
+        }
+        struct Registration: Encodable {
+            let id: UUID
+            let workspace: String
+            let token: String?
+            let environment: String
+            let policy: AttentionPolicy
+        }
+        struct Request: Encodable {
+            let operation = "register"
+            let body: Registration
+        }
+        struct Response: Decodable { let ok: Bool }
+        let deadline = Task {
+            do { try await Task.sleep(for: .seconds(16)) } catch { return }
+            await transport.close()
+        }
+        defer {
+            deadline.cancel()
+            Task { await transport.close() }
+        }
+        let body = Registration(id: id, workspace: id.uuidString, token: token, environment: environment, policy: policy)
+        try await transport.send(JSONEncoder().encode(Request(body: body)))
+        for try await response in transport.incoming {
+            guard try JSONDecoder().decode(Response.self, from: response).ok else { break }
+            return
+        }
+        throw URLError(.cannotConnectToHost)
+    }
+
     func safariSSHTransport(credential: String) -> SSHACPTransport? {
         sshTransport(credential: credential, command: "riptide-safari")
     }

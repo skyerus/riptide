@@ -59,6 +59,8 @@ final class WorkspaceAlerts {
     private(set) var policy: AttentionPolicy
     private(set) var message: String?
     private(set) var pushEnabled = false
+    private var pushWorkspaces = Set<String>()
+    weak var remotes: RemoteStore?
     var openWorkspace: ((WorkspaceChatID?) -> Void)?
 
     init() {
@@ -70,6 +72,11 @@ final class WorkspaceAlerts {
     }
 
     var pushAvailable: Bool { pushEnvironment != nil }
+    var hasHermesPairing: Bool { !hermesProfiles.isEmpty }
+
+    private var hermesProfiles: [RemoteProfile] {
+        remotes?.profiles.filter { $0.kind == .hermes && $0.sshHostFingerprint != nil } ?? []
+    }
 
     func relayInbox() async -> [RelayedAttention]? {
         guard let relay else { return [] }
@@ -90,7 +97,7 @@ final class WorkspaceAlerts {
             self?.pushEnabled = false
             self?.message = "This build couldn’t register for push. Local alerts are still available."
         }
-        if policy.delivery != .off, relay != nil, pushAvailable {
+        if policy.delivery != .off, (relay != nil || hasHermesPairing), pushAvailable {
             Task {
                 guard await self.permissionsAllowed(), self.policy.delivery != .off else { return }
                 UIApplication.shared.registerForRemoteNotifications()
@@ -154,10 +161,14 @@ final class WorkspaceAlerts {
         defaults.removeObject(forKey: "alerts.relay-address")
         pushEnabled = false
         message = nil
+        changingRelay = false
+        activate()
+        await syncPush()
     }
 
     func receive(_ entry: WorkspaceAttention, appIsActive: Bool) {
         guard !appIsActive, policy.delivery != .off else { return }
+        guard !pushWorkspaces.contains(entry.chat.workspace) else { return }
         let now = Date()
         recent = recent.filter { now.timeIntervalSince($0.value) < 90 }
         guard recent[entry.id] == nil else { return }
@@ -206,22 +217,48 @@ final class WorkspaceAlerts {
     }
 
     private func writePushRegistration() async {
-        guard let relay, let environment = pushEnvironment else { pushEnabled = false; return }
+        guard let environment = pushEnvironment else { pushEnabled = false; return }
         let current = revision
         let value = policy
         let allowed = await permissionsAllowed()
         guard current == revision else { return }
         let remoteToken = value.delivery != .off && allowed ? token : nil
         if value.delivery != .off && allowed && remoteToken == nil { return }
-        do {
-            try await relay.updateDevice(id: deviceID, token: remoteToken, environment: environment, policy: value)
-            if revision == current {
+        if let relay {
+            do {
+                try await relay.updateDevice(id: deviceID, token: remoteToken, environment: environment, policy: value)
+                guard revision == current else { return }
                 pushEnabled = remoteToken != nil
-                if pushEnabled { message = "Push device registered. Send a test alert to verify delivery." }
+                if pushEnabled { message = "Push device registered with the private relay." }
+            } catch {
+                guard revision == current else { return }
+                pushEnabled = false
+                message = "Couldn’t update push. Check the private relay or use iOS Settings to turn alerts off immediately."
             }
-        } catch {
-            pushEnabled = false
-            message = "Couldn’t update push. Check the private relay or use iOS Settings to turn alerts off immediately."
+        }
+        let profiles = hermesProfiles
+        guard !profiles.isEmpty else {
+            pushWorkspaces = []
+            if relay == nil { pushEnabled = false }
+            return
+        }
+        let hermesToken = relay == nil ? remoteToken : nil
+        var registered = Set<String>()
+        for profile in profiles {
+            guard revision == current else { return }
+            guard let credential = remotes?.bearer(for: profile) else { continue }
+            do {
+                try await profile.registerHermesNotifications(credential: credential, token: hermesToken,
+                                                               environment: environment, policy: value)
+                if hermesToken != nil { registered.insert(profile.id.uuidString) }
+            } catch { continue }
+        }
+        guard revision == current else { return }
+        pushWorkspaces = registered
+        if relay == nil {
+            pushEnabled = !registered.isEmpty
+            if pushEnabled { message = "Push is connected to Hermes." }
+            else if remoteToken != nil { message = "Couldn’t connect to Hermes push. Check the SSH host’s notification relay." }
         }
     }
 }
@@ -270,7 +307,9 @@ struct WorkspaceAlertSettings: View {
                     Text("Desktop presence")
                 } footer: {
                     Text(alerts.pushAvailable
-                         ? "For alerts while the app is asleep, configure push and event publishers on your private relay."
+                         ? (alerts.hasHermesPairing
+                            ? "Hermes can send push through your existing SSH pairing when the host relay is running."
+                            : "For alerts while the app is asleep, configure push and event publishers on your private relay.")
                          : "This build can alert for live connections while iOS is still running Riptide. Alerts while the app is suspended require a push-enabled build and private relay.")
                         .foregroundStyle(ChatTheme.muted)
                 }

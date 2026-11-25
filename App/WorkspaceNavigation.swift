@@ -33,6 +33,7 @@ struct WorkspaceNavigation: View {
         .onChange(of: scenePhase, initial: true) {
             workspace.setSceneActive(scenePhase == .active)
             if scenePhase == .active {
+                alerts.remotes = workspace.remotes
                 workspace.notifyAttention = { [weak workspace, weak alerts] entry in
                     guard let workspace, let alerts else { return }
                     alerts.receive(entry, appIsActive: workspace.sceneIsActive)
@@ -46,6 +47,9 @@ struct WorkspaceNavigation: View {
                 }
                 alerts.activate()
             }
+        }
+        .onChange(of: workspace.remotes.profiles) {
+            if scenePhase == .active { alerts.activate() }
         }
         .task(id: scenePhase) {
             if scenePhase == .active { await workspace.preloadRecentMainChat() }
