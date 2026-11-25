@@ -18,6 +18,10 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         let agents: [SafariSSHAgent]
         do {
             guard let store = SafariSSHKeychain() else { throw SafariSSHError.keychain }
+            if operation == "chat-context" || operation == "chat-bound" {
+                try chatHandoff(operation, message: message, store: store, reply: reply)
+                return
+            }
             agents = try store.load()
         } catch {
             reply.send(error: error.localizedDescription)
@@ -54,6 +58,29 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
                 reply.send(error: error.localizedDescription)
             }
         }
+    }
+
+    private func chatHandoff(_ operation: String, message: [String: Any],
+                             store: SafariSSHKeychain, reply: Reply) throws {
+        guard let body = message["body"] as? [String: Any],
+              let token = (body["token"] as? String).flatMap(UUID.init(uuidString:)),
+              let origin = body["origin"] as? String,
+              let handoff = try SafariChatHandoff.load(from: store),
+              let purpose = handoff.tokenPurpose(token, origin: origin) else {
+            reply.send(error: "This Safari chat handoff expired.", status: 404)
+            return
+        }
+        if operation == "chat-bound" {
+            guard purpose == "open" else {
+                reply.send(error: "This Safari tab cannot be linked again.", status: 409)
+                return
+            }
+            try handoff.recordBinding(in: store)
+        }
+        reply.send(["status": 200, "body": [
+            "purpose": purpose, "id": handoff.requestID, "agentID": handoff.agentID.uuidString,
+            "openToken": handoff.openToken.uuidString
+        ]])
     }
 
     // The request context is completed once, either during validation or from the relay task.

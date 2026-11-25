@@ -37,35 +37,43 @@ public struct SafariSSHKeychain {
         accessGroup = group
     }
 
-    private var record: [String: Any] {
+    private func record(_ account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "app.riptide.client.safari.ssh",
-            kSecAttrAccount as String: "paired-agents",
+            kSecAttrAccount as String: account,
             kSecAttrAccessGroup as String: accessGroup,
             kSecAttrSynchronizable as String: false
         ]
     }
 
     public func load() throws -> [SafariSSHAgent] {
-        var query = record
+        try read("paired-agents") ?? []
+    }
+
+    public func replace(with agents: [SafariSSHAgent]) throws {
+        try write(agents.isEmpty ? nil : agents, account: "paired-agents")
+    }
+
+    func read<Value: Decodable>(_ account: String) throws -> Value? {
+        var query = record(account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var value: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &value)
-        if status == errSecItemNotFound { return [] }
+        if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = value as? Data else { throw SafariSSHError.keychain }
-        return try JSONDecoder().decode([SafariSSHAgent].self, from: data)
+        return try JSONDecoder().decode(Value.self, from: data)
     }
 
-    public func replace(with agents: [SafariSSHAgent]) throws {
-        let key = record
-        if agents.isEmpty {
+    func write<Value: Encodable>(_ value: Value?, account: String) throws {
+        let key = record(account)
+        guard let value else {
             let status = SecItemDelete(key as CFDictionary)
             guard status == errSecItemNotFound || status == errSecSuccess else { throw SafariSSHError.keychain }
             return
         }
-        let data = try JSONEncoder().encode(agents)
+        let data = try JSONEncoder().encode(value)
         var attributes = key
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         attributes[kSecValueData as String] = data
@@ -92,19 +100,19 @@ public actor SafariSSHRelay {
 
     public init() {}
 
-    public func request(_ frame: Data, from agent: SafariSSHAgent) async throws -> Data {
+    public func request(_ frame: Data, from agent: SafariSSHAgent, timeout: Duration = .seconds(16)) async throws -> Data {
         // The forced command returns one reply per frame. Serialize requests even when Safari
         // polls the tab while its popup updates or the user takes back control.
         let previous = previousWork
         let work = Task {
             await previous?.value
-            return try await exchange(frame, agent: agent)
+            return try await exchange(frame, agent: agent, timeout: timeout)
         }
         previousWork = Task { _ = try? await work.value }
         return try await work.value
     }
 
-    private func exchange(_ frame: Data, agent: SafariSSHAgent) async throws -> Data {
+    private func exchange(_ frame: Data, agent: SafariSSHAgent, timeout: Duration) async throws -> Data {
         var link: Connection
         if let cached = connection, cached.agent == agent,
            cached.lastUse.duration(to: .now) < .seconds(35) {
@@ -116,7 +124,7 @@ public actor SafariSSHRelay {
         connection = nil
         let transport = link.transport
         let deadline = Task {
-            do { try await Task.sleep(for: .seconds(16)) } catch { return }
+            do { try await Task.sleep(for: timeout) } catch { return }
             await transport.close()
         }
         defer { deadline.cancel() }

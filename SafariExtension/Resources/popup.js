@@ -3,9 +3,11 @@ const description = document.querySelector("#description");
 const agentPicker = document.querySelector("#agent-picker");
 const agentSelect = document.querySelector("#agent");
 const primary = document.querySelector("#primary");
+const enableChat = document.querySelector("#enable-chat");
 const refresh = document.querySelector("#refresh");
 const errorText = document.querySelector("#error");
 let next;
+let chatPattern;
 let busy = false;
 
 async function send(type, body = {}) {
@@ -32,8 +34,12 @@ function action(label, type, body = {}) {
 async function render() {
     next = undefined;
     primary.hidden = true;
+    enableChat.hidden = true;
+    chatPattern = undefined;
     try {
         const state = await send("status");
+        chatPattern = state.chatPattern;
+        enableChat.hidden = !chatPattern;
         const selected = state.agents.find(agent => agent.id === state.agentID);
         agentPicker.hidden = state.agents.length < 2 || !!state.sharing || !!state.canRelease;
         agentSelect.replaceChildren(...state.agents.map(agent => new Option(agent.name, agent.id)));
@@ -102,6 +108,18 @@ primary.addEventListener("click", () => {
         await send(type, body);
         if (type === "open") window.close();
         else await render();
+    });
+});
+
+enableChat.addEventListener("click", () => {
+    const pattern = chatPattern;
+    if (!pattern) return;
+    void perform(async () => {
+        if (!await browser.permissions.request({ origins: [pattern] })) {
+            throw new Error("Safari needs site access to hand off from chat.");
+        }
+        await send("enable-chat", { pattern });
+        await render();
     });
 });
 
