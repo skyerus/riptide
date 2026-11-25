@@ -3,8 +3,7 @@ import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path";
 
 const output = "RichContent";
-const result = await build({
-  entryPoints: ["diagram.js", "highlight.js"],
+const options = {
   outdir: output,
   bundle: true,
   minify: true,
@@ -12,13 +11,21 @@ const result = await build({
   target: "safari18",
   define: { "process.env.NODE_ENV": '"production"' },
   legalComments: "linked"
-});
+};
+const results = await Promise.all([
+  build({ ...options, entryPoints: ["diagram.js", "highlight.js"] }),
+  // The viewer probes browser codecs using top-level await. Wrap its module so it
+  // can load as a classic script from the app bundle in WKWebView.
+  build({ ...options, entryPoints: ["hermes-screen.js"], format: "esm",
+    banner: { js: "(async () => {" }, footer: { js: "})();" } })
+]);
 
 await mkdir(output, { recursive: true });
 await copyFile("diagram.html", join(output, "diagram.html"));
+await copyFile("hermes-screen.html", join(output, "hermes-screen.html"));
 
 const packages = new Set();
-for (const input of Object.keys(result.metafile.inputs)) {
+for (const input of results.flatMap(result => Object.keys(result.metafile.inputs))) {
   for (let folder = dirname(input); folder.includes("node_modules/"); folder = dirname(folder)) {
     if (/node_modules\/(?:@[^/]+\/)?[^/]+$/.test(folder)) {
       packages.add(folder);

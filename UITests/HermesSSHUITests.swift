@@ -2,6 +2,90 @@ import XCTest
 
 final class HermesSSHUITests: XCTestCase {
     @MainActor
+    func testNativeBrowserRequestResumesTheSameTurn() throws {
+        guard let label = ProcessInfo.processInfo.environment["RIPTIDE_HERMES_SCREEN_AGENT"] else {
+            throw XCTSkip("Provide an SSH-paired Hermes agent with Bot Screen and the handoff skill enabled.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let hermes = app.scrollViews["sidebar-workspace-tabs"].buttons
+            .matching(NSPredicate(format: "label == %@", label)).firstMatch
+        XCTAssertTrue(hermes.waitForExistence(timeout: 12))
+        if !hermes.isSelected { hermes.tap() }
+        let main = app.buttons["sidebar-main-chat"]
+        XCTAssertTrue(main.waitForExistence(timeout: 10))
+        main.tap()
+        let chats = app.buttons["chats-button"]
+        XCTAssertTrue(chats.waitForExistence(timeout: 25))
+        chats.tap()
+        app.buttons["new-chat"].tap()
+        XCTAssertTrue(app.navigationBars["Chats"].waitForNonExistence(timeout: 20))
+        let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"), object: composer)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 25), .completed)
+        composer.tap()
+        composer.typeText("Riptide browser handoff verification. Use browser_exec to open https://example.com/ in a new tab. "
+            + "Bring the tab to the front and use JavaScript to put a large focused text input with id riptide-proof on the page. "
+            + "Use native clarify with one short question asking me to type into the test input, and exactly one choice named Browser handoff complete. "
+            + "When I answer, read the input value in the same browser tab and reply with 'The browser received ' followed by its value. "
+            + "Do not type into the input yourself and do not use shell commands.")
+        app.buttons["send-message"].tap()
+        let request = app.buttons["hermes-browser-request"]
+        XCTAssertTrue(request.waitForExistence(timeout: 105))
+        request.tap()
+        let takeover = app.buttons["hermes-take-over"]
+        let streaming = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"), object: takeover)
+        XCTAssertEqual(XCTWaiter.wait(for: [streaming], timeout: 55), .completed)
+        takeover.tap()
+        let keyboard = app.buttons["Show keyboard"]
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 12))
+        keyboard.tap()
+        app.typeText("riptide831")
+        app.buttons["hermes-hand-back"].tap()
+        app.buttons["hermes-release-and-continue"].tap()
+        XCTAssertTrue(app.buttons["stop-reply"].waitForNonExistence(timeout: 65))
+        let reply = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "The browser received riptide831")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+    }
+
+    @MainActor
+    func testNativeBrowserTakeoverAndHandback() throws {
+        guard let label = ProcessInfo.processInfo.environment["RIPTIDE_HERMES_SCREEN_AGENT"] else {
+            throw XCTSkip("Provide an SSH-paired Hermes agent with Bot Screen enabled.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let hermes = app.scrollViews["sidebar-workspace-tabs"].buttons
+            .matching(NSPredicate(format: "label == %@", label)).firstMatch
+        XCTAssertTrue(hermes.waitForExistence(timeout: 12))
+        if !hermes.isSelected { hermes.tap() }
+        let main = app.buttons["sidebar-main-chat"]
+        XCTAssertTrue(main.waitForExistence(timeout: 10))
+        main.tap()
+        let actions = app.buttons["chat-actions"]
+        XCTAssertTrue(actions.waitForExistence(timeout: 25))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: actions)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 30), .completed)
+        actions.tap()
+        app.buttons["open-hermes-browser"].tap()
+        let takeover = app.buttons["hermes-take-over"]
+        XCTAssertTrue(takeover.waitForExistence(timeout: 15))
+        let streaming = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: takeover)
+        XCTAssertEqual(XCTWaiter.wait(for: [streaming], timeout: 55), .completed,
+                       "The viewer did not complete the native RFB handshake.")
+        takeover.tap()
+        XCTAssertTrue(app.staticTexts["You’re in control"].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.buttons["Show keyboard"].waitForExistence(timeout: 8))
+        app.buttons["hermes-hand-back"].tap()
+        app.buttons["hermes-release-control"].tap()
+        XCTAssertTrue(app.staticTexts["Hermes is in control"].waitForExistence(timeout: 12))
+        app.buttons["Close"].tap()
+        XCTAssertTrue(actions.waitForExistence(timeout: 10))
+    }
+
+    @MainActor
     func testReopensAlreadyPairedHermesChat() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let label = environment["RIPTIDE_SSH_EXISTING_AGENT_NAME"],
@@ -31,6 +115,7 @@ final class HermesSSHUITests: XCTestCase {
               let fingerprint = environment["RIPTIDE_SSH_FINGERPRINT"] else {
             throw XCTSkip("Set up an authorized SSH ACP host and an enrollment coordinator for this live test.")
         }
+        let label = environment["RIPTIDE_SSH_AGENT_NAME"] ?? "Hermes VPS"
         continueAfterFailure = false
         let proof = URL(filePath: directory, directoryHint: .isDirectory)
         let session = try String(contentsOf: proof.appending(path: "session"), encoding: .utf8)
@@ -75,7 +160,7 @@ final class HermesSSHUITests: XCTestCase {
             button("pair-transport").tap()
             button("SSH").tap()
         }
-        fill(app.textFields["Name"], with: "Hermes VPS")
+        fill(app.textFields["Name"], with: label)
         fill(app.textFields["pair-address"], with: endpoint)
         fill(app.textFields["Absolute workspace path"], with: workspace)
         fill(app.textFields["Existing main chat ID"], with: session)
@@ -94,7 +179,7 @@ final class HermesSSHUITests: XCTestCase {
 
         func openHermes() {
             let hermes = app.scrollViews["sidebar-workspace-tabs"].buttons
-                .matching(NSPredicate(format: "label == %@", "Hermes VPS")).firstMatch
+                .matching(NSPredicate(format: "label == %@", label)).firstMatch
             XCTAssertTrue(hermes.waitForExistence(timeout: 12))
             if !hermes.isSelected { hermes.tap() }
             button("sidebar-main-chat").tap()

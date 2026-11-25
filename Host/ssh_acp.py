@@ -124,10 +124,21 @@ async def serve(workspace, command):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Narrow a dedicated OpenSSH key to Riptide’s ACP client.")
     parser.add_argument("--workspace", required=True)
+    parser.add_argument("--hermes-screen", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    if os.environ.get("SSH_ORIGINAL_COMMAND") != "riptide-acp" or not command or not os.path.isabs(command[0]):
+    requested = os.environ.get("SSH_ORIGINAL_COMMAND")
+    if requested == "riptide-hermes-screen":
+        if args.hermes_screen is None:
+            print(json.dumps({"event": "error", "message": "This SSH pairing has no Hermes screen."}))
+            sys.exit(1)
+        home, hermes = args.hermes_screen
+        if not os.path.isabs(home) or not os.path.isdir(home) or not os.path.isabs(hermes):
+            parser.error("An absolute Hermes profile and launcher are required.")
+        adapter = os.path.join(os.path.dirname(os.path.realpath(__file__)), "hermes_screen.py")
+        os.execv(sys.executable, [sys.executable, adapter, hermes, os.path.realpath(home)])
+    if requested != "riptide-acp" or not command or not os.path.isabs(command[0]):
         parser.exit(1, "This key is only authorized for Riptide ACP.\n")
     if not os.path.isabs(args.workspace) or not os.path.isdir(args.workspace):
         parser.error("An existing absolute workspace is required.")

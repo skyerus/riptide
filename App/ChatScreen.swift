@@ -16,6 +16,7 @@ struct ChatScreen: View {
     @State private var pairingVoice = false
     @State private var activeCall: ChatCall?
     @State private var voiceError: String?
+    @State private var browserHandoff: BrowserHandoff?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(WorkspaceState.self) private var workspace
@@ -109,6 +110,13 @@ struct ChatScreen: View {
                         ToolCallsMenuButton(showsCompletedCalls: $showsCompletedToolCalls)
                     }
                     FollowUpButton(chat: chatKey, title: model.title)
+                    if let remote = voiceRemote, remote.canOpenHermesScreen,
+                       let credential = remoteStore?.bearer(for: remote) {
+                        Button("Open Hermes browser", systemImage: "macwindow") {
+                            openBrowser(remote, credential: credential)
+                        }
+                        .accessibilityIdentifier("open-hermes-browser")
+                    }
                     Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                 } label: {
                     Label("Chat actions", systemImage: "ellipsis.circle")
@@ -154,6 +162,20 @@ struct ChatScreen: View {
         .sheet(isPresented: $pairingVoice) {
             if let voiceRemote, let remoteStore { PairNativeVoiceScreen(remote: voiceRemote, store: remoteStore) }
         }
+        .sheet(item: $browserHandoff) { handoff in
+            HermesScreen(remote: handoff.remote, credential: handoff.credential, canContinue: {
+                guard model.selectedID == handoff.chatID, model.selected.loaded, !model.selected.stopping else { return false }
+                if let request = handoff.request { return model.selected.permissions.contains(request) }
+                return !model.selected.working
+            }, onContinue: {
+                guard model.selectedID == handoff.chatID else { return }
+                if let request = handoff.request, let option = browserCompletion(in: request) {
+                    Task { await model.answer(request, optionID: option.id) }
+                } else {
+                    model.submit("I’ve handed back control of your browser. Continue the task from the open browser session.")
+                }
+            })
+        }
         .sheet(item: $activeCall) { call in
             NativeAgentCallScreen(model: model, chatID: call.chatID, kind: call.kind, link: call.link) {
                 if model.selectedID == call.chatID {
@@ -196,6 +218,24 @@ struct ChatScreen: View {
 
     private func visit() {
         if !landing, !couldNotOpen, model.selected.loaded { workspace.visit(chatKey, title: model.title) }
+    }
+
+    private struct BrowserHandoff: Identifiable {
+        let id = UUID()
+        let remote: RemoteProfile
+        let credential: String
+        let chatID: String
+        let request: PermissionRequest?
+    }
+
+    private func openBrowser(_ remote: RemoteProfile, credential: String, request: PermissionRequest? = nil) {
+        browserHandoff = BrowserHandoff(remote: remote, credential: credential, chatID: model.selectedID, request: request)
+    }
+
+    private func browserCompletion(in request: PermissionRequest) -> PermissionRequest.Option? {
+        guard request.toolCallID?.hasPrefix("clarify-") == true, request.options.count == 2,
+              request.options.contains(where: { $0.id == "skip" && $0.kind == "reject_once" }) else { return nil }
+        return request.options.first { $0.id == "choice-0" && $0.kind == "allow_once" && $0.name == "Browser handoff complete" }
     }
 
     private struct ChatCall: Identifiable {
@@ -300,7 +340,17 @@ struct ChatScreen: View {
         .accessibilityIdentifier("chat-tool-call")
     }
 
+    @ViewBuilder
     private func permissionCard(_ request: PermissionRequest) -> some View {
+        if let remote = voiceRemote, remote.canOpenHermesScreen,
+           let credential = remoteStore?.bearer(for: remote), browserCompletion(in: request) != nil {
+            browserRequestCard(request, remote: remote, credential: credential)
+        } else {
+            approvalCard(request)
+        }
+    }
+
+    private func approvalCard(_ request: PermissionRequest) -> some View {
         let actions = dynamicTypeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
             : AnyLayout(HStackLayout(spacing: 8))
@@ -327,6 +377,24 @@ struct ChatScreen: View {
         .padding(14)
         .background(ChatTheme.surface, in: shape)
         .overlay { shape.strokeBorder(ChatTheme.border, lineWidth: 0.5) }
+        .disabled(model.selected.stopping)
+    }
+
+    private func browserRequestCard(_ request: PermissionRequest, remote: RemoteProfile, credential: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Browser handoff", systemImage: "macwindow")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ChatTheme.attention)
+            Text(request.title).font(.subheadline).foregroundStyle(.secondary)
+            Button("Open Hermes browser") { openBrowser(remote, credential: credential, request: request) }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("hermes-browser-request")
+            Button("Skip", role: .cancel) { Task { await model.answer(request, optionID: "skip") } }
+                .font(.subheadline)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 14))
         .disabled(model.selected.stopping)
     }
 
