@@ -4,19 +4,11 @@ import SwiftUI
 struct ChatComposer: View {
     let model: AgentChatModel
     @Binding var draft: String
+    @Binding var modelPickerVisible: Bool
     let didSend: () -> Void
 
-    @State private var showModels = false
     @State private var showContext = false
     @FocusState private var editorFocused: Bool
-
-    private var modelName: String? {
-        model.selected.configOptions.first(where: { $0.category == .model })?.currentName
-    }
-
-    private var effortName: String? {
-        model.selected.configOptions.first(where: { $0.category == .thoughtLevel })?.currentName
-    }
 
     var body: some View {
         let prompt = "Message \(model.target.name)"
@@ -32,55 +24,23 @@ struct ChatComposer: View {
                 contextButton(usage)
             }
             if !model.selected.configOptions.isEmpty {
-                modelButton
+                ChatModelControls(model: model, isExpanded: $modelPickerVisible)
             }
         } actions: {
             actionButton
         }
-        .sheet(isPresented: $showModels) {
-            ModelPicker(model: model, sessionID: model.selectedID)
-                .presentationDetents([.medium, .large])
-        }
         .onChange(of: model.selectedID) {
-            showModels = false
             showContext = false
             editorFocused = false
         }
-    }
-
-    private var modelButton: some View {
-        let title = modelName ?? effortName ?? "Model options"
-        let subtitle = modelName == nil ? nil : effortName
-        return Button {
-            showModels = true
-        } label: {
-            HStack(spacing: 6) {
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                    .layoutPriority(1)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 6)
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
+        .onChange(of: modelPickerVisible) {
+            if modelPickerVisible { showContext = false }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Model and effort")
-        .accessibilityValue([title, subtitle].compactMap { $0 }.joined(separator: ", "))
-        .accessibilityIdentifier("model-options")
     }
 
     private func contextButton(_ usage: ContextUsage) -> some View {
         Button {
+            modelPickerVisible = false
             showContext = true
         } label: {
             ZStack {
@@ -216,54 +176,5 @@ struct ComposerAction: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .accessibilityLabel(title)
-    }
-}
-
-private struct ModelPicker: View {
-    let model: AgentChatModel
-    let sessionID: String
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List {
-                ForEach(model.selected.configOptions) { option in
-                    Section(option.name) {
-                        ForEach(option.choices) { choice in
-                            Button {
-                                Task { await model.setConfigOption(option.id, value: choice.id, sessionID: sessionID) }
-                            } label: {
-                                HStack {
-                                    Text(choice.name)
-                                    Spacer()
-                                    if option.currentValue == choice.id {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(ChatTheme.accent)
-                                            .accessibilityHidden(true)
-                                    }
-                                }
-                                .frame(minHeight: 32)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityAddTraits(option.currentValue == choice.id ? .isSelected : [])
-                            .accessibilityIdentifier("config-\(option.id)-\(choice.id)")
-                        }
-                    }
-                    .disabled(model.selected.working || model.selected.configuring)
-                }
-                if let error = model.selected.configError {
-                    Text(error).font(.footnote).foregroundStyle(.secondary)
-                } else if model.selected.working {
-                    Text("You can change these after the reply finishes.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-            }
-            .navigationTitle("Model & effort")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
-        }
     }
 }
