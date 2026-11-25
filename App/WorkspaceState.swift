@@ -104,6 +104,8 @@ final class WorkspaceState {
         showDemoAgents = defaults.bool(forKey: "roster.show-demos")
     }
 
+    var needsFirstAgent: Bool { remotes.profiles.isEmpty && localCodex == nil && roster.isEmpty }
+
     var agents: [WorkspaceAgent] {
         let paired = orderedProfiles.map {
             WorkspaceAgent(id: $0.id.uuidString, name: $0.name, connector: $0.kind.name, symbol: Self.icon($0.kind))

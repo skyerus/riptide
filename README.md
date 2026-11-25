@@ -2,7 +2,7 @@
 
 A native iPhone client for agents you already run. Tap an agent to return to its main chat; open **Chats** to start or revisit a separate conversation without disturbing the main one.
 
-## Run the demo
+## Run locally
 
 Requires Xcode with a Swift 6.2-or-newer toolchain, an iOS 18-or-newer simulator, XcodeGen, and Node.js for building the bundled renderers.
 
@@ -13,7 +13,7 @@ xcodegen generate
 open Riptide.xcodeproj
 ```
 
-Run the **Riptide** scheme. The OpenClaw and Hermes agents are local fixtures, not provisioned agents. Riptide opens on Inbox. Swipe the tabs and pick an agent to see its main chat and saved side chats. Use the pencil to pair a remote or reorder the demo agents.
+Run the **Riptide** scheme to connect your first agent. To try the local fixtures instead, set `RIPTIDE_DEMO=1` in the Debug scheme's Run environment. The demo opens on Inbox with sample OpenClaw and Hermes agents. Swipe the tabs and pick an agent to see its main chat and saved side chats.
 
 The composer’s model picker and context ring show session-specific settings and simulated usage from the demo backend. Send any text to see a streamed reply, tool status and a Markdown table; include `approval` to try the permission card. Chats and their settings stay in the app’s local fixture store across relaunches.
 
@@ -45,6 +45,8 @@ The relay holds alerts while the desktop is active and gives brief app switches 
 
 For local UX testing, the simulator suite can seed 14 workspaces, 288 extra chats, and 12 concurrently waiting approvals. For the live-turn switching test, run `Host/ux_codex_fixture.py` with the bridge dependencies and a temporary `--port-file`, then pass the port to `xcodebuild` as `TEST_RUNNER_RIPTIDE_UX_FIXTURE_PORT`. That fixture is loopback-only and needs no real account.
 
+To test successful first pairing, run the same fixture with `--tls-cert` and `--tls-key` for `127.0.0.1`, trust its development CA on a test simulator, and pass the port as `TEST_RUNNER_RIPTIDE_PAIR_FIXTURE_PORT`. Use a signed simulator build with Keychain access; the test exercises normal authenticated pairing.
+
 ## Rich replies
 
 Send `formatting demo` to a fixture agent for streamed Markdown, a Mermaid diagram, syntax-highlighted code, and a numbered diff. The live Codex screen uses the same renderer and displays native turn diffs under **Changes**.
@@ -59,7 +61,7 @@ Agent targets explicitly map to their backend's existing main session. Pairing c
 
 ## Pair private remotes
 
-Use **pencil → Pair remote** on Workspaces. For WebSocket connections, provide a name, a private `wss://` endpoint, the absolute workspace on the host, and the endpoint’s capability token. ACP backends also require an existing main session ID. The token is not an OpenAI key: it stays in this device’s Keychain. Codex pairing binds the endpoint to the signed-in ChatGPT account/workspace; re-pair if that identity changes.
+On first launch, choose your agent type and connect it to open Inbox. To add another agent later, use **pencil → Pair remote**. For WebSocket connections, provide a private `wss://` endpoint, the absolute workspace on the host, and the endpoint’s capability token. ACP backends also require an existing main session ID. The token is not an OpenAI key: it stays in this device’s Keychain. Codex pairing binds the endpoint to the signed-in ChatGPT account/workspace; re-pair if that identity changes.
 
 - **Codex:** Keep an explicitly authenticated App Server WebSocket on host loopback behind a TLS proxy reachable only on your private network. Use the server’s capability-token mode; do not expose the app server to the internet. In the app, reopen a saved chat or make a new one. Reconnect rejoins by ID, loads up to the latest 30 turns, and displays approvals the server sends for that chat. Simple command approvals offer Allow once and Decline; review broader requests in native Codex.
 - **Hermes or OpenClaw:** Run the backend's supported ACP stdio command on your own host. `Host/acp_bridge.py` exposes one JSON-RPC object per WebSocket text frame on loopback `/acp`; it stores no transcripts and does not replace either backend. Install `Host/requirements.txt`, create a strong per-endpoint bearer in a mode-0600 file, and run `python Host/acp_bridge.py --token-file /path/to/token -- hermes acp` or the equivalent `openclaw acp` command. Put this listener behind your own private TLS proxy and forward the Authorization header. Run it under a least-privilege account; do not use a public ingress. Test `session/list`, `session/load`, and a one-time approval on the actual backend version. The stdio child closes on disconnect; only approvals the backend reissues on load can appear again. See [Hermes ACP internals](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/acp-internals.md) and [OpenClaw ACP compatibility](https://docs.openclaw.ai/cli/acp).

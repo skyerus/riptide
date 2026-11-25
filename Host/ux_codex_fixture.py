@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import ssl
 from http import HTTPStatus
 from pathlib import Path
 
@@ -107,12 +108,12 @@ async def fixture(socket):
             approval.cancel()
 
 
-async def run(port_file):
+async def run(port_file, tls=None):
     def authenticate(connection, request):
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return connection.respond(HTTPStatus.UNAUTHORIZED, "Fixture credential required.\n")
 
-    async with serve(fixture, "127.0.0.1", 0, process_request=authenticate) as service:
+    async with serve(fixture, "127.0.0.1", 0, process_request=authenticate, ssl=tls) as service:
         port_file.write_text(str(service.sockets[0].getsockname()[1]), encoding="utf-8")
         await service.serve_forever()
 
@@ -120,4 +121,13 @@ async def run(port_file):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Loopback-only App Server fixture for Riptide UI tests.")
     parser.add_argument("--port-file", required=True, type=Path)
-    asyncio.run(run(parser.parse_args().port_file))
+    parser.add_argument("--tls-cert", type=Path)
+    parser.add_argument("--tls-key", type=Path)
+    args = parser.parse_args()
+    if bool(args.tls_cert) != bool(args.tls_key):
+        parser.error("--tls-cert and --tls-key must be used together")
+    tls = None
+    if args.tls_cert:
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls.load_cert_chain(args.tls_cert, args.tls_key)
+    asyncio.run(run(args.port_file, tls))

@@ -12,8 +12,8 @@ private enum PairTransport: String, CaseIterable, Identifiable {
 struct PairRemoteScreen: View {
     let store: RemoteStore
     @Environment(\.dismiss) private var dismiss
-    @State private var kind = RemoteKind.codex
-    @State private var transport = PairTransport.webSocket
+    @State private var kind: RemoteKind
+    @State private var transport: PairTransport
     @State private var name = ""
     @State private var address = ""
     @State private var workspace = ""
@@ -24,6 +24,12 @@ struct PairRemoteScreen: View {
     @State private var copiedKey = false
     @State private var failure: String?
     @State private var pairing: Task<Void, Never>?
+
+    init(store: RemoteStore, initialKind: RemoteKind? = nil) {
+        self.store = store
+        _kind = State(initialValue: initialKind ?? .codex)
+        _transport = State(initialValue: initialKind.map { $0 == .codex ? .webSocket : .ssh } ?? .webSocket)
+    }
 
     private var usesSSH: Bool { kind != .codex && transport == .ssh }
 
@@ -62,6 +68,7 @@ struct PairRemoteScreen: View {
                         .accessibilityIdentifier("pair-ssh-public-key")
                     } else {
                         SecureField("Host pairing token", text: $token)
+                            .accessibilityIdentifier("pair-token")
                     }
                 } header: {
                     Text(usesSSH ? "ACP over SSH" : kind == .codex ? "Private App Server endpoint" : "Private ACP endpoint")
@@ -72,7 +79,11 @@ struct PairRemoteScreen: View {
                         Text("Use a TLS endpoint you control over your private network. The host token goes in this device’s Keychain; it isn’t a model API key.")
                     }
                 }
-                if let failure { Text(failure).foregroundStyle(.red) }
+                if let failure {
+                    Text(failure)
+                        .foregroundStyle(ChatTheme.warning)
+                        .accessibilityIdentifier("pair-error")
+                }
             }
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()

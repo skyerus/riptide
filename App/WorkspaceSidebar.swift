@@ -232,7 +232,7 @@ private struct WorkspaceEditor: View {
                 Section {
                     Button("Pair remote", systemImage: "plus") { pairing = true }
                         .accessibilityIdentifier("pair-remote")
-                    if !workspace.remotes.profiles.isEmpty {
+                    if !workspace.roster.isEmpty && !workspace.remotes.profiles.isEmpty {
                         Toggle("Show demo agents", isOn: Binding(
                             get: { workspace.showDemoAgents }, set: { workspace.setShowDemoAgents($0) }
                         ))
@@ -259,7 +259,7 @@ private struct WorkspaceEditor: View {
                         }
                     }
                 }
-                if workspace.remotes.profiles.isEmpty || workspace.showDemoAgents {
+                if !workspace.roster.isEmpty && (workspace.remotes.profiles.isEmpty || workspace.showDemoAgents) {
                     Section {
                         ForEach(pins.wrappedValue, id: \.self) { id in
                             if let agent = workspace.roster.first(where: { $0.target.id == id }) {

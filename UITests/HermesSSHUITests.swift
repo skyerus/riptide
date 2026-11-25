@@ -54,19 +54,27 @@ final class HermesSSHUITests: XCTestCase {
             field.typeText(value)
         }
 
-        button("edit-roster").tap()
-        button("pair-remote").tap()
+        let connectHermes = app.buttons["connect-hermes"]
+        let onboarding = connectHermes.waitForExistence(timeout: 4)
+        if onboarding {
+            connectHermes.tap()
+        } else {
+            button("edit-roster").tap()
+            button("pair-remote").tap()
+        }
         let pairBar = app.navigationBars["Pair remote"]
         XCTAssertTrue(pairBar.waitForExistence(timeout: 12))
-        let backend = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Backend")).firstMatch
-        if backend.exists && backend.isHittable { backend.tap() }
-        else { app.staticTexts["Codex"].tap() }
-        let hermesOption = app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != %@",
-                                                           "Hermes", "sidebar-agent-hermes")).firstMatch
-        reveal(hermesOption)
-        hermesOption.tap()
-        button("pair-transport").tap()
-        button("SSH").tap()
+        if !onboarding {
+            let backend = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Backend")).firstMatch
+            if backend.exists && backend.isHittable { backend.tap() }
+            else { app.staticTexts["Codex"].tap() }
+            let hermesOption = app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != %@",
+                                                               "Hermes", "sidebar-agent-hermes")).firstMatch
+            reveal(hermesOption)
+            hermesOption.tap()
+            button("pair-transport").tap()
+            button("SSH").tap()
+        }
         fill(app.textFields["Name"], with: "Hermes VPS")
         fill(app.textFields["pair-address"], with: endpoint)
         fill(app.textFields["Absolute workspace path"], with: workspace)
@@ -82,7 +90,7 @@ final class HermesSSHUITests: XCTestCase {
 
         pairBar.buttons["Pair"].tap()
         XCTAssertTrue(pairBar.waitForNonExistence(timeout: 35), "Hermes pairing did not dismiss the form.")
-        app.navigationBars["Manage agents"].buttons["Done"].tap()
+        if !onboarding { app.navigationBars["Manage agents"].buttons["Done"].tap() }
 
         func openHermes() {
             let hermes = app.scrollViews["sidebar-workspace-tabs"].buttons
