@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import os
+from pathlib import Path
 import sys
 
 MAX_FRAME = 2 * 1024 * 1024
@@ -59,7 +60,7 @@ def admitted(packet, workspace, pending):
     return True
 
 
-async def serve(workspace, command):
+async def serve(workspace, command, safari_mcp=None):
     loop = asyncio.get_running_loop()
     source = asyncio.StreamReader(limit=MAX_FRAME)
     stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
@@ -81,6 +82,10 @@ async def serve(workspace, command):
         while line := await source.readline():
             packet = json.loads(line)
             if admitted(packet, workspace, pending):
+                if safari_mcp and packet.get("method") in ("session/new", "session/load"):
+                    # The device can only send an empty MCP list. Supply this
+                    # administrator-configured connector after validating the request.
+                    packet["params"]["mcpServers"] = [safari_mcp]
                 agent.stdin.write(json.dumps(packet, allow_nan=False).encode() + b"\n")
                 await agent.stdin.drain()
             elif isinstance(packet, dict) and rpc_id(packet.get("id")):
@@ -122,7 +127,6 @@ async def serve(workspace, command):
 
 
 async def serve_safari(socket_path, device):
-    from pathlib import Path
     from safari_bridge import MAX_BODY, RelayError, browser_call
 
     loop = asyncio.get_running_loop()
@@ -152,6 +156,7 @@ if __name__ == "__main__":
     parser.add_argument("--hermes-screen", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
     parser.add_argument("--codex-dictation-auth", metavar="CODEX_AUTH_FILE")
     parser.add_argument("--safari", nargs=2, metavar=("BROWSER_SOCKET", "DEVICE_ID"))
+    parser.add_argument("--safari-mcp-python", metavar="PYTHON")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -192,7 +197,20 @@ if __name__ == "__main__":
         parser.exit(1, "This key is only authorized for Riptide ACP.\n")
     if not os.path.isabs(args.workspace) or not os.path.isdir(args.workspace):
         parser.error("An existing absolute workspace is required.")
+    safari_mcp = None
+    if args.safari_mcp_python:
+        socket_path = Path(args.safari[0]) if args.safari else None
+        if socket_path is None or not socket_path.is_absolute() or socket_path.name != "browser.sock":
+            parser.error("--safari-mcp-python requires --safari with an absolute browser.sock path.")
+        if not os.path.isabs(args.safari_mcp_python):
+            parser.error("An absolute Safari MCP Python path is required.")
+        safari_mcp = {
+            "name": "riptide_safari",
+            "command": args.safari_mcp_python,
+            "args": [str(Path(__file__).resolve().with_name("safari_mcp.py")), "--state-dir", str(socket_path.parent)],
+            "env": [],
+        }
     try:
-        asyncio.run(serve(args.workspace, command))
+        asyncio.run(serve(args.workspace, command, safari_mcp))
     except (OSError, ValueError):
         parser.exit(1, "The ACP transport closed.\n")
