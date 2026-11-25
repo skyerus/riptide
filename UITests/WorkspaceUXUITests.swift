@@ -46,12 +46,14 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(jump.exists)
         transcript.swipeUp(velocity: .slow)
         let readableArea = transcript.frame.insetBy(dx: 0, dy: 55)
-        let heading = app.staticTexts.matching(NSPredicate(format: "label MATCHES %@", "Update [0-9]+"))
-            .allElementsBoundByIndex.first { (readableArea.minY...readableArea.maxY).contains($0.frame.midY) }?.label
-        guard let heading else {
+        let readingHeading = app.staticTexts.matching(NSPredicate(format: "label MATCHES %@", "Update [0-9]+"))
+            .allElementsBoundByIndex.first { (readableArea.minY...readableArea.maxY).contains($0.frame.midY) }
+        guard let readingHeading else {
             XCTFail("No streamed update was visible in the reading area.")
             return
         }
+        let heading = readingHeading.label
+        let readingY = readingHeading.frame.midY
         XCTAssertNotEqual(heading, "Update 1", "Save a reading position partway through the transcript.")
         app.navigationBars.buttons["BackButton"].tap()
         openMainChat(in: app, agent: "hermes")
@@ -62,6 +64,7 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(restoredHeading.waitForExistence(timeout: 6))
         let restoredArea = transcript.frame
         XCTAssertTrue((restoredArea.minY...restoredArea.maxY).contains(restoredHeading.frame.midY))
+        XCTAssertEqual(restoredHeading.frame.midY, readingY, accuracy: 65)
         capture(app, as: "Resumed reading the same streamed chat")
         jump.tap()
         XCTAssertFalse(jump.exists)
