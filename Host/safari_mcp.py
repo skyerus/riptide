@@ -10,7 +10,16 @@ from safari_bridge import DEFAULT_STATE, RelayError, agent_call
 
 
 def make_server(state_dir):
-    server = FastMCP("Riptide Safari")
+    server = FastMCP(
+        "Riptide Safari",
+        instructions=(
+            "Use this server when the user asks to open a site in their own Safari or says “Use my Safari”. "
+            "Ask which site if the target is unclear. Request the HTTPS sign-in URL using safari_request_handoff, "
+            "post the returned URL as a clickable link in the same chat, and ask the user to sign in and send "
+            "“I’ve signed in”. Wait for the handoff before using page tools. "
+            "These tools operate the user’s Safari tab. The computer-use skill operates the VPS screen."
+        ),
+    )
 
     async def call(operation, **body):
         result = await asyncio.to_thread(agent_call, state_dir, operation, **body)
@@ -20,14 +29,19 @@ def make_server(state_dir):
 
     @server.tool()
     async def safari_request_handoff(url: str) -> dict:
-        """Request the user's signed-in Safari tab for this HTTPS site. Tell the user to sign in
-        and tap Hand back in the Riptide Safari extension. Save the returned request_id."""
-        return await call("request", url=url)
+        """Open a handoff for the user's own Safari. Use this for “Use my Safari”.
+        Post the returned HTTPS URL as a clickable chat link and save the request_id."""
+        result = await call("request", url=url)
+        result["message"] = (
+            "Post this link in the Riptide chat. The user signs in in Safari and sends “I’ve signed in” "
+            "in that chat. They can also use Hand back in Safari’s Riptide menu."
+        )
+        return result
 
     @server.tool()
     async def safari_wait_for_handoff(request_id: str, timeout: int = 60) -> dict:
-        """Wait up to 75 seconds for the user to hand back the tab. While waiting, tell the user
-        to open the request's URL in Safari, complete sign-in, and use the Riptide extension."""
+        """Wait up to 75 seconds for the user to share the signed-in tab after opening the chat link.
+        Use page tools once the handoff is shared."""
         return await call("wait", request_id=request_id, timeout=timeout)
 
     @server.tool()
