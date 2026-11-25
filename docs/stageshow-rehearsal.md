@@ -8,6 +8,12 @@ Stageshow 1.1.1 is vendored from [benjitaylor/skills at 299140f](https://github.
 - **AI chat:** Keep the reply and its formatting in place while it streams. Keep one progress cue for the current action; an approval card or a running tool row already tells the reader what is happening.
 - **Swipe:** Use real native scrolling and shorter rows for scanning. Keep the tab strip, Inbox searches, and chat scroll position attached to their existing navigation state.
 
+## Chats sheet
+
+The Dark hero reference informed the graphite surface steps and the current-chat marker. Swipe informed the compact rows and native sheet. The compact sheet keeps search and New chat beside one another, then expands when search gets focus.
+
+On both simulator sizes, open Chats from Main Chat, filter for a side chat, clear the query, then switch to the side chat and back. Check the empty catalog, an unmatched search and the create flow. Use `AgentChatsUITests.testChatPickerSearchesAndSwitchesBetweenMainAndSideChat` to capture the resting sheet and the focused search.
+
 ## Native checks
 
 Walk through Inbox → an approval → Back, then a connector → Main Chat → a live reply. Inspect the busy Inbox, the agent's main and saved chats, the composer with and without model controls, live progress, and the finished transcript. Check the iPhone 18 Pro and the narrower iPhone 17e at its native width. Fixtures supply all data.
