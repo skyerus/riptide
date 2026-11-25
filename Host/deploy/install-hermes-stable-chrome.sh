@@ -26,7 +26,7 @@ install_chrome() {
 
     signing_key=/usr/share/keyrings/google-chrome.gpg
     source=/etc/apt/sources.list.d/google-chrome.list
-    if [[ ! -e "$source" ]]; then
+    if [[ ! -e "$source" && ! -e /etc/apt/sources.list.d/google-chrome.sources ]]; then
         # Trust Google's current signing key for this repository only.
         curl -fsSL https://dl.google.com/linux/linux_signing_key.pub -o "$scratch/google.pub"
         install -d -m 0700 "$scratch/gnupg"
