@@ -31,7 +31,7 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
         } actions: {
             if dictation.active {
                 control("Cancel dictation", symbol: "xmark", identifier: "dictation-cancel", action: dictation.cancel)
-                if dictation.recording, let transcribe {
+                if dictation.canFinish, let transcribe {
                     ComposerAction("Finish dictating", symbol: "checkmark", disabled: false) {
                         dictation.finish(transcribe: transcribe, insert: insert)
                     }
@@ -48,10 +48,9 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
             }
         }
         .task(id: dictation.recording) {
-            guard dictation.recording, let transcribe else { return }
             while !Task.isCancelled, dictation.recording {
                 if dictation.sample() {
-                    dictation.finish(transcribe: transcribe, insert: insert)
+                    dictation.stopRecording()
                     break
                 }
                 do { try await Task.sleep(for: .milliseconds(90)) } catch { break }
@@ -80,9 +79,9 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
 
     private var recordingDisplay: some View {
         HStack(spacing: 9) {
-            if dictation.recording {
+            if dictation.canFinish {
                 Circle()
-                    .fill(Color.red)
+                    .fill(dictation.recording ? Color.red : ChatTheme.muted)
                     .frame(width: 7, height: 7)
                     .accessibilityHidden(true)
                 Text(dictation.elapsed, format: .time(pattern: .minuteSecond))
@@ -147,7 +146,7 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
 @MainActor
 @Observable
 private final class ComposerDictation {
-    private enum Phase { case idle, preparing, recording, transcribing }
+    private enum Phase { case idle, preparing, recording, recorded, transcribing }
     private var phase: Phase = .idle
     private var task: Task<Void, Never>?
     private var recorder: AVAudioRecorder?
@@ -160,11 +159,13 @@ private final class ComposerDictation {
     private(set) var elapsed: Duration = .zero
     var active: Bool { phase != .idle }
     var recording: Bool { phase == .recording }
+    var canFinish: Bool { recording || phase == .recorded }
     var activeLabel: String {
         switch phase {
         case .idle: ""
         case .preparing: "Starting microphone…"
         case .recording: "Recording dictation"
+        case .recorded: "Recording ready"
         case .transcribing: "Transcribing…"
         }
     }
@@ -225,13 +226,20 @@ private final class ComposerDictation {
         let power = recorder?.averagePower(forChannel: 0) ?? -32
         levels.removeFirst()
         levels.append(CGFloat(min(1, max(0, (power + 55) / 55))))
-        return elapsed >= .seconds(CodexDictation.maximumDuration) || recorder?.isRecording == false
+        let limit = DictationFixture.recordingLimit ?? CodexDictation.maximumDuration
+        return elapsed >= .seconds(limit) || recorder?.isRecording == false
+    }
+
+    func stopRecording() {
+        guard recording else { return }
+        stopMicrophone()
+        phase = .recorded
     }
 
     func finish(transcribe: @escaping DictationTranscriber, insert: @escaping (String) -> Void) {
-        guard recording else { return }
+        guard canFinish else { return }
+        stopRecording()
         let url = recordingURL
-        stopMicrophone()
         recordingURL = nil
         phase = .transcribing
         task = Task {
@@ -275,7 +283,19 @@ private final class ComposerDictation {
 }
 
 enum DictationFixture {
-    static var transcribe: DictationTranscriber? {
+    static let recordingLimit: TimeInterval? = {
+        #if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        if environment["RIPTIDE_DICTATION_FIXTURE"] == "1",
+           let seconds = environment["RIPTIDE_DICTATION_FIXTURE_LIMIT"].flatMap(Double.init),
+           seconds.isFinite, seconds > 0 {
+            return seconds
+        }
+        #endif
+        return nil
+    }()
+
+    static let transcribe: DictationTranscriber? = {
         #if DEBUG
         if ProcessInfo.processInfo.environment["RIPTIDE_DICTATION_FIXTURE"] == "1" {
             return { _ in
@@ -285,5 +305,5 @@ enum DictationFixture {
         }
         #endif
         return nil
-    }
+    }()
 }
