@@ -6,17 +6,17 @@ struct ChatComposer: View {
     let chatID: String
     @Binding var draft: String
     @Binding var modelPickerVisible: Bool
+    var editorFocus: FocusState<Bool>.Binding
     let transcribe: DictationTranscriber?
     let didSend: () -> Void
     let submit: (String) -> Void
 
     @State private var showContext = false
-    @FocusState private var editorFocused: Bool
 
     var body: some View {
         let prompt = "Message \(model.target.name)"
         DictatingComposer(
-            focused: editorFocused,
+            focused: editorFocus.wrappedValue,
             showsOptions: model.selected.context != nil || model.selected.hasConfigChoices
                 || model.selected.modelName != nil,
             chatID: chatID,
@@ -24,7 +24,7 @@ struct ChatComposer: View {
             draft: $draft,
             transcribe: transcribe,
             dismissKeyboard: {
-                editorFocused = false
+                editorFocus.wrappedValue = false
                 modelPickerVisible = false
                 showContext = false
             },
@@ -33,7 +33,7 @@ struct ChatComposer: View {
         ) {
             TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
-                .focused($editorFocused)
+                .focused(editorFocus)
                 .disabled(!model.selected.loaded)
                 .accessibilityIdentifier("chat-composer")
         } options: {
@@ -46,7 +46,7 @@ struct ChatComposer: View {
         }
         .onChange(of: model.selectedID) {
             showContext = false
-            editorFocused = false
+            editorFocus.wrappedValue = false
         }
         .onChange(of: modelPickerVisible) {
             if modelPickerVisible { showContext = false }
@@ -96,7 +96,7 @@ struct ChatComposer: View {
         guard canSubmit, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         submit(draft)
         draft = ""
-        editorFocused = false
+        editorFocus.wrappedValue = false
         didSend()
     }
 
