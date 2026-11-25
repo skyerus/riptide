@@ -12,6 +12,12 @@ public struct SafariChatHandoff: Codable, Equatable, Sendable {
         public let url: URL
         public let origin: String
         public let active: Bool
+        public let chatConfirmation: UUID?
+
+        private enum CodingKeys: String, CodingKey {
+            case id, url, origin, active
+            case chatConfirmation = "chat_confirmation"
+        }
 
         private struct Response: Decodable {
             let status: Int
@@ -29,6 +35,20 @@ public struct SafariChatHandoff: Codable, Equatable, Sendable {
             guard reply.status == 200, let handoff = reply.body.handoff, !handoff.active else { return nil }
             return handoff
         }
+    }
+
+    private struct PrepareChat: Encodable {
+        let operation = "prepare_chat"
+        let body: Body
+
+        struct Body: Encodable {
+            let id: String
+            let token: UUID
+        }
+    }
+
+    private struct PrepareReply: Decodable {
+        let status: Int
     }
 
     public let requestID: String
@@ -51,12 +71,15 @@ public struct SafariChatHandoff: Codable, Equatable, Sendable {
         expires = now.addingTimeInterval(300)
     }
 
-    public static func isConfirmation(_ message: String) -> Bool {
-        let normalized = message.lowercased().replacingOccurrences(of: "’", with: "'")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: ".!"))
-        return ["i've signed in", "i have signed in", "i'm signed in", "i am signed in",
-                "i've logged in", "i have logged in", "i'm logged in", "i am logged in"].contains(normalized)
+    public func prepareChatTurn(token: UUID, on relay: SafariSSHRelay, agent: SafariSSHAgent) async throws -> Bool {
+        let frame = try JSONEncoder().encode(PrepareChat(body: .init(id: requestID, token: token)))
+        let data = try await relay.request(frame, from: agent, timeout: .seconds(2))
+        return try JSONDecoder().decode(PrepareReply.self, from: data).status == 200
+    }
+
+    public func acceptsConfirmation(_ request: Request, token: UUID, now: Date = .now) -> Bool {
+        expires > now && resumeToken == nil && request.id == requestID && request.url == url &&
+            request.origin == origin && !request.active && request.chatConfirmation == token
     }
 
     public var launchURL: URL? { markedURL(openToken) }

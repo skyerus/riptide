@@ -8,8 +8,9 @@ import sys
 import tempfile
 import time
 import unittest
+from uuid import uuid4
 
-from safari_bridge import OFFLINE_SECONDS, Relay, RelayError, agent_call, https_origin
+from safari_bridge import CHAT_TURN_SECONDS, OFFLINE_SECONDS, Relay, RelayError, agent_call, https_origin
 
 
 class SafariHandoffTests(unittest.TestCase):
@@ -47,6 +48,30 @@ class SafariHandoffTests(unittest.TestCase):
                                         "url": "https://lookalike.test"})
         with self.assertRaisesRegex(RelayError, "already"):
             self.request()
+
+    def test_chat_confirmation_requires_a_live_turn_and_is_scoped_to_its_device(self):
+        request = self.request()
+        confirm = {"request_id": request["id"]}
+        other = "device-second-abcdef"
+        self.assertEqual(self.relay.agent("confirm_chat", confirm), {"state": "no_chat_turn"})
+
+        token = str(uuid4())
+        self.relay.browser("prepare_chat", {**request, "token": token}, self.device)
+        with self.assertRaises(RelayError):
+            self.relay.browser("prepare_chat", {**request, "token": str(uuid4())}, other)
+        self.assertNotIn("chat_confirmation", self.relay.browser("state", {}, self.device)["handoff"])
+        self.assertEqual(self.relay.agent("confirm_chat", confirm), {"state": "confirmed"})
+        self.assertEqual(self.relay.browser("state", {}, self.device)["handoff"]["chat_confirmation"], token)
+        self.assertNotIn("chat_confirmation", self.relay.browser("state", {}, other)["handoff"])
+        with self.assertRaises(RelayError):
+            self.relay.agent("action", {**confirm, "kind": "snapshot"})
+
+        self.relay.browser("prepare_chat", {**request, "token": str(uuid4())}, self.device)
+        self.assertNotIn("chat_confirmation", self.relay.browser("state", {}, self.device)["handoff"])
+        self.now += CHAT_TURN_SECONDS
+        self.assertEqual(self.relay.agent("confirm_chat", confirm), {"state": "no_chat_turn"})
+        self.relay.browser("grant", request, self.device)
+        self.assertEqual(self.relay.agent("confirm_chat", confirm), {"state": "shared"})
 
     def test_command_is_delivered_once_and_stale_result_cannot_complete_it(self):
         request = self.request()

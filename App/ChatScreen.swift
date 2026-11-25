@@ -20,6 +20,7 @@ struct ChatScreen: View {
     @State private var browserHandoff: BrowserHandoff?
     @State private var safariApproval = SafariChatApproval()
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(WorkspaceState.self) private var workspace
@@ -141,6 +142,7 @@ struct ChatScreen: View {
             safariApproval.restore(agentID: voiceRemote?.id, chatID: chatKey.chat)
         }
         .onChange(of: model.selectedID) {
+            safariApproval.cancelTurn()
             showModelPicker = false
             showAdvancedModelPicker = false
         }
@@ -198,13 +200,22 @@ struct ChatScreen: View {
         .onChange(of: model.selected.working) { showsCompletedToolCalls = false }
         .onChange(of: model.title) { visit() }
         .onChange(of: model.selected.loaded) { visit() }
-        .onDisappear { workspace.leave(chatKey) }
+        .onChange(of: scenePhase) {
+            if scenePhase != .active { safariApproval.cancelTurn() }
+        }
+        .onDisappear {
+            safariApproval.cancelTurn()
+            workspace.leave(chatKey)
+        }
+    }
+
+    private var safariAgent: SafariSSHAgent? {
+        guard let profile = voiceRemote, let credential = remoteStore?.bearer(for: profile) else { return nil }
+        return SafariSSHAgent(profile: profile, credential: credential)
     }
 
     private func openAgentLink(_ url: URL) {
-        guard url.scheme?.lowercased() == "https",
-              let profile = voiceRemote, let credential = remoteStore?.bearer(for: profile),
-              let agent = SafariSSHAgent(profile: profile, credential: credential) else {
+        guard url.scheme?.lowercased() == "https", let agent = safariAgent else {
             openURL(url)
             return
         }
@@ -218,11 +229,16 @@ struct ChatScreen: View {
         }
     }
 
-    private func approveSafari(_ text: String) -> Bool {
-        guard let resume = safariApproval.approve() else { return false }
-        if !model.selected.working { model.submit(text) }
-        openURL(resume)
-        return true
+    private func sendMessage(_ text: String) {
+        guard safariApproval.pending != nil, let agent = safariAgent else { model.submit(text); return }
+        let chatID = model.selectedID
+        model.submit(text) {
+            await safariApproval.prepareTurn(agent: agent, chatID: chatID, stillInChat: {
+                model.selectedID == chatID && !model.selected.stopping
+            }, turnWorking: {
+                model.selected.working
+            }, resume: { openURL($0) })
+        }
     }
 
     private var chat: some View {
@@ -240,8 +256,8 @@ struct ChatScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !resolvingInitialChat {
                 VStack(spacing: 0) {
-                    if let status = safariApproval.status {
-                        Text(status)
+                    if let error = safariApproval.errorMessage {
+                        Text(error)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 16)
@@ -262,9 +278,7 @@ struct ChatScreen: View {
                             workspace.rememberReadingOffset(nil, for: chatKey)
                             viewport.restore(nil)
                         },
-                        isSafariApproval: { safariApproval.handles($0, agentID: voiceRemote?.id, chatID: chatKey.chat) },
-                        canDictateSafariApproval: safariApproval.pending?.chatID == chatKey.chat,
-                        approveSafari: approveSafari
+                        submit: sendMessage
                     )
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }

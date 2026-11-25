@@ -8,9 +8,7 @@ struct ChatComposer: View {
     @Binding var modelPickerVisible: Bool
     let transcribe: DictationTranscriber?
     let didSend: () -> Void
-    let isSafariApproval: (String) -> Bool
-    let canDictateSafariApproval: Bool
-    let approveSafari: (String) -> Bool
+    let submit: (String) -> Void
 
     @State private var showContext = false
     @FocusState private var editorFocused: Bool
@@ -30,7 +28,7 @@ struct ChatComposer: View {
                 modelPickerVisible = false
                 showContext = false
             },
-            canSubmit: canSubmit || canDictateSafariApproval,
+            canSubmit: canSubmit,
             submitDraft: submitDraft
         ) {
             TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
@@ -91,23 +89,19 @@ struct ChatComposer: View {
 
     private var canSubmit: Bool {
         model.selectedID == chatID && model.selected.loaded &&
-            (isSafariApproval(draft) || (!model.selected.configuring && !model.selected.working))
+            !model.selected.configuring && !model.selected.working
     }
 
     private func submitDraft() {
         guard canSubmit, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        if isSafariApproval(draft) {
-            guard approveSafari(draft) else { return }
-        } else {
-            model.submit(draft)
-        }
+        submit(draft)
         draft = ""
         editorFocused = false
         didSend()
     }
 
     private var actionButton: some View {
-        let working = model.selected.working && !isSafariApproval(draft)
+        let working = model.selected.working
         let disabled = working ? model.selected.stopping : !canSubmit
             || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return ComposerAction(working ? "Stop reply" : "Send", symbol: working ? "stop.fill" : "arrow.up",
