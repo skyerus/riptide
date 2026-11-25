@@ -149,7 +149,7 @@ struct ChatScreen: View {
         .sheet(isPresented: $pairingVoice) {
             if let voiceRemote, let remoteStore { PairNativeVoiceScreen(remote: voiceRemote, store: remoteStore) }
         }
-        .sheet(item: $browserHandoff) { handoff in
+        .fullScreenCover(item: $browserHandoff) { handoff in
             HermesScreen(remote: handoff.remote, credential: handoff.credential, canContinue: {
                 guard model.selectedID == handoff.chatID, model.selected.loaded, !model.selected.stopping else { return false }
                 if let request = handoff.request { return model.selected.permissions.contains(request) }
