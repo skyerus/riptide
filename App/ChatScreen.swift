@@ -29,8 +29,15 @@ struct ChatScreen: View {
                 } description: {
                     Text("This connector didn’t list the saved chat.")
                 } actions: {
-                    Button("Open Main Chat") { Task { await model.showMain(); couldNotOpen = false; visit() } }
-                        .buttonStyle(.bordered)
+                    Button("Open Main Chat") {
+                        Task {
+                            model.selectMain()
+                            couldNotOpen = false
+                            await model.showMain()
+                            visit()
+                        }
+                    }
+                    .buttonStyle(.bordered)
                 }
             } else {
                 transcript.id(model.selectedID)
@@ -128,6 +135,8 @@ struct ChatScreen: View {
                 if model.sessions.contains(where: { $0.id == id }) { await model.open(id) }
                 else { couldNotOpen = true }
             } else {
+                model.selectMain()
+                landing = false
                 await model.showMain()
             }
             guard !Task.isCancelled else { return }
