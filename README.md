@@ -38,7 +38,7 @@ Choose **Inbox → bell → When I’m away**. Riptide holds alerts only for the
 
 1. On a trusted host make two distinct random token files (mode `0600`): a client pairing token and a publisher token. Run `python Host/attention_relay.py --client-token-file <client-file> --publisher-token-file <publisher-file>`. It binds to loopback on port `8766`. Put a certificate-validated HTTPS origin on your own private network in front of it. Enter the client token in Riptide’s notification settings; it goes into Keychain.
 2. On the Mac, build the helper with `swiftc -parse-as-library Host/desktop_presence.swift -o desktop-presence`. Run `./desktop-presence https://<private-relay> <publisher-token-file> <workspace-id> <desktop-app-bundle-id>` in the desktop user’s session. Copy the workspace ID from the paired agent’s context menu. Use one reporter per workspace and supply additional bundle IDs only for apps that work on that same workspace. The reporter does not infer the account or open conversation from the frontmost app. Stop the helper to stop reporting presence.
-3. To enable suspended delivery, install `Host/attention-requirements.txt` and run the relay with `--apns-key-file`, `--apns-key-id`, `--apns-team`, `--apns-topic` (the app bundle identifier), and `--device-file` (inside a mode-`0700` directory). Sign the iPhone build with a push-enabled Apple profile and set `CODE_SIGN_ENTITLEMENTS=App/RiptidePush.entitlements` and `RIPTIDE_PUSH_ENVIRONMENT=development` (or `production` to match signing). Test on a real device before relying on suspended delivery.
+3. To enable suspended delivery, install `Host/attention-requirements.txt` and run the relay with `--apns-key-file`, `--apns-key-id`, `--apns-team`, `--apns-topic` (the app bundle identifier), and `--device-file` (inside a mode-`0700` directory). Sign the iPhone build with a push-enabled Apple profile and set `RIPTIDE_PUSH_ENTITLEMENTS=App/RiptidePush.entitlements` and `RIPTIDE_PUSH_ENVIRONMENT=development` (or `production` to match signing). Test on a real device before relying on suspended delivery.
 4. `Host/codex_attention.py --help` documents the optional read-only Codex publisher. It monitors a single signed-in account and workspace via the existing private App Server connection; give it the Riptide workspace ID from the paired agent’s context menu. Other connectors may authenticate with the publisher token and POST `workspace`, `chat`, `eventID`, `reason` (`approval`, `input`, or `reply`), and `state` (`active` or `resolved`) to `/v1/events`. Use the existing paired workspace ID and backend chat ID. The relay takes no message body, and the App Server publisher does not issue turns or approvals.
 
 The relay holds alerts while the desktop is active and gives brief app switches a 12-second grace period. Run the relay on an always-on host if you want alerts when the Mac sleeps. Publishers must reuse the same event ID when resolving a request. This prevents late or retried updates from clearing a replacement request or re-alerting for one you already answered. The relay stores only private device registration and policy on disk; its event queue and presence are temporary. APNs receives a generic alert and opaque routing identifiers. Never use a shared public relay or put pairing tokens or signing keys in the repository.
@@ -87,6 +87,30 @@ In a paired chat, open **Chat actions → Open Hermes browser**, tap **Take over
 Install `Host/hermes-browser-handoff/SKILL.md` under the Hermes profile’s `skills/riptide-browser-handoff/` to teach Hermes to request the handoff in chat. Riptide recognises the skill’s native `clarify` request and answers it only after Hermes confirms handback. These notifications use the active chat connection.
 
 For agent-driven handoffs, use Hermes’s default tool runtime (`model.openai_runtime: auto`) and enable `browser` and `clarify` for ACP, alongside the profile’s existing toolsets. Hermes can use the `openai-codex` subscription provider in that runtime. A separate Hermes profile lets you keep browser work and its login sessions separate from chats using the optional Codex App Server runtime.
+
+### Safari handoff through MCP
+
+The Riptide iPhone app bundles a Safari extension that lets an agent continue in the exact tab where you sign in. The agent requests an HTTPS site, waits for you to share the tab, then reads the page and clicks or fills its controls through MCP. Safari keeps the sign-in session on your phone. Keep the shared tab visible until the agent finishes. **Take back control** stops sharing from Safari at any time. Device builds sign the extension’s bundle ID, app.riptide.client.safari, with the same team as Riptide.
+
+1. Put the files from `Host/` on the agent host and run the relay under the same OS account as the MCP process. Python 3.11 or newer is required. Keep this process running with your usual service supervisor.
+
+   ```sh
+   python3 Host/safari_bridge.py serve
+   ```
+
+2. Route private HTTPS to the relay’s loopback port `8772`, retaining the Authorization header. For example, [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) can serve that loopback port to your tailnet. Use an unused HTTPS listener or an existing private reverse proxy that strips the relay’s base path before forwarding. The relay’s agent interface is a mode-0600 local Unix socket. Use a separate relay per agent trust boundary.
+3. In a separate terminal on the host, create a pairing code with `python3 Host/safari_bridge.py pair https://your-private-agent-host`. On your iPhone, open Safari’s page menu, enable **Riptide** under **Manage Extensions**, then open the extension and paste the code. The code works once and expires after ten minutes. To replace a phone, pair the new one. To revoke a lost phone, run `python3 Host/safari_bridge.py unpair` on the host.
+4. Install the stdio connector with `python3 -m venv ~/.local/share/riptide-safari-mcp` and `~/.local/share/riptide-safari-mcp/bin/pip install -r Host/safari-requirements.txt`. Add that environment’s Python and the absolute path to `Host/safari_mcp.py` to your agent’s MCP configuration. For Hermes, add this entry to the paired profile’s `config.yaml`. If `platform_toolsets.acp` explicitly lists MCP servers, include `riptide_safari` there too. Reload the agent tools and start a new chat if your agent caches tool discovery.
+
+   ```yaml
+   mcp_servers:
+     riptide_safari:
+       command: /home/agent/.local/share/riptide-safari-mcp/bin/python
+       args: [/absolute/path/to/Host/safari_mcp.py]
+       timeout: 90
+   ```
+
+Ask your agent to use **Riptide Safari** and give it the sign-in URL. Open that URL in Safari, sign in, and choose **Riptide → Hand back** from Safari’s page menu. If Safari prompts for access, allow it for that site. An installed agent can use `safari_request_handoff`, `safari_wait_for_handoff`, then the page tools, and should call `safari_finish` when done. A handoff is limited to the chosen tab and HTTPS origin. Closing the tab or leaving the site releases it. A tab that stops responding expires after 25 seconds. Password fields stay with the person signing in. Page content returned to the agent can include sensitive information visible on that page, so share only with an agent you control.
 
 ## Local Codex handoff proof
 
