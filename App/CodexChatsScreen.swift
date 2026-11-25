@@ -142,8 +142,8 @@ struct CodexSavedChatScreen: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            transcript
+        transcript
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if ready { composer }
         }
         .background(ChatTheme.background)

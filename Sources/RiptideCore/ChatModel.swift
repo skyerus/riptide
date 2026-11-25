@@ -124,6 +124,7 @@ public final class AgentChatModel {
         public fileprivate(set) var transcript = Transcript()
         public fileprivate(set) var permissions: [PermissionRequest] = []
         public fileprivate(set) var configOptions: [SessionConfigOption] = []
+        fileprivate var reportedModelName: String?
         public fileprivate(set) var context: ContextUsage?
         public fileprivate(set) var configuring = false
         public fileprivate(set) var configError: String?
@@ -134,6 +135,11 @@ public final class AgentChatModel {
         public fileprivate(set) var error: String?
         public fileprivate(set) var notice: String?
         public fileprivate(set) var plan: [TurnPlanStep] = []
+
+        public var modelName: String? {
+            configOptions.first { $0.category == .model }?.currentName ?? reportedModelName
+        }
+        public var hasConfigChoices: Bool { configOptions.contains { !$0.choices.isEmpty } }
 
         fileprivate mutating func receive(_ event: ACPEvent) {
             switch event {
@@ -461,6 +467,7 @@ public final class AgentChatModel {
         chat.transcript = Transcript()
         for event in opened.events { chat.receive(event) }
         if let options = opened.configOptions { chat.configOptions = options }
+        chat.reportedModelName = opened.reportedModelName
         chat.loaded = true
         chats[opened.id] = chat
     }

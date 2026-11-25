@@ -90,7 +90,9 @@ struct CodexLiveScreen: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .transcriptViewport($viewport, chat: nil)
-            if active { composer }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if active { composer }
+            }
         }
         .background(ChatTheme.background.ignoresSafeArea())
         .navigationTitle("Codex on this Mac")

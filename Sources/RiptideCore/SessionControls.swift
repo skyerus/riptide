@@ -20,7 +20,7 @@ public struct SessionConfigOption: Identifiable, Equatable, Sendable {
     public let choices: [Choice]
 
     public var currentName: String? {
-        currentChoice?.name
+        currentChoice?.name ?? Self.fallbackName(currentValue, category: category)
     }
 
     public var currentChoice: Choice? { choices.first { $0.id == currentValue } }
@@ -42,9 +42,28 @@ public struct SessionConfigOption: Identifiable, Equatable, Sendable {
                                   group: groupName ?? labels.provider)
                 }
             }
-            guard !choices.isEmpty else { return nil }
             return Self(id: id, name: name, category: category, currentValue: current, choices: choices)
         }
+    }
+
+    static func reportedModelName(in response: JSON) -> String? {
+        guard let models = response["models"], let current = models["currentModelId"]?.string else { return nil }
+        let choice = models["availableModels"]?.array?.first { $0["modelId"]?.string == current }
+        if let name = choice?["name"]?.string, !name.isEmpty {
+            return displayLabels(name, value: current, category: .model).name
+        }
+        return fallbackName(current, category: .model)
+    }
+
+    private static func fallbackName(_ value: String, category: Category) -> String? {
+        let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        if category == .model, let rawModel = name.split(separator: ":").last {
+            let model = String(rawModel)
+            let compactName = compactModelName(model)
+            if compactName != model { return compactName }
+        }
+        return displayLabels(name, value: name, category: category).name
     }
 
     private static func displayLabels(_ name: String, value: String, category: Category) -> (name: String, provider: String?) {
@@ -101,4 +120,5 @@ public struct OpenedSession: Sendable {
     public let configOptions: [SessionConfigOption]?
     public let events: [ACPEvent]
     public var nativeSessionKey: String? = nil
+    var reportedModelName: String? = nil
 }

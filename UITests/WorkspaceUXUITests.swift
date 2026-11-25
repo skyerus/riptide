@@ -35,7 +35,7 @@ final class WorkspaceUXUITests: XCTestCase {
         composer.tap()
         composer.typeText("streaming demo")
         app.buttons["send-message"].tap()
-        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
         let transcript = app.scrollViews["chat-transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["Update 4"].waitForExistence(timeout: 6))
@@ -44,13 +44,17 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(jump.waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["Long stream complete."].waitForExistence(timeout: 10))
         XCTAssertTrue(jump.exists)
+        transcript.swipeUp(velocity: .slow)
         let readableArea = transcript.frame.insetBy(dx: 0, dy: 55)
-        let heading = app.staticTexts.matching(NSPredicate(format: "label MATCHES %@", "Update [0-9]+"))
-            .allElementsBoundByIndex.first { (readableArea.minY...readableArea.maxY).contains($0.frame.midY) }?.label
-        guard let heading else {
+        let readingHeading = app.staticTexts.matching(NSPredicate(format: "label MATCHES %@", "Update [0-9]+"))
+            .allElementsBoundByIndex.first { (readableArea.minY...readableArea.maxY).contains($0.frame.midY) }
+        guard let readingHeading else {
             XCTFail("No streamed update was visible in the reading area.")
             return
         }
+        let heading = readingHeading.label
+        let readingY = readingHeading.frame.midY
+        XCTAssertNotEqual(heading, "Update 1", "Save a reading position partway through the transcript.")
         app.navigationBars.buttons["BackButton"].tap()
         openMainChat(in: app, agent: "hermes")
         app.navigationBars.buttons["BackButton"].tap()
@@ -60,6 +64,7 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(restoredHeading.waitForExistence(timeout: 6))
         let restoredArea = transcript.frame
         XCTAssertTrue((restoredArea.minY...restoredArea.maxY).contains(restoredHeading.frame.midY))
+        XCTAssertEqual(restoredHeading.frame.midY, readingY, accuracy: 65)
         capture(app, as: "Resumed reading the same streamed chat")
         jump.tap()
         XCTAssertFalse(jump.exists)
