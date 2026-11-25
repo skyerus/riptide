@@ -10,6 +10,7 @@ struct ChatScreen: View {
     @State private var landing = true
     @State private var couldNotOpen = false
     @State private var viewport = TranscriptViewport()
+    @State private var showsCompletedToolCalls = false
     @State private var pairingVoice = false
     @State private var activeCall: ChatCall?
     @State private var voiceError: String?
@@ -73,6 +74,9 @@ struct ChatScreen: View {
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
+                    if model.selected.transcript.hasCompletedToolCalls {
+                        ToolCallsMenuButton(showsCompletedCalls: $showsCompletedToolCalls)
+                    }
                     FollowUpButton(chat: chatKey, title: model.title)
                     Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                 } label: {
@@ -139,7 +143,11 @@ struct ChatScreen: View {
             landing = false
             visit()
         }
-        .onChange(of: model.selectedID) { visit() }
+        .onChange(of: model.selectedID) {
+            showsCompletedToolCalls = false
+            visit()
+        }
+        .onChange(of: model.selected.working) { showsCompletedToolCalls = false }
         .onChange(of: model.title) { visit() }
         .onChange(of: model.selected.loaded) { visit() }
         .onDisappear { workspace.leave(chatKey) }
@@ -180,10 +188,10 @@ struct ChatScreen: View {
                         .padding(.top, 24)
                         .accessibilityIdentifier("empty-chat")
                 }
-                ForEach(model.selected.transcript.entries) { entry in
+                ForEach(model.selected.transcript.visibleEntries(showCompletedToolCalls: showsCompletedToolCalls)) { entry in
                     switch entry.content {
                     case .message(.user, let text):
-                        TranscriptUserMessage(text: text)
+                        TranscriptUserMessage(text: text, receipt: entry.receipt)
                     case .message(.assistant, let text):
                         ChatMarkdown(
                             source: text,
@@ -248,6 +256,7 @@ struct ChatScreen: View {
         .font(.footnote)
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chat-tool-call")
     }
 
     private func permissionCard(_ request: PermissionRequest) -> some View {

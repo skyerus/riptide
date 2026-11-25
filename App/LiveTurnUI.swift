@@ -18,16 +18,38 @@ extension View {
 
 struct TranscriptUserMessage: View {
     let text: String
+    var receipt: MessageReceipt? = nil
 
     var body: some View {
-        Text(text)
-            .textSelection(.enabled)
-            .foregroundStyle(ChatTheme.ink)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(ChatTheme.raised, in: RoundedRectangle(cornerRadius: 16))
-            .padding(.leading, 32)
-            .frame(maxWidth: .infinity, alignment: .trailing)
+        VStack(alignment: .trailing, spacing: 4) {
+            Text(ChatLinks.styled(AttributedString(text)))
+                .textSelection(.enabled)
+                .environment(\.openURL, ChatLinks.openURL)
+                .foregroundStyle(ChatTheme.ink)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(ChatTheme.raised, in: RoundedRectangle(cornerRadius: 16))
+            if let receipt {
+                Text(receipt.rawValue)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(ChatTheme.muted)
+                    .padding(.trailing, 6)
+                    .accessibilityIdentifier("message-receipt")
+            }
+        }
+        .padding(.leading, 32)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
+struct ToolCallsMenuButton: View {
+    @Binding var showsCompletedCalls: Bool
+
+    var body: some View {
+        Button(showsCompletedCalls ? "Hide Tool Calls" : "Show Tool Calls", systemImage: "terminal") {
+            showsCompletedCalls.toggle()
+        }
+        .accessibilityIdentifier("toggle-completed-tool-calls")
     }
 }
 
@@ -145,18 +167,25 @@ private struct TranscriptContact: UIGestureRecognizerRepresentable {
 struct TurnPulse: View {
     let title: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .footnote) private var dotSize = 5.0
 
     var body: some View {
         HStack(spacing: 9) {
-            if reduceMotion {
-                Image(systemName: "waveform")
-                    .accessibilityHidden(true)
-            } else {
-                ProgressView()
-                    .controlSize(.mini)
-                    .tint(ChatTheme.sidebarAccent)
-                    .accessibilityHidden(true)
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+                let cycle = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.25) / 1.25
+                HStack(spacing: dotSize * 0.75) {
+                    ForEach(0..<3) { index in
+                        let phase = cycle - Double(index) * 0.16
+                        let lift = reduceMotion ? 0 : max(0, sin(2 * .pi * phase))
+                        Circle()
+                            .fill(ChatTheme.sidebarAccent.opacity(0.58 + 0.42 * lift))
+                            .frame(width: dotSize, height: dotSize)
+                            .offset(y: -dotSize * 0.65 * lift)
+                    }
+                }
+                .frame(height: dotSize * 2)
             }
+            .accessibilityHidden(true)
             Text(title)
                 .font(.footnote.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
@@ -209,41 +238,43 @@ struct TurnPlanCard: View {
 }
 
 struct CodexActivityCard: View {
-    let progress: CodexTurnProgress
-    @State private var expanded = false
+    let items: [CodexWorkItem]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !progress.plan.isEmpty { TurnPlanCard(steps: progress.plan) }
-            if !progress.items.isEmpty {
-                DisclosureGroup(isExpanded: $expanded) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(progress.items) { item in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Label(item.title, systemImage: symbol(for: item))
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundStyle(item.state == .failed ? ChatTheme.warning : ChatTheme.ink)
-                                    .accessibilityValue(item.state.rawValue)
-                                if !item.detail.isEmpty {
-                                    Text(item.detail)
-                                        .font(item.kind == .command ? .system(.caption, design: .monospaced) : .caption)
-                                        .foregroundStyle(ChatTheme.muted)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                        }
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(items) { item in
+                if item.detail.count > 220 || item.detail.split(separator: "\n").count > 4 {
+                    DisclosureGroup {
+                        detail(item).padding(.top, 4)
+                    } label: {
+                        heading(item)
                     }
-                    .padding(.vertical, 8)
-                } label: {
-                    Label("Activity · \(progress.items.count)", systemImage: "waveform.path")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(ChatTheme.ink)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        heading(item)
+                        if !item.detail.isEmpty { detail(item) }
+                    }
                 }
-                .padding(12)
-                .contentPanel()
-                .accessibilityIdentifier("codex-activity")
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .contentPanel()
+        .accessibilityIdentifier("codex-activity")
+    }
+
+    private func heading(_ item: CodexWorkItem) -> some View {
+        Label(item.title, systemImage: symbol(for: item))
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(item.state == .failed ? ChatTheme.warning : ChatTheme.ink)
+            .accessibilityValue(item.state.rawValue)
+    }
+
+    private func detail(_ item: CodexWorkItem) -> some View {
+        Text(item.detail)
+            .font(item.kind == .command ? .system(.caption, design: .monospaced) : .caption)
+            .foregroundStyle(ChatTheme.muted)
+            .textSelection(.enabled)
     }
 
     private func symbol(for item: CodexWorkItem) -> String {

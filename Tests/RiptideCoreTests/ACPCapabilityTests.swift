@@ -164,6 +164,12 @@ struct ACPCapabilityTests {
                     ["id": "running", "status": "inProgress", "items": .array([
                         ["id": "message-0", "type": "userMessage",
                          "content": .array([["type": "text", "text": "saved conversation"]])]
+                    ])],
+                    ["id": "previous", "status": "completed", "items": .array([
+                        ["id": "previous-user", "type": "userMessage",
+                         "content": .array([["type": "text", "text": "older prompt"]])],
+                        ["id": "previous-tool", "type": "commandExecution", "command": "echo older"],
+                        ["id": "previous-agent", "type": "agentMessage", "text": "older reply"]
                     ])]
                 ])])]
             case "account/read":
@@ -189,7 +195,12 @@ struct ACPCapabilityTests {
         let client = CodexLiveClient(transport: transport, workspace: "/disposable")
         let snapshot = try await client.openSavedChat("existing")
         #expect(snapshot.working)
-        #expect(snapshot.messages.first?.text == "saved conversation")
+        #expect(snapshot.messages.last?.text == "saved conversation")
+        #expect(snapshot.messages.last?.receipt == .delivered)
+        #expect(snapshot.messages.first?.receipt == .seen)
+        #expect(snapshot.turns.first?.progress.items.first?.title == "echo older")
+        #expect(snapshot.turns.first?.progress.items.first?.state == .finished)
+        #expect(snapshot.progress.items.isEmpty)
         var chatEvents = client.chatEvents.makeAsyncIterator()
         let event = try await chatEvents.next()
         guard case .approval(let approval) = event else {
@@ -440,10 +451,15 @@ struct ACPCapabilityTests {
             try await model.submitHermesVoice("Wrong chat", in: "unrelated")
         }
         #expect(try await model.submitHermesVoice("Read the notes", in: "existing") == "The notes are ready.")
-        for _ in 0..<20 where model.selected.transcript.entries.count < 2 { await Task.yield() }
-        #expect(model.selected.transcript.entries.map(\.content) == [
+        let expected: [ChatEntry.Content] = [
             .message(.user, "Read the notes"), .message(.assistant, "The notes are ready.")
-        ])
+        ]
+        let deadline = ContinuousClock.now + .seconds(2)
+        while model.selected.transcript.entries.map(\.content) != expected && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.selected.transcript.entries.map(\.content) == expected)
+        #expect(model.selected.transcript.entries.first?.receipt == .seen)
         await client.close()
     }
 

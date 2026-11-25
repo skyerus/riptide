@@ -254,18 +254,24 @@ final class WorkspaceUXUITests: XCTestCase {
         editor.typeText("show live feedback")
         app.buttons["Send"].tap()
 
+        let receipt = app.staticTexts["message-receipt"]
+        XCTAssertTrue(receipt.waitForExistence(timeout: 5))
+        XCTAssertEqual(receipt.label, "Delivered")
         let step = app.staticTexts["Inspect the fixture workspace"]
         XCTAssertTrue(step.waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["Checking the current changes."].exists)
         let progress = app.descendants(matching: .any).matching(identifier: "turn-progress").firstMatch
         XCTAssertEqual(progress.label, "Running a command…")
-        let activity = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Activity")).firstMatch
-        XCTAssertTrue(activity.waitForExistence(timeout: 5))
-        activity.tap()
-        XCTAssertTrue(app.staticTexts["Fixture output is ready."].waitForExistence(timeout: 5))
+        let output = app.staticTexts["Fixture output is ready."]
+        XCTAssertTrue(output.waitForExistence(timeout: 5))
+        XCTAssertEqual(receipt.label, "Seen")
         XCTAssertTrue(app.buttons["stop-codex-turn"].exists)
         capture(app, as: "Codex turn shows live plan and command output")
         XCTAssertTrue(app.staticTexts["The fixture turn is complete."].waitForExistence(timeout: 16))
+        XCTAssertTrue(output.waitForNonExistence(timeout: 5))
+        app.buttons["codex-chat-actions"].tap()
+        app.buttons["Show Tool Calls"].tap()
+        XCTAssertTrue(output.waitForExistence(timeout: 5))
         app.buttons["codex-chat-heading"].tap()
         XCTAssertTrue(app.buttons["codex-saved-chat"].firstMatch.waitForExistence(timeout: 8))
     }

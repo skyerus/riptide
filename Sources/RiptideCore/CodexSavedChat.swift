@@ -51,6 +51,7 @@ public struct CodexChatMessage: Equatable, Identifiable, Sendable {
     public var text: String
     public var streaming: Bool
     public var phase: Phase?
+    public fileprivate(set) var receipt: MessageReceipt?
 
     init?(_ item: JSON, starting: Bool = false) {
         guard let id = item["id"]?.string else { return nil }
@@ -68,6 +69,7 @@ public struct CodexChatMessage: Equatable, Identifiable, Sendable {
         self.id = id
         streaming = starting
         phase = item["phase"]?.string.flatMap(Phase.init(rawValue:))
+        receipt = role == .user ? .delivered : nil
     }
 
     public init(id: String, role: ChatRole, text: String, streaming: Bool, phase: Phase? = nil) {
@@ -76,14 +78,59 @@ public struct CodexChatMessage: Equatable, Identifiable, Sendable {
         self.text = text
         self.streaming = streaming
         self.phase = phase
+        receipt = role == .user ? .delivered : nil
     }
 }
 
+public struct CodexTranscriptTurn: Identifiable, Sendable {
+    public let id: String
+    public private(set) var messages: [CodexChatMessage] = []
+    public private(set) var progress = CodexTurnProgress()
+
+    public init(id: String) { self.id = id }
+
+    public mutating func upsert(_ message: CodexChatMessage) {
+        let index: Int
+        if let existing = messages.firstIndex(where: { $0.id == message.id }) {
+            index = existing
+            let receipt = messages[index].receipt
+            messages[index] = message
+            if receipt == .seen { messages[index].receipt = receipt }
+        } else {
+            index = messages.count
+            messages.append(message)
+        }
+        if message.role == .assistant, !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            for prompt in messages.indices.prefix(index) where messages[prompt].receipt == .delivered {
+                messages[prompt].receipt = .seen
+            }
+        }
+    }
+
+    public mutating func appendReply(_ text: String, id: String) -> Bool {
+        let current = messages.first { $0.id == id }
+        guard current?.streaming != false else { return false }
+        var message = current ?? CodexChatMessage(id: id, role: .assistant, text: "", streaming: true)
+        message.text += text
+        upsert(message)
+        return message.phase != .commentary && !text.isEmpty
+    }
+
+    public mutating func finishStreaming() {
+        for index in messages.indices where messages[index].streaming { messages[index].streaming = false }
+    }
+
+    public mutating func apply(_ update: CodexWorkUpdate) { progress.apply(update) }
+}
+
 public struct CodexChatSnapshot: Sendable {
-    public let messages: [CodexChatMessage]
-    public let working: Bool
+    public let turns: [CodexTranscriptTurn]
+    public let activeTurnID: String?
     public let hasOlderTurns: Bool
-    public let progress: CodexTurnProgress
+
+    public var messages: [CodexChatMessage] { turns.flatMap(\.messages) }
+    public var working: Bool { activeTurnID != nil }
+    public var progress: CodexTurnProgress { turns.first { $0.id == activeTurnID }?.progress ?? .init() }
 }
 
 public struct CodexChatApproval: Equatable, Identifiable, Sendable {
@@ -134,8 +181,8 @@ public struct CodexInputQuestion: Equatable, Identifiable, Sendable {
 }
 
 public enum CodexChatEvent: Sendable {
-    case message(CodexChatMessage)
-    case turnStarted
+    case message(CodexChatMessage, turnID: String?)
+    case turnStarted(String)
     case live(CodexLiveEvent)
     case approval(CodexChatApproval)
     case approvalResolved(UUID)
