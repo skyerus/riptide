@@ -2,6 +2,90 @@ import XCTest
 
 final class WorkspaceUXUITests: XCTestCase {
     @MainActor
+    func testHermesDictationCancelAndStopPreserveAnEditableDraft() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE"] = "1"
+        continueAfterFailure = false
+        app.launch()
+        openMainChat(in: app, agent: "hermes")
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        editor.tap()
+        editor.typeText("Please review this.")
+        let dictate = app.buttons["dictation-start"]
+        dictate.tap()
+        let stop = app.buttons["dictation-stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["dictation-send"].isEnabled)
+        capture(app, as: "Dictation with Stop and Send")
+        app.buttons["dictation-cancel"].tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertEqual(editor.value as? String, "Please review this.")
+
+        dictate.tap()
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        stop.tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        XCTAssertEqual(editor.value as? String, "Please review this. Add a quick summary of the open items.")
+        XCTAssertTrue(app.buttons["send-message"].isEnabled)
+        XCTAssertFalse(app.staticTexts["Please review this. Add a quick summary of the open items."].exists)
+        capture(app, as: "Dictation in editable draft")
+        editor.tap()
+        editor.typeText(" Edited.")
+        XCTAssertTrue((editor.value as? String)?.contains("Edited.") == true)
+    }
+
+    @MainActor
+    func testHermesSendsDictationInOneTap() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE"] = "1"
+        continueAfterFailure = false
+        app.launch()
+        openMainChat(in: app, agent: "hermes")
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        editor.tap()
+        editor.typeText("Please review this.")
+        app.buttons["dictation-start"].tap()
+
+        let send = app.buttons["dictation-send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        send.tap()
+        let transcript = app.scrollViews["chat-transcript"]
+        let message = transcript.staticTexts["Please review this. Add a quick summary of the open items."]
+        XCTAssertTrue(message.waitForExistence(timeout: 10))
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertFalse((editor.value as? String)?.contains("Please review this.") ?? false)
+        XCTAssertEqual(transcript.staticTexts.matching(identifier: message.label).count, 1)
+        capture(app, as: "Dictation sent directly")
+    }
+
+    @MainActor
+    func testHermesDictationStillNeedsConfirmationAtTheRecordingLimit() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE"] = "1"
+        app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE_LIMIT"] = "1"
+        continueAfterFailure = false
+        app.launch()
+        openMainChat(in: app, agent: "hermes")
+        let dictate = app.buttons["dictation-start"]
+        XCTAssertTrue(dictate.waitForExistence(timeout: 8))
+        dictate.tap()
+        let status = app.descendants(matching: .any).matching(identifier: "dictation-status").firstMatch
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Recording ready"),
+                                              object: status)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 8), .completed)
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertFalse(editor.exists)
+        app.buttons["dictation-stop"].tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        XCTAssertEqual(editor.value as? String, "Add a quick summary of the open items.")
+    }
+
+    @MainActor
     func testTheTranscriptFollowsNewLinesBeforeTheReplyFinishes() {
         let app = freshApp()
         openMainChat(in: app)
@@ -216,6 +300,20 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
+    func testCodexSendsDictationInOneTap() throws {
+        let (app, editor) = try openCodexFixture(dictation: true)
+        editor.tap()
+        editor.typeText("finish without approval")
+        app.buttons["dictation-start"].tap()
+        let send = app.buttons["dictation-send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        send.tap()
+        let message = app.staticTexts["finish without approval Add a quick summary of the open items."]
+        XCTAssertTrue(message.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["A reply finished in the other workspace."].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
     func testCodexApprovalArrivingAfterSwitchStillOpensTheSameLiveTurn() throws {
         let (app, editor) = try openCodexFixture()
         editor.tap()
@@ -282,7 +380,7 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
-    private func openCodexFixture() throws -> (XCUIApplication, XCUIElement) {
+    private func openCodexFixture(dictation: Bool = false) throws -> (XCUIApplication, XCUIElement) {
         guard let port = ProcessInfo.processInfo.environment["RIPTIDE_UX_FIXTURE_PORT"] else {
             throw XCTSkip("Start Host/ux_codex_fixture.py and export the port to the test runner.")
         }
@@ -291,6 +389,7 @@ final class WorkspaceUXUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_CODEX_URL"] = "ws://127.0.0.1:\(port)"
         app.launchEnvironment["RIPTIDE_CODEX_BEARER"] = "fixture-" + String(repeating: "x", count: 40)
         app.launchEnvironment["RIPTIDE_CODEX_WORKSPACE"] = "/riptide-ux-fixture"
+        if dictation { app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE"] = "1" }
         app.launch()
         app.buttons["sidebar-agent-local-codex"].tap()
         let row = app.buttons["sidebar-chat-busy-fixture-thread"]

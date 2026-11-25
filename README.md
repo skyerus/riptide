@@ -120,6 +120,18 @@ Start a read-only test turn in the official Codex terminal UI connected to that 
 
 The opt-in `CodexLiveUITests` flow expects a private directory containing the token file `bearer` and the disposable workspace `proof`. Set `TEST_RUNNER_RIPTIDE_CODEX_PROOF_DIR` to that directory and `TEST_RUNNER_RIPTIDE_CODEX_URL` to the loopback URL when running the test via `xcodebuild`. Start a terminal turn that emits progress for about two minutes and follows any later steering instruction. The test waits for fresh output, sends a marker, and verifies that the same turn returns it. Without the opt-in settings, the test is skipped.
 
+## Composer dictation
+
+Tap the microphone in a Codex or Hermes composer and speak. Tap **Stop Dictation** to add the transcript to your editable draft, or tap **Send** to transcribe and send it in one step. Recording stops after two minutes. The paired host forwards confirmed recordings to ChatGPT transcription using its existing Codex sign-in.
+
+Enable the dictation relay on the host with Python 3.11+, curl, and the signed-in Codex account’s absolute, mode-0600 `auth.json` path. Sign in using ChatGPT. For Codex hosts, use the same sign-in as App Server. If Codex uses the OS credential store, select file storage with `cli_auth_credentials_store = "file"` and sign in there first. Run the relay as the OS user who owns that sign-in.
+
+- **Hermes over SSH:** Install `Host/codex_dictation.py` alongside the updated `Host/ssh_acp.py`. Add `--codex-dictation-auth /absolute/path/to/.codex/auth.json` to the device’s existing forced command before `--`. The app uses the existing SSH device key and pinned host. The dedicated channel returns text to the draft without opening an ACP session.
+- **Hermes over WebSocket:** Install `Host/codex_dictation.py` alongside the updated `Host/acp_bridge.py`. Add `--codex-dictation-auth /absolute/path/to/.codex/auth.json` before `-- hermes acp` in the bridge command. Route `/riptide-dictation` to the same loopback bridge as `/acp`, on the same private TLS origin, with the Authorization header.
+- **Codex over WebSocket:** Run the same Python bridge as a standalone dictation relay with `--port 8767 --token-file /absolute/path/to/capability-token --codex-dictation-auth /absolute/path/to/.codex/auth.json`. Use the same bearer token Riptide uses for App Server. On the existing private TLS origin, route only `/riptide-dictation` to the relay’s loopback port and forward the Authorization header. The App Server route continues to handle chats.
+
+The host rereads the Codex sign-in for each request. Renew an expired sign-in through Codex. ChatGPT receives the recording when you confirm it and applies its service retention. The paired host relays the recording in memory and returns only the transcription to the phone.
+
 ## Codex subscription voice
 
 Riptide uses the host's existing ChatGPT sign-in and refuses API-key accounts. It negotiates the experimental Codex App Server WebRTC route; media goes directly between the phone and the voice service. Use **Call Codex directly** from a Codex tab's menu for a separate, ephemeral, read-only call. Tap the phone icon inside a saved chat to speak with that exact thread and its context without replacing the chat connection or changing host permissions. Calls are outgoing and foreground-only.

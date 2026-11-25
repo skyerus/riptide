@@ -284,12 +284,22 @@ struct CodexSavedChatScreen: View {
 
     private var composer: some View {
         let prompt = working ? "Steer this turn" : "Message Codex"
-        let disabled = sending || stopping || editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return ComposerSurface(focused: composerFocused) {
+        let canSubmit = ready && !sending && !stopping
+        let disabled = !canSubmit || editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return DictatingComposer(
+            focused: composerFocused, showsOptions: false, chatID: chatKey?.chat,
+            canDictate: canSubmit, draft: editor,
+            transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
+            dismissKeyboard: { composerFocused = false },
+            canSubmit: canSubmit,
+            submitDraft: submitDraft
+        ) {
             TextField(prompt, text: editor, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
                 .focused($composerFocused)
                 .accessibilityIdentifier("codex-composer")
+        } options: {
+            EmptyView()
         } actions: {
             if working {
                 Button {
@@ -306,10 +316,7 @@ struct CodexSavedChatScreen: View {
                 .accessibilityLabel("Stop turn")
                 .accessibilityIdentifier("stop-codex-turn")
             }
-            ComposerAction(working ? "Steer" : "Send", symbol: "arrow.up", disabled: disabled) {
-                composerFocused = false
-                Task { await send() }
-            }
+            ComposerAction(working ? "Steer" : "Send", symbol: "arrow.up", disabled: disabled, action: submitDraft)
         }
     }
 
@@ -339,12 +346,18 @@ struct CodexSavedChatScreen: View {
         .contentPanel()
     }
 
-    private func send() async {
-        let text = editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func submitDraft() {
+        guard let session, ready, !sending, !stopping else { return }
+        let draft = editor
+        let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        composerFocused = false
         if let chatKey { workspace.rememberReadingOffset(nil, for: chatKey) }
         viewport.restore(nil)
-        if await session?.send(text) == true, editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
-            editor.wrappedValue = ""
+        Task {
+            if await session.send(text), draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+                draft.wrappedValue = ""
+            }
         }
     }
 }

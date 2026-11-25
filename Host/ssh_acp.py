@@ -150,11 +150,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Narrow a dedicated OpenSSH key to Riptide’s ACP client.")
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--hermes-screen", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
+    parser.add_argument("--codex-dictation-auth", metavar="CODEX_AUTH_FILE")
     parser.add_argument("--safari", nargs=2, metavar=("BROWSER_SOCKET", "DEVICE_ID"))
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     requested = os.environ.get("SSH_ORIGINAL_COMMAND")
+    if requested == "riptide-dictation":
+        if args.codex_dictation_auth is None:
+            print(json.dumps({"error": "disabled"}))
+            sys.exit(1)
+        if not os.path.isabs(args.codex_dictation_auth):
+            parser.error("An absolute Codex auth file path is required.")
+        from codex_dictation import serve_ssh
+        asyncio.run(serve_ssh(args.codex_dictation_auth))
+        sys.exit(0)
     if requested == "riptide-safari":
         if args.safari is None:
             print(json.dumps({"status": 403, "body": {"error": "This SSH key has no Safari relay enabled."}}))

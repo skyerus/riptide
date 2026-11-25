@@ -29,6 +29,10 @@ public struct CodexLocalEndpoint: Sendable {
         accountFingerprint = nil
     }
 
+    public var dictation: CodexDictation {
+        .webSocket(at: url, bearer: bearer, accountFingerprint: accountFingerprint)
+    }
+
     public func makeClient() -> CodexLiveClient {
         let transport = RemoteWebSocketTransport(url: url, bearer: bearer)
         return CodexLiveClient(transport: transport, workspace: workspace, accountFingerprint: accountFingerprint)

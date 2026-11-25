@@ -12,6 +12,7 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 MAX_FRAME = 2 * 1024 * 1024
+DICTATION_PATH = "/riptide-dictation"
 
 
 def read_token(path):
@@ -31,11 +32,11 @@ def rpc_frame(text):
     return json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
 
 
-def bridge_server(port, token, command):
+def bridge_server(port, token, command, dictation_auth=None):
     active = set()
 
     def authenticate(connection, request):
-        if request.path != "/acp":
+        if not ((request.path == "/acp" and command) or (request.path == DICTATION_PATH and dictation_auth)):
             return connection.respond(HTTPStatus.NOT_FOUND, "Not found\n")
         values = request.headers.get_all("Authorization")
         if len(values) != 1 or not hmac.compare_digest(values[0].encode(), f"Bearer {token}".encode()):
@@ -52,6 +53,14 @@ def bridge_server(port, token, command):
         process = None
         pumps = []
         try:
+            if socket.request.path == DICTATION_PATH:
+                from codex_dictation import reply as dictation_reply
+
+                frame = await asyncio.wait_for(socket.recv(), timeout=12)
+                result = await dictation_reply(frame, dictation_auth) if isinstance(frame, str) else {"error": "invalidAudio"}
+                await socket.send(json.dumps(result))
+                return
+
             process = await asyncio.create_subprocess_exec(
                 *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 limit=MAX_FRAME,
@@ -74,8 +83,9 @@ def bridge_server(port, token, command):
                 task.result()
         except ConnectionClosed:
             pass
-        except (OSError, ValueError):
-            await socket.close(1011, "ACP transport closed")
+        except (OSError, ValueError, TimeoutError):
+            reason = "Dictation transport closed" if socket.request.path == DICTATION_PATH else "ACP transport closed"
+            await socket.close(1011, reason)
         finally:
             for task in pumps:
                 task.cancel()
@@ -100,8 +110,9 @@ def bridge_server(port, token, command):
 
 
 async def run(args):
-    async with bridge_server(args.port, read_token(args.token_file), args.command) as bridge:
-        print(f"ACP bridge on 127.0.0.1:{bridge.sockets[0].getsockname()[1]}", flush=True)
+    async with bridge_server(args.port, read_token(args.token_file), args.command, args.codex_dictation_auth) as bridge:
+        name = "ACP bridge" if args.command else "Dictation relay"
+        print(f"{name} on 127.0.0.1:{bridge.sockets[0].getsockname()[1]}", flush=True)
         await bridge.serve_forever()
 
 
@@ -109,12 +120,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Carry stdio ACP over a host-owned private TLS proxy.")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--token-file", required=True)
+    parser.add_argument("--codex-dictation-auth", metavar="CODEX_AUTH_FILE")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command[:1] == ["--"]:
         args.command.pop(0)
-    if not args.command:
-        parser.error("Provide a fixed ACP command after --.")
+    if args.codex_dictation_auth and not os.path.isabs(args.codex_dictation_auth):
+        parser.error("An absolute Codex auth file path is required.")
+    if not (args.command or args.codex_dictation_auth):
+        parser.error("Provide a fixed ACP command after -- or enable Codex dictation.")
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:
