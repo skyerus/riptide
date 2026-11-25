@@ -6,20 +6,29 @@ struct ChatModelControls: View {
     @Binding var isExpanded: Bool
 
     var body: some View {
-        let summary = ModelSelectionSummary(options: model.selected.configOptions)
-        Button {
-            isExpanded.toggle()
-        } label: {
-            ModelSelectionLabel(summary: summary, chevron: isExpanded ? "chevron.up" : "chevron.down")
-                .font(.subheadline)
+        let summary = ModelSelectionSummary(chat: model.selected)
+        if model.selected.hasConfigChoices {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                ModelSelectionLabel(summary: summary, chevron: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.subheadline)
+                    .padding(.horizontal, 6)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Model and intelligence")
+            .accessibilityValue(summary.accessibilityValue)
+            .accessibilityIdentifier("model-options")
+        } else if let name = model.selected.modelName {
+            Text(name)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
                 .padding(.horizontal, 6)
                 .frame(minHeight: 44)
-                .contentShape(Rectangle())
+                .accessibilityIdentifier("current-model")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Model and intelligence")
-        .accessibilityValue(summary.accessibilityValue)
-        .accessibilityIdentifier("model-options")
     }
 }
 
@@ -28,11 +37,10 @@ private struct ModelSelectionSummary {
     let intelligence: String?
     var accessibilityValue: String { [title, intelligence].compactMap { $0 }.joined(separator: ", ") }
 
-    init(options: [SessionConfigOption]) {
-        let model = options.first { $0.category == .model }
-        let effort = options.first { $0.category == .thoughtLevel }?.currentName
-        title = model.map { $0.currentName ?? "Model" } ?? effort ?? "Model options"
-        intelligence = model == nil ? nil : effort
+    init(chat: AgentChatModel.ChatState) {
+        let effort = chat.configOptions.first { $0.category == .thoughtLevel }?.currentName
+        title = chat.modelName ?? effort ?? "Model options"
+        intelligence = chat.modelName == nil ? nil : effort
     }
 }
 
@@ -68,7 +76,7 @@ struct QuickModelPicker: View {
 
     var body: some View {
         let options = model.selected.configOptions
-        let summary = ModelSelectionSummary(options: options)
+        let summary = ModelSelectionSummary(chat: model.selected)
         VStack(spacing: 5) {
             Button(action: showAdvanced) {
                 ModelSelectionLabel(summary: summary, chevron: "chevron.right")
@@ -92,20 +100,11 @@ struct QuickModelPicker: View {
             }
             ModelControlStatus(model: model)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .frame(maxWidth: 340)
-        .padding(.horizontal, 40)
-        .padding(.bottom, 12)
-        .frame(maxWidth: .infinity)
-        .background {
-            Rectangle()
-                .fill(.regularMaterial)
-                .mask {
-                    LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.35)],
-                                   startPoint: .top, endPoint: .bottom)
-                }
-                .padding(.top, -22)
-                .allowsHitTesting(false)
-        }
+        .chatGlass(in: RoundedRectangle(cornerRadius: 26))
+        .padding(.horizontal, ChatTheme.gutter)
     }
 }
 

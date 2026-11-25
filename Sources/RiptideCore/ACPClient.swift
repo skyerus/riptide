@@ -164,7 +164,8 @@ public actor ACPClient {
         }
         loadedSessions.insert(id)
         return OpenedSession(id: id, configOptions: response["configOptions"]?.array.map(SessionConfigOption.parse),
-                             events: [], nativeSessionKey: nativeSessionKey)
+                             events: [], nativeSessionKey: nativeSessionKey,
+                             reportedModelName: SessionConfigOption.reportedModelName(in: response))
     }
 
     public func load(sessionID: String, cwd: String) async throws -> OpenedSession {
@@ -177,7 +178,8 @@ public actor ACPClient {
         ])
         loadedSessions.insert(sessionID)
         return OpenedSession(id: sessionID, configOptions: response["configOptions"]?.array.map(SessionConfigOption.parse),
-                             events: replaying[sessionID] ?? [])
+                             events: replaying[sessionID] ?? [],
+                             reportedModelName: SessionConfigOption.reportedModelName(in: response))
     }
 
     public func setConfigOption(sessionID: String, configID: String, value: String) async throws -> [SessionConfigOption] {

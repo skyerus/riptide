@@ -4,8 +4,9 @@ import UIKit
 import UIKit.UIGestureRecognizerSubclass
 
 extension View {
-    func transcriptViewport(_ viewport: Binding<TranscriptViewport>, chat: WorkspaceChatID?) -> some View {
-        modifier(TranscriptViewportModifier(viewport: viewport, chat: chat))
+    func transcriptViewport(_ viewport: Binding<TranscriptViewport>, chat: WorkspaceChatID?,
+                            showsJumpToLatest: Bool = true) -> some View {
+        modifier(TranscriptViewportModifier(viewport: viewport, chat: chat, showsJumpToLatest: showsJumpToLatest))
     }
 
     func transcriptColumn() -> some View {
@@ -66,6 +67,7 @@ struct TranscriptViewport {
 private struct TranscriptViewportModifier: ViewModifier {
     @Binding var viewport: TranscriptViewport
     let chat: WorkspaceChatID?
+    let showsJumpToLatest: Bool
     @Environment(WorkspaceState.self) private var workspace
     @State private var fingerDown = false
     @State private var latestOffset: CGFloat = 0
@@ -117,7 +119,7 @@ private struct TranscriptViewportModifier: ViewModifier {
                 }
             })
             .overlay(alignment: .bottomTrailing) {
-                if !viewport.follow.following {
+                if showsJumpToLatest && !viewport.follow.following {
                     JumpToLatest {
                         if let chat { workspace.rememberReadingOffset(nil, for: chat) }
                         viewport.restore(nil)

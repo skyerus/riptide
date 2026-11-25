@@ -6,7 +6,7 @@ final class AgentChatsUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launch()
-        openOpenClaw(app)
+        openMainChat(app)
         send("formatting demo", in: app)
         XCTAssertTrue(app.staticTexts["Formatting demo complete."].waitForExistence(timeout: 12))
         XCTAssertTrue(app.staticTexts["Read the example guide or visit https://example.org."].exists)
@@ -38,7 +38,7 @@ final class AgentChatsUITests: XCTestCase {
         app.launch()
         capture(app, as: "Agent roster")
 
-        openOpenClaw(app)
+        openMainChat(app)
         XCTAssertEqual(title(app).label, "Main Chat")
         let history = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "This is your main chat.")).firstMatch
         XCTAssertTrue(history.waitForExistence(timeout: 5))
@@ -92,7 +92,7 @@ final class AgentChatsUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launch()
-        openOpenClaw(app)
+        openMainChat(app)
         send("Show an approval", in: app)
         let deny = app.buttons["approval-reject_once"]
         XCTAssertTrue(deny.waitForExistence(timeout: 5))
@@ -145,7 +145,7 @@ final class AgentChatsUITests: XCTestCase {
 
         XCTAssertTrue(openClaw.waitForExistence(timeout: 5))
         XCTAssertLessThan(openClaw.frame.minX, hermes.frame.minX)
-        openOpenClaw(app)
+        openMainChat(app)
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
         composer.tap()
         composer.typeText("Keep this draft")
@@ -187,8 +187,8 @@ final class AgentChatsUITests: XCTestCase {
     }
 
     @MainActor
-    private func openOpenClaw(_ app: XCUIApplication) {
-        let tab = app.buttons["sidebar-agent-openclaw"]
+    private func openMainChat(_ app: XCUIApplication, agent: String = "openclaw") {
+        let tab = app.buttons["sidebar-agent-\(agent)"]
         XCTAssertTrue(tab.waitForExistence(timeout: 5))
         tab.tap()
         let row = app.buttons["sidebar-main-chat"]
@@ -202,18 +202,14 @@ final class AgentChatsUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launch()
-        let hermes = app.buttons["sidebar-agent-hermes"]
-        XCTAssertTrue(hermes.waitForExistence(timeout: 5))
-        hermes.tap()
-        let mainChat = app.buttons["sidebar-main-chat"]
-        XCTAssertTrue(mainChat.waitForExistence(timeout: 5))
-        mainChat.tap()
+        openMainChat(app, agent: "hermes")
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        let controls = app.buttons["model-options"]
+        XCTAssertTrue(controls.waitForExistence(timeout: 5))
+        XCTAssertEqual(controls.value as? String, "6.2 Sol, Extra High")
         composer.tap()
         composer.typeText("A draft for Hermes")
-        let controls = app.buttons["model-options"]
-        XCTAssertEqual(controls.value as? String, "6.2 Sol, Extra High")
         controls.tap()
         let effort = app.descendants(matching: .any).matching(identifier: "intelligence-steps").firstMatch
         XCTAssertTrue(effort.waitForExistence(timeout: 5))
@@ -240,6 +236,60 @@ final class AgentChatsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["config-effort-low"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["config-effort-none"].exists)
         XCTAssertFalse(app.buttons["config-effort-minimal"].exists)
+    }
+
+    @MainActor
+    func testFloatingComposerGrowsAndKeepsTheLatestReplyReachable() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launch()
+        openMainChat(app, agent: "hermes")
+        send("streaming demo", in: app)
+
+        let latest = app.staticTexts["Long stream complete."]
+        let sendButton = app.buttons["send-message"]
+        let controls = app.buttons["model-options"]
+        let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(latest.waitForExistence(timeout: 12))
+        XCTAssertTrue(sendButton.waitForExistence(timeout: 5))
+        XCTAssertLessThan(latest.frame.maxY, composer.frame.minY)
+
+        let transcript = app.scrollViews["chat-transcript"]
+        let jump = app.buttons["jump-to-latest"]
+        transcript.swipeDown()
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        capture(app, as: "Floating composer")
+
+        let advanced = app.buttons["advanced-model-controls"]
+        controls.tap()
+        XCTAssertTrue(advanced.waitForExistence(timeout: 5))
+        XCTAssertFalse(jump.exists)
+        capture(app, as: "Floating model picker")
+        controls.tap()
+
+        composer.tap()
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        let compactHeight = composer.frame.height
+        let draft = "Review the workspace settings.\nKeep the draft while I scroll.\nThen list the next steps."
+        composer.typeText(draft)
+        XCTAssertGreaterThan(composer.frame.height, compactHeight + 20)
+        XCTAssertEqual(composer.value as? String, draft)
+        XCTAssertTrue(sendButton.isHittable)
+        capture(app, as: "Expanded floating composer")
+
+        controls.tap()
+        XCTAssertTrue(advanced.waitForExistence(timeout: 5))
+        XCTAssertLessThan(advanced.frame.maxY, composer.frame.minY)
+        XCTAssertTrue(keyboard.exists)
+        controls.tap()
+        XCTAssertTrue(advanced.waitForNonExistence(timeout: 5))
+
+        XCTAssertTrue(jump.isHittable)
+        jump.tap()
+        XCTAssertTrue(jump.waitForNonExistence(timeout: 5))
+        XCTAssertLessThan(latest.frame.maxY, composer.frame.minY)
+        XCTAssertEqual(composer.value as? String, draft)
     }
 
     @MainActor

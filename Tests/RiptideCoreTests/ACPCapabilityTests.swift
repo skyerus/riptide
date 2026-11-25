@@ -419,6 +419,52 @@ struct ACPCapabilityTests {
         #expect(model.selected.context == nil)
     }
 
+    @Test @MainActor func chatShowsTheReportedModelBeforeTheChoicesAreAvailable() async {
+        let transport = ScriptedTransport { request in
+            let id = try #require(request["id"])
+            switch request["method"]?.string {
+            case "initialize":
+                return [.reply(id, result: ["protocolVersion": .integer(1),
+                                           "agentCapabilities": ["loadSession": .boolean(true)]])]
+            case "session/load":
+                return [.reply(id, result: [
+                    "models": ["currentModelId": "openai-codex:gpt-6.2-sol", "availableModels": .array([])],
+                    "configOptions": .array([
+                        ["id": "model", "type": "select", "name": "Model", "category": "model",
+                         "currentValue": "", "options": .array([])]
+                    ])
+                ])]
+            case "session/new":
+                return [.reply(id, result: [
+                    "sessionId": "new",
+                    "configOptions": .array([
+                        ["id": "model", "type": "select", "name": "Model", "category": "model",
+                         "currentValue": "openai-codex:gpt-6.1-sol-900k",
+                         "options": .array([["value": "atlas", "name": "Atlas"]])]
+                    ])
+                ])]
+            default:
+                Issue.record("Unexpected ACP call")
+                return []
+            }
+        }
+        let target = AgentTarget(id: "target", name: "Demo", mainSessionID: "main", cwd: "/main")
+        let client = ACPClient(transport: transport)
+        let model = AgentChatModel(target: target, client: client)
+
+        await model.showMain()
+        #expect(model.selected.modelName == "6.2 Sol")
+        #expect(!model.selected.hasConfigChoices)
+
+        #expect(await model.createChat())
+        #expect(model.selected.modelName == "6.1 Sol · 900K")
+        #expect(model.selected.hasConfigChoices)
+
+        await model.showMain()
+        #expect(model.selected.modelName == "6.2 Sol")
+        await client.close()
+    }
+
     @Test @MainActor func hermesDelegatesOnlyIntoTheOpenChatAndKeepsTheReplyInHistory() async throws {
         let transport = ScriptedTransport { request in
             let id = try #require(request["id"])

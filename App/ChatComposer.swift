@@ -13,7 +13,8 @@ struct ChatComposer: View {
     var body: some View {
         let prompt = "Message \(model.target.name)"
         ComposerSurface(focused: editorFocused,
-                        showsOptions: model.selected.context != nil || !model.selected.configOptions.isEmpty) {
+                        showsOptions: model.selected.context != nil || model.selected.hasConfigChoices
+                            || model.selected.modelName != nil) {
             TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
                 .focused($editorFocused)
@@ -23,9 +24,7 @@ struct ChatComposer: View {
             if let usage = model.selected.context {
                 contextButton(usage)
             }
-            if !model.selected.configOptions.isEmpty {
-                ChatModelControls(model: model, isExpanded: $modelPickerVisible)
-            }
+            ChatModelControls(model: model, isExpanded: $modelPickerVisible)
         } actions: {
             actionButton
         }
@@ -108,7 +107,7 @@ struct ComposerSurface<Field: View, Options: View, Actions: View>: View {
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 20)
+        let shape = RoundedRectangle(cornerRadius: 26)
         let layout = showsOptions ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
             : AnyLayout(HStackLayout(alignment: .bottom, spacing: 8))
         layout {
@@ -132,15 +131,26 @@ struct ComposerSurface<Field: View, Options: View, Actions: View>: View {
             .padding(.trailing, 4)
         }
         .padding(.vertical, 3)
-        .background(ChatTheme.surface, in: shape)
-        .overlay {
-            shape.strokeBorder(focused ? ChatTheme.muted.opacity(0.5) : ChatTheme.sidebarDivider)
-                .allowsHitTesting(false)
-        }
+        .chatGlass(in: shape, focused: focused)
         .frame(maxWidth: ChatTheme.readingWidth)
         .padding(.horizontal, ChatTheme.gutter)
         .padding(.top, 6)
         .padding(.bottom, 8)
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func chatGlass(in shape: some InsettableShape, focused: Bool = false) -> some View {
+        if #available(iOS 26, *) {
+            glassEffect(.regular.tint(ChatTheme.background.opacity(0.30)), in: shape)
+        } else {
+            background(.regularMaterial, in: shape)
+                .overlay {
+                    shape.strokeBorder(focused ? ChatTheme.muted.opacity(0.5) : ChatTheme.sidebarDivider)
+                        .allowsHitTesting(false)
+                }
+        }
     }
 }
 
