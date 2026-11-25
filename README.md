@@ -92,6 +92,12 @@ Use absolute paths for the regular agent account, workspace, and native ACP laun
 
 Configure native [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) in the Hermes profile that owns the chat. Install its listed Linux packages, set `browser.headed` and `bot_desktop.auto_start` to `true`, and install the `websockets` Python package for the interpreter in the forced command. Install `Host/hermes_screen.py` and `Host/hermes_mobile.py` beside the updated `Host/ssh_acp.py` at the same trusted path. Add `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` before `--` in the authorized key’s fixed command. Give this option only to devices trusted to control that profile’s native desktop.
 
+On a Debian or Ubuntu gateway host, run the following from the Riptide release as the owner of the Hermes profile. It installs Google Chrome Stable through APT, selects it for both Hermes and the Bot Screen launcher, and refreshes Bot Screen. The browser keeps the profile already configured in Hermes. Hand back control before running the update.
+
+```sh
+bash Host/deploy/install-hermes-stable-chrome.sh /absolute/path/to/hermes /absolute/hermes/profile/home
+```
+
 In a paired chat, open **Chat actions → Open Hermes browser** and tap **Take over**. On resizable Bot Screen hosts, Riptide fits the display to the iPhone and enables Chrome’s mobile viewport, touch emulation, and mobile browser identity while you have control. Chrome uses the mobile identity for subsequent requests. If the site had already served desktop-specific HTML, use Chrome’s reload button when it’s safe to refresh the page. Swipe to scroll the page, or tap **Show keyboard** to type. To use a saved password, focus the password field on the remote page and open **Passwords** in Riptide. Use the iOS keyboard’s Password AutoFill picker and tap **Send** to enter it in the remote browser. Riptide sends it over the active SSH connection and does not save it. For arbitrary websites, use the picker to select the credential.
 
 **Hand back** returns control to Hermes and focuses the message field in the same chat. A handoff requested by Hermes also completes its pending browser request. If the connection drops while you are typing, reopen the browser, take over again, then hand back when ready. The adapter uses Hermes’s owner-only gateway ticket and its native control lease and display stream. It uses the existing SSH port and the phone’s existing device key. The viewer uses [noVNC 1.7.0](https://github.com/novnc/noVNC/tree/v1.7.0).
