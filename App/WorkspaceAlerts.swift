@@ -282,7 +282,9 @@ struct WorkspaceAlertSettings: View {
                         ForEach(AttentionDelivery.allCases) { Text($0.title).tag($0) }
                     }
                     Toggle("Approvals and input", isOn: binding(\.approvals))
+                        .tint(nil)
                     Toggle("Replies I missed", isOn: binding(\.replies))
+                        .tint(nil)
                 } footer: {
                     Text("When I’m away keeps the Inbox current but holds alerts for workspaces you’re using on a desktop. It won’t mute other workspaces.")
                         .foregroundStyle(ChatTheme.muted)
