@@ -1,0 +1,141 @@
+diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
+index 1411637..8622798 100644
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -632,21 +632,30 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
+     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
+     A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
+     or a prompt mirror mutate the agent in place) is retired first so the new thread carries the current one.
+-    Only the FIRST session of an AIAgent resumes the stored codex thread: a retired/recreated one keeps
+-    today's fresh-thread behaviour and overwrites the binding once its turn is committed. ``messages`` is the
+-    turn's transcript (current user row last); a thread started from scratch is seeded with the prior turns."""
++    The first app-server session or a connector-only change resumes the stored thread. A prompt or
++    provider change starts a new thread seeded with the prior transcript in ``messages``."""
++    from gateway.session_local_mcp import current_riptide_safari_args
++
+     developer_instructions = _codex_developer_instructions(agent)
+     model_provider = _codex_model_provider(agent)
++    safari_args = current_riptide_safari_args()
++    safari_only_change = False
+     if getattr(agent, "_codex_session", None) is not None:
+-        # Only a session whose recorded composition differs is stale; one attached without a record is kept.
++        # A session attached without a prompt record is kept unless its Safari connector changed.
+         # The provider is fixed per thread (turn/start can switch the model, not the provider), so an
+         # in-place switch to or from a named custom provider retires the thread too.
+         recorded = getattr(agent, "_codex_session_prompt", None)
+-        if recorded is None or (recorded == developer_instructions
+-                                and getattr(agent, "_codex_session_model_provider", None) == model_provider):
++        same_composition = recorded is None or (
++            recorded == developer_instructions
++            and getattr(agent, "_codex_session_model_provider", None) == model_provider
++        )
++        safari_changed = getattr(agent, "_codex_session_safari_args", ()) != safari_args
++        if same_composition and not safari_changed:
+             return
++        safari_only_change = same_composition and safari_changed
+         _close_codex_session(agent)
+-    resume_thread_id = None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent)
++    first_session = getattr(agent, "_codex_session_prompt", None) is None
++    resume_thread_id = _stored_codex_thread_id(agent) if first_session or safari_only_change else None
+     from agent.runtime_cwd import resolve_agent_cwd
+     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
+     from hermes_cli.codex_runtime_switch import get_configured_codex_binary
+@@ -680,8 +689,13 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
+     # The recorded composition stays the bare prompt: the seed must not make the next turn retire the thread.
+     agent._codex_session_prompt = developer_instructions
+     agent._codex_session_model_provider = model_provider
++    agent._codex_session_safari_args = safari_args
+     from agent.codex_runtime_history_seed import render_history_seed
+     history_seed = render_history_seed(messages) or None
++    client_factory = None
++    if safari_args:
++        from agent.transports.codex_app_server import CodexAppServerClient
++        client_factory = functools.partial(CodexAppServerClient, extra_args=list(safari_args))
+     # The model always rides along: codex's home is shared, while the Hermes model is per profile/session,
+     # so omitting it ran codex's own default instead of the selection.
+     agent._codex_session = CodexAppServerSession(
+@@ -691,7 +705,7 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
+         on_event=make_codex_app_server_event_bridge(agent),
+         developer_instructions=developer_instructions or None,
+         model=_codex_wire_model(agent, model_provider), model_provider=model_provider,
+-        resume_thread_id=resume_thread_id, history_seed=history_seed,
++        resume_thread_id=resume_thread_id, history_seed=history_seed, client_factory=client_factory,
+     )
+
+
+diff --git a/gateway/session_local_mcp.py b/gateway/session_local_mcp.py
+index b5f6b96..0565c5f 100644
+--- a/gateway/session_local_mcp.py
++++ b/gateway/session_local_mcp.py
+@@ -13,11 +13,13 @@ Inside an execution it never changes.
+ """
+ import asyncio
+ from contextlib import contextmanager
++from contextvars import ContextVar
+ from dataclasses import replace
+ import hashlib
+ import hmac
+ import json
+ import logging
++from pathlib import Path
+ import threading
+ import uuid
+
+@@ -29,6 +31,7 @@ logger = logging.getLogger(__name__)
+ PRIVATE_KEY = ('editor_mcp',)
+ _HELD_LOCK = threading.Lock()
+ _RELIST_TIMEOUT = 5  # seconds an admission start waits on a held server's tools/list
++_RIPTIDE_SAFARI_ARGS: ContextVar[tuple[str, ...]] = ContextVar('riptide_safari_args', default=())
+
+
+ def _json(value):
+@@ -494,17 +497,46 @@ async def prepare_branch_editor(authority, ref, servers, gate):
+             'config_secret_ref': policy.config_secret_ref}, servers
+
+
++@contextmanager
++def _riptide_safari_scope(servers=(), connected=()):
++    """Expose the frozen Riptide stdio connector only while executing its owning chat."""
++    arguments = []
++    for index in connected:
++        spec = servers[index]
++        if spec.get('name') != 'riptide_safari' or spec.get('type', 'stdio') != 'stdio':
++            continue
++        command, args = spec['command'], spec['args']
++        if (spec.get('env') or len(args) != 3 or args[1] != '--state-dir'
++                or not all(Path(path).is_absolute() for path in (command, args[0], args[2]))
++                or Path(args[0]).name != 'safari_mcp.py'):
++            continue
++        for key, value in (('command', command), ('args', args), ('tool_timeout_sec', 90)):
++            arguments.extend(('-c', f'mcp_servers.riptide_safari.{key}={_json(value)}'))
++        break
++    token = _RIPTIDE_SAFARI_ARGS.set(tuple(arguments))
++    try:
++        yield
++    finally:
++        _RIPTIDE_SAFARI_ARGS.reset(token)
++
++
++def current_riptide_safari_args():
++    return _RIPTIDE_SAFARI_ARGS.get()
++
++
+ @contextmanager
+ def editor_mcp_scope(authority, policy):
+     if not policy.editor_mcp_json:
+-        yield
++        with _riptide_safari_scope():
++            yield
+         return
+     data = json.loads(policy.editor_mcp_json)
+     servers = getattr(authority, '_local_editor_mcp', {}).get(data['scope'])
+     if servers is None:
+         raise AuthorityRefusal('launch_credentials_unavailable')
+-    with _borrowed(authority, data['scope'], servers, _frozen_names(data, servers), policy.cwd) as (schemas, _):
++    with _borrowed(authority, data['scope'], servers, _frozen_names(data, servers), policy.cwd) as (schemas, connected):
+         if schemas != data['schemas']:
+             # Drift is re-frozen by the drain before a claim; inside an execution the manifest never changes.
+             raise AuthorityRefusal('acp_mcp_schema_changed')
+-        yield
++        with _riptide_safari_scope(servers, connected):
++            yield
