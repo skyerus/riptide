@@ -125,7 +125,7 @@ private struct WorkspaceACPDestination: View {
             if let model {
                 ChatScreen(model: model, voiceRemote: profile, remoteStore: workspace.remotes, initialChatID: chatID)
             } else {
-                ProgressView("Opening workspace…")
+                ChatHistorySkeleton()
             }
         }
         .task { model = workspace.configuredModel(profile, bearer: bearer) }
