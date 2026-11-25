@@ -7,6 +7,9 @@ const screen = document.getElementById("screen");
 let sentKeys = "";
 let desktopSize;
 let passwordInput;
+let windowFit;
+let chromeMinimumWidth = 0;
+let requestedSize;
 
 function sendFrame(bytes) {
   bridge.postMessage({ frame: btoa(String.fromCharCode(...bytes)) });
@@ -26,13 +29,33 @@ const channel = {
   close() { this.readyState = "closed"; }
 };
 
-const rfb = new RFB(screen, channel);
+class ScreenRFB extends RFB {
+  // noVNC 1.7's automatic resize uses the view's exact dimensions. Keep its
+  // negotiated RFB screen ID and flags while allowing a wider framebuffer.
+  requestSize(width, height) {
+    if (this.viewOnly || !this._supportsSetDesktopSize) return false;
+    RFB.messages.setDesktopSize(this._sock, width, height, this._screenID, this._screenFlags);
+    return true;
+  }
+}
+
+const rfb = new ScreenRFB(screen, channel);
 rfb.scaleViewport = true;
-rfb.resizeSession = false;
 rfb.background = "#101114";
 rfb.viewOnly = true;
 rfb.addEventListener("connect", () => bridge.postMessage("connected"));
 rfb.addEventListener("disconnect", () => bridge.postMessage("disconnected"));
+
+function fitPortrait() {
+  if (!chromeMinimumWidth || !screen.clientWidth || !screen.clientHeight) return;
+  const width = Math.max(chromeMinimumWidth, screen.clientWidth);
+  const height = Math.round(screen.clientHeight * width / screen.clientWidth);
+  if (requestedSize?.width === width && requestedSize?.height === height) return;
+  if (rfb.requestSize(width, height)) requestedSize = { width, height };
+}
+
+const viewport = new ResizeObserver(fitPortrait);
+viewport.observe(screen);
 
 window.hermesScreen = {
   open() {
@@ -42,49 +65,54 @@ window.hermesScreen = {
   frame(data) {
     const bytes = Uint8Array.from(atob(data), character => character.charCodeAt(0));
     channel.onmessage({ data: bytes.buffer });
+    if (!requestedSize) fitPortrait();
   },
-  control(allowed) {
+  control(allowed, minimumWidth = 0) {
     rfb.viewOnly = !allowed;
     keyboard.hidden = !allowed;
-    if (allowed) {
+    chromeMinimumWidth = allowed ? minimumWidth : 0;
+    requestedSize = undefined;
+    if (chromeMinimumWidth) {
       const canvas = screen.querySelector("canvas");
-      if (canvas) desktopSize = { width: canvas.width, height: canvas.height };
-    } else {
+      if (canvas) {
+        desktopSize = { width: canvas.width, height: canvas.height };
+        const fit = () => {
+          if (rfb.viewOnly || canvas.width !== requestedSize?.width) return;
+          windowFit?.disconnect();
+          bridge.postMessage("fit");
+        };
+        windowFit = new MutationObserver(fit);
+        windowFit.observe(canvas, { attributes: true, attributeFilter: ["width", "height"] });
+        fitPortrait();
+        fit();
+      }
+    } else if (!allowed) {
+      windowFit?.disconnect();
       keys.blur();
     }
-    rfb.resizeSession = allowed;
   },
   async prepareHandback() {
+    windowFit?.disconnect();
     keys.blur();
-    if (rfb.viewOnly || !desktopSize) return;
+    chromeMinimumWidth = 0;
+    if (rfb.viewOnly || !desktopSize || !requestedSize) return;
     const canvas = screen.querySelector("canvas");
     const { width, height } = desktopSize;
-    if (!canvas || (canvas.width === width && canvas.height === height)) {
-      rfb.resizeSession = false;
-      return;
-    }
-    // Request the original framebuffer size while this device still holds the lease.
-    Object.assign(screen.style, { position: "absolute", width: `${width}px`, height: `${height}px`, visibility: "hidden" });
-    try {
-      await new Promise(resolve => {
-        const observer = new MutationObserver(() => {
-          if (canvas.width === width && canvas.height === height) {
-            clearTimeout(timeout);
-            observer.disconnect();
-            resolve();
-          }
-        });
-        const timeout = setTimeout(() => {
-          observer.disconnect();
-          resolve();
-        }, 800);
-        observer.observe(canvas, { attributes: true, attributeFilter: ["width", "height"] });
-        rfb.resizeSession = true;
+    if (!canvas || (canvas.width === width && canvas.height === height)) return;
+    // Restore the desktop while the iPhone still holds the control lease.
+    await new Promise(resolve => {
+      const finish = () => {
+        clearTimeout(timeout);
+        observer.disconnect();
+        resolve();
+      };
+      const observer = new MutationObserver(() => {
+        if (canvas.width === width && canvas.height === height) finish();
       });
-    } finally {
-      rfb.resizeSession = false;
-      for (const property of ["position", "width", "height", "visibility"]) screen.style.removeProperty(property);
-    }
+      const timeout = setTimeout(finish, 800);
+      observer.observe(canvas, { attributes: true, attributeFilter: ["width", "height"] });
+      if (!rfb.requestSize(width, height)) finish();
+    });
   },
   typeText(text) {
     if (rfb.viewOnly) return false;

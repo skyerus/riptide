@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import websockets
@@ -53,20 +54,45 @@ class BrowserWindow:
         return subprocess.run(["xprop", *args], env=self.env, capture_output=True, text=True,
                               check=True, timeout=1).stdout
 
-    def maximize(self):
-        if self.env is None or self.window is not None:
+    def active_browser(self):
+        if self.env is None:
             return
         root = self.properties("-root", "_NET_ACTIVE_WINDOW")
         match = re.search(r"# (0x[0-9a-fA-F]+)", root)
         if match is None or int(match[1], 16) == 0:
             return
-        details = self.properties("-id", match[1], "WM_CLASS", "_NET_WM_STATE")
+        details = self.properties("-id", match[1], "WM_CLASS", "_NET_WM_STATE", "WM_NORMAL_HINTS")
         classes = set(re.findall(r'"([^"]+)"', details.lower()))
-        if not (classes & self.CHROMIUM) or "_NET_WM_STATE_FULLSCREEN" in details:
+        if not (classes & self.CHROMIUM):
+            return
+        return int(match[1], 16), details
+
+    def minimum_width(self):
+        active = self.active_browser()
+        if active is None:
+            return None
+        _, details = active
+        minimum = re.search(r"minimum size: (\d+) by", details)
+        # Chromium's minimum is for the client area. Leave room for the window frame.
+        return int(minimum[1]) + 12 if minimum else 512
+
+    def maximize(self):
+        if self.window is not None:
+            return
+        active = self.active_browser()
+        if active is None:
+            return
+        window, details = active
+        if "_NET_WM_STATE_FULLSCREEN" in details:
             return
         states = tuple(state for state in self.STATES if state not in details)
-        if states and self.set_state(int(match[1], 16), states, enable=True):
-            self.window, self.states = int(match[1], 16), states
+        if not states:
+            # Reapply existing maximization after the portrait framebuffer is active.
+            if self.set_state(window, self.STATES, enable=False):
+                time.sleep(0.08)
+                self.set_state(window, self.STATES, enable=True)
+        elif self.set_state(window, states, enable=True):
+            self.window, self.states = window, states
 
     def restore(self):
         if self.window is not None:
@@ -193,9 +219,11 @@ class Display:
                 await self.stream.send(base64.b64decode(command["data"], validate=True))
             elif command == {"command": "acquire"}:
                 result = await self.call("display.lease.acquire", viewer_id=self.viewer)
-                if self.owns(result):
+                width = await self.frame_browser(self.browser.minimum_width) if self.owns(result) else None
+                report("control", held=result["lease"]["holder"] == "human", minimum_browser_width=width)
+            elif command == {"command": "fit"}:
+                if self.owns(await self.call("display.status")):
                     await self.frame_browser(self.browser.maximize)
-                report("control", held=result["lease"]["holder"] == "human")
             elif command == {"command": "release"}:
                 await self.restore_browser()
                 result = await self.call("display.lease.release", viewer_id=self.viewer)
@@ -214,9 +242,9 @@ class Display:
     @staticmethod
     async def frame_browser(operation):
         try:
-            await asyncio.to_thread(operation)
+            return await asyncio.to_thread(operation)
         except (OSError, subprocess.SubprocessError):
-            pass
+            return None
 
 
 async def serve(hermes, home):

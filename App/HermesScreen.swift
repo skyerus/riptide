@@ -152,6 +152,7 @@ private final class ScreenConnection {
     private(set) var inUse = false
     private(set) var error: String?
     @ObservationIgnored weak var view: WKWebView?
+    @ObservationIgnored private var canFitWindow = false
     @ObservationIgnored private var viewerLoaded = false
     @ObservationIgnored private var continuation: (() -> Void)?
     @ObservationIgnored private var sender: AsyncStream<Command>.Continuation?
@@ -166,6 +167,7 @@ private final class ScreenConnection {
         let data: String?
         let held: Bool?
         let in_use: Bool?
+        let minimum_browser_width: Int?
         let message: String?
     }
 
@@ -226,7 +228,12 @@ private final class ScreenConnection {
             isControlling = message.held == true
             inUse = isControlling
             isChangingControl = false
-            _ = try await view.callAsyncJavaScript("hermesScreen.control(held)", arguments: ["held": isControlling], contentWorld: .page)
+            let minimum = message.minimum_browser_width ?? 0
+            canFitWindow = (280...2_048).contains(minimum)
+            _ = try await view.callAsyncJavaScript(
+                "hermesScreen.control(held, minimumWidth)",
+                arguments: ["held": isControlling, "minimumWidth": canFitWindow ? minimum : 0], contentWorld: .page
+            )
         case "released":
             isControlling = false
             inUse = message.in_use == true
@@ -288,6 +295,7 @@ private final class ScreenConnection {
             send("open")
         case "connected": isReady = true
         case "disconnected": fail("The Hermes screen disconnected.")
+        case "fit" where canFitWindow && isControlling && !isChangingControl: send("fit")
         default:
             if let frame = (body as? [String: String])?["frame"], frame.utf8.count <= 16_384 {
                 send("frame", data: frame)
