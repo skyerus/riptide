@@ -43,7 +43,6 @@ final class HermesSSHUITests: XCTestCase {
         keyboard.tap()
         app.typeText("riptide831")
         app.buttons["hermes-hand-back"].tap()
-        app.buttons["hermes-release-and-continue"].tap()
         XCTAssertTrue(app.buttons["stop-reply"].waitForNonExistence(timeout: 65))
         let reply = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "The browser received riptide831")).firstMatch
         XCTAssertTrue(reply.waitForExistence(timeout: 10))
@@ -79,10 +78,11 @@ final class HermesSSHUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["You’re in control"].waitForExistence(timeout: 12))
         XCTAssertTrue(app.buttons["Show keyboard"].waitForExistence(timeout: 8))
         app.buttons["hermes-hand-back"].tap()
-        app.buttons["hermes-release-control"].tap()
-        XCTAssertTrue(app.staticTexts["Hermes is in control"].waitForExistence(timeout: 12))
-        app.buttons["Close"].tap()
-        XCTAssertTrue(actions.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Hermes browser"].waitForNonExistence(timeout: 12))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
+        let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        app.typeText("Back in chat")
+        XCTAssertEqual(composer.value as? String, "Back in chat")
     }
 
     @MainActor

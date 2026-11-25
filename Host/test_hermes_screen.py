@@ -35,6 +35,16 @@ class BrowserWindowTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["env"]["XAUTHORITY"], str(self.state / "Xauthority"))
         self.assertEqual(run.call_args.kwargs["env"]["DBUS_SESSION_BUS_ADDRESS"], "unix:path=/fixture/dbus")
 
+    def test_debug_profile_uses_the_profile_bound_to_the_hermes_launcher(self):
+        profile = self.state / "Chrome Profile"
+        panel = self.state / "xdg" / "xfce4" / "panel"
+        launcher = panel / "launcher-22" / "hermes.desktop"
+        launcher.parent.mkdir(parents=True)
+        (panel / ".hermes-browser-launcher").write_text("22\n")
+        launcher.write_text(f'Exec="/opt/Chrome" "--user-data-dir={profile}" "--remote-debugging-port=0"\n')
+
+        self.assertEqual(self.browser.debug_profile(), profile)
+
     def test_takeover_brings_forward_an_existing_browser(self):
         self.browser.properties = Mock(side_effect=[
             "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x1",

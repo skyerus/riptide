@@ -5,8 +5,7 @@ import WebKit
 struct HermesScreen: View {
     let remote: RemoteProfile
     let credential: String
-    let canContinue: () -> Bool
-    let onContinue: () -> Void
+    let onHandBack: () -> Void
     @State private var screen = ScreenConnection()
     @State private var showsPasswords = false
     @Environment(\.dismiss) private var dismiss
@@ -24,7 +23,7 @@ struct HermesScreen: View {
                     }
                 } else {
                     VStack(spacing: 0) {
-                        Text(screen.isControlling ? "You’re in control" : screen.inUse ? "Someone else has control" : "Hermes is in control")
+                        Text(screen.controlStatus)
                             .font(.footnote.weight(.medium))
                             .padding(.vertical, 8)
                         HermesViewer(screen: screen)
@@ -67,17 +66,11 @@ struct HermesScreen: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if screen.isControlling {
-                        Menu("Hand back") {
-                            Button("Hand back") { screen.release() }
-                                .accessibilityIdentifier("hermes-release-control")
-                            Button("Hand back and continue in chat") {
-                                screen.release {
-                                    dismiss()
-                                    onContinue()
-                                }
+                        Button("Hand back") {
+                            screen.release {
+                                onHandBack()
+                                dismiss()
                             }
-                            .disabled(!canContinue())
-                            .accessibilityIdentifier("hermes-release-and-continue")
                         }
                         .accessibilityIdentifier("hermes-hand-back")
                         .disabled(screen.isChangingControl)
@@ -167,6 +160,13 @@ private final class ScreenConnection {
     private(set) var isChangingControl = false
     private(set) var inUse = false
     private(set) var error: String?
+    private var mobileViewUnavailable = false
+    var controlStatus: String {
+        if isControlling {
+            return mobileViewUnavailable ? "Mobile view unavailable" : "You’re in control"
+        }
+        return inUse ? "Someone else has control" : "Hermes is in control"
+    }
     var showsBrowser: Bool { isReady && !isChangingControl && browserVisible }
     private var browserVisible = true
     @ObservationIgnored private var waitsForFit = false
@@ -189,6 +189,7 @@ private final class ScreenConnection {
         let in_use: Bool?
         let browser_visible: Bool?
         let minimum_browser_width: Int?
+        let mobile: Bool?
         let message: String?
     }
 
@@ -271,6 +272,7 @@ private final class ScreenConnection {
                 arguments: ["held": isControlling, "minimumWidth": canFitWindow ? minimum : 0], contentWorld: .page
             )
         case "fitted":
+            mobileViewUnavailable = message.mobile == false
             fitTimeout?.cancel()
             fitTimeout = nil
             isChangingControl = false
@@ -292,11 +294,12 @@ private final class ScreenConnection {
 
     func acquire() {
         guard isReady, !isChangingControl else { return }
+        mobileViewUnavailable = false
         isChangingControl = true
         send("acquire")
     }
 
-    func release(then: (() -> Void)? = nil) {
+    func release(then: @escaping () -> Void) {
         guard isControlling, !isChangingControl else { return }
         continuation = then
         canFitWindow = false

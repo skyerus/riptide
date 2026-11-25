@@ -18,6 +18,8 @@ struct ChatScreen: View {
     @State private var activeCall: ChatCall?
     @State private var voiceError: String?
     @State private var browserHandoff: BrowserHandoff?
+    @State private var focusAfterHandback: String?
+    @FocusState private var composerFocused: Bool
     @State private var safariApproval = SafariChatApproval()
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
@@ -149,19 +151,18 @@ struct ChatScreen: View {
         .sheet(isPresented: $pairingVoice) {
             if let voiceRemote, let remoteStore { PairNativeVoiceScreen(remote: voiceRemote, store: remoteStore) }
         }
-        .fullScreenCover(item: $browserHandoff) { handoff in
-            HermesScreen(remote: handoff.remote, credential: handoff.credential, canContinue: {
-                guard model.selectedID == handoff.chatID, model.selected.loaded, !model.selected.stopping else { return false }
-                if let request = handoff.request { return model.selected.permissions.contains(request) }
-                return !model.selected.working
-            }, onContinue: {
+        .fullScreenCover(item: $browserHandoff, onDismiss: {
+            if focusAfterHandback == model.selectedID { composerFocused = true }
+            focusAfterHandback = nil
+        }) { handoff in
+            HermesScreen(remote: handoff.remote, credential: handoff.credential) {
                 guard model.selectedID == handoff.chatID else { return }
-                if let request = handoff.request, let option = browserCompletion(in: request) {
+                focusAfterHandback = handoff.chatID
+                if let request = handoff.request, model.selected.permissions.contains(request),
+                   let option = browserCompletion(in: request) {
                     Task { await model.answer(request, optionID: option.id) }
-                } else {
-                    model.submit("I’ve handed back control of your browser. Continue the task from the open browser session.")
                 }
-            })
+            }
         }
         .sheet(item: $activeCall) { call in
             NativeAgentCallScreen(model: model, chatID: call.chatID, kind: call.kind, link: call.link) {
@@ -272,6 +273,7 @@ struct ChatScreen: View {
                             set: { workspace.drafts[chatKey] = $0 }
                         ),
                         modelPickerVisible: $showModelPicker,
+                        editorFocus: $composerFocused,
                         transcribe: dictationTranscriber,
                         didSend: {
                             showModelPicker = false
@@ -325,6 +327,7 @@ struct ChatScreen: View {
     }
 
     private func openBrowser(_ remote: RemoteProfile, credential: String, request: PermissionRequest? = nil) {
+        composerFocused = false
         browserHandoff = BrowserHandoff(remote: remote, credential: credential, chatID: model.selectedID, request: request)
     }
 
