@@ -14,8 +14,8 @@ function originOf(url) {
     }
 }
 
-async function relay(pairing, operation, body = {}) {
-    const reply = await browser.runtime.sendNativeMessage("app.riptide.client", { ...pairing, operation, body });
+async function relay(agentID, operation, body = {}) {
+    const reply = await browser.runtime.sendNativeMessage("app.riptide.client", { agentID, operation, body });
     if (reply?.status === 200) return reply.body;
     throw new RelayError(reply?.body?.error ?? reply?.error ?? "Riptide couldn’t reach the relay.", reply?.status);
 }
@@ -35,12 +35,12 @@ async function stopSharing(share) {
     await browser.tabs.sendMessage(share.tabID, { type: "stop", id: share.id }).catch(() => {});
 }
 
-async function release(pairing, share) {
+async function release(share) {
     await stopSharing(share);
     try {
-        await relay(pairing, "release", { id: share.id });
+        await relay(share.agentID, "release", { id: share.id });
     } catch (error) {
-        if (![401, 409].includes(error.status)) {
+        if (![403, 404, 409].includes(error.status)) {
             throw new Error("Control stopped on this phone. The relay will expire the handoff shortly.");
         }
     }
@@ -55,49 +55,44 @@ async function inject(tabID) {
 }
 
 async function runPopup(message) {
-    const { pairing } = await browser.storage.local.get("pairing");
     const share = await sharedTab();
-
-    if (message.type === "pair") {
-        if (pairing) throw new Error("Disconnect the current relay first.");
-        const url = new URL(message.code.trim());
-        const token = url.hash.slice(1);
-        if (!originOf(url) || url.search || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
-            throw new Error("Enter the private HTTPS pairing code from your agent host.");
-        }
-        url.hash = "";
-        const endpoint = url.href.replace(/\/$/, "");
-        const result = await relay({ endpoint, token }, "pair");
-        await browser.storage.local.set({ pairing: { endpoint, token: result.token } });
-        return {};
-    }
-
-    if (message.type === "forget") {
-        if (share) await stopSharing(share);
-        await browser.storage.local.remove("pairing");
-        if (pairing) {
-            await relay(pairing, "forget").catch(error => {
-                if (error.status !== 401) {
-                    throw new Error("Disconnected on this phone. Revoke its pairing from the relay if needed.");
-                }
-            });
-        }
-        return {};
-    }
-
-    if (!pairing) return { paired: false };
     if (message.type === "release" && share) {
-        await release(pairing, share);
+        await release(share);
         return {};
     }
 
-    const { handoff } = await relay(pairing, "state");
+    const { agents } = await relay(undefined, "agents");
+    const { selectedAgent } = await browser.storage.local.get("selectedAgent");
+    if (message.type === "select") {
+        if (share || !agents.some(agent => agent.id === message.id)) {
+            throw new Error("Choose a paired agent after ending the current handoff.");
+        }
+        await browser.storage.local.set({ selectedAgent: message.id });
+        return {};
+    }
+    const agentID = share?.agentID ?? agents.find(agent => agent.id === selectedAgent)?.id ?? agents[0]?.id;
+    if (!agentID) return { agents };
+    if (!agents.some(agent => agent.id === agentID)) {
+        if (share) await stopSharing(share);
+        return { agents };
+    }
+
+    let state;
+    try {
+        state = await relay(agentID, "state");
+    } catch (error) {
+        if (message.type !== "status") throw error;
+        if (share && error.status === 404) await stopSharing(share);
+        return { agents, agentID, connectionError: error.message, canRelease: !!share };
+    }
+    const { handoff, busy } = state;
     if (share && handoff?.id !== share.id) await stopSharing(share);
     const tab = await currentTab();
     const matchingTab = !!handoff && originOf(tab?.url) === handoff.origin;
 
     if (message.type === "status") {
-        return { paired: true, handoff, matchingTab, sharing: !!share && handoff?.id === share.id };
+        const sharing = !!share && handoff?.id === share.id;
+        return { agents, agentID, handoff, busy, matchingTab, sharing };
     }
     if (!handoff || handoff.active || handoff.id !== message.id) {
         throw new Error("This request has changed. Check for a new handoff.");
@@ -117,13 +112,13 @@ async function runPopup(message) {
         if (probe.length !== 1 || probe[0].result !== handoff.origin) {
             throw new Error("Allow Riptide access to this Safari tab and try again.");
         }
-        const nextShare = { id: handoff.id, origin: handoff.origin, tabID: tab.id };
-        await relay(pairing, "grant", { id: nextShare.id, origin: nextShare.origin });
+        const nextShare = { id: handoff.id, origin: handoff.origin, tabID: tab.id, agentID };
+        await relay(agentID, "grant", { id: nextShare.id, origin: nextShare.origin });
         try {
             await browser.storage.session.set({ share: nextShare });
             await inject(tab.id);
         } catch {
-            await release(pairing, nextShare);
+            await release(nextShare);
             throw new Error("Safari couldn’t start sharing. Ask your agent for a fresh handoff.");
         }
         return {};
@@ -132,21 +127,20 @@ async function runPopup(message) {
 }
 
 async function tick(message, sender) {
-    const { pairing } = await browser.storage.local.get("pairing");
     const share = await sharedTab();
-    if (!pairing || !share || sender.frameId !== 0 || sender.tab?.id !== share.tabID ||
+    if (!share?.agentID || sender.frameId !== 0 || sender.tab?.id !== share.tabID ||
         originOf(sender.url) !== share.origin) {
         return { stopped: true };
     }
     const body = { id: share.id, origin: share.origin };
     try {
         const result = message.result
-            ? await relay(pairing, "result", { ...message.result, ...body })
-            : await relay(pairing, "next", body);
+            ? await relay(share.agentID, "result", { ...message.result, ...body })
+            : await relay(share.agentID, "next", body);
         if ((await sharedTab())?.id !== share.id) return { stopped: true };
         return { share, ...result };
     } catch (error) {
-        if ([401, 403, 409].includes(error.status)) {
+        if ([403, 404, 409].includes(error.status)) {
             await stopSharing(share);
             return { stopped: true };
         }
@@ -156,7 +150,7 @@ async function tick(message, sender) {
 
 browser.runtime.onMessage.addListener((message, sender, respond) => {
     const isPopup = sender.url === browser.runtime.getURL("popup.html");
-    const popupActions = ["pair", "forget", "status", "open", "grant", "release"];
+    const popupActions = ["status", "select", "open", "grant", "release"];
     const action = message?.type === "tick" ? tick(message, sender)
         : isPopup && popupActions.includes(message?.type) ? runPopup(message) : null;
     if (!action) return false;
@@ -171,8 +165,7 @@ browser.tabs.onUpdated.addListener((tabID, update, tab) => {
         if (share?.tabID !== tabID) return;
         const origin = originOf(update.url ?? tab.url);
         if (origin && origin !== share.origin) {
-            const { pairing } = await browser.storage.local.get("pairing");
-            if (pairing) await release(pairing, share);
+            await release(share);
         } else if (update.status === "complete") {
             await inject(tabID);
         }
@@ -183,7 +176,8 @@ browser.tabs.onRemoved.addListener(tabID => {
     void (async () => {
         const share = await sharedTab();
         if (share?.tabID !== tabID) return;
-        const { pairing } = await browser.storage.local.get("pairing");
-        if (pairing) await release(pairing, share);
+        await release(share);
     })().catch(() => {});
 });
+
+browser.runtime.onInstalled.addListener(() => { void browser.storage.local.remove("pairing"); });

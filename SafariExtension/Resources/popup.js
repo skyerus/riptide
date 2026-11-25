@@ -1,10 +1,9 @@
 const heading = document.querySelector("#heading");
 const description = document.querySelector("#description");
-const pairing = document.querySelector("#pairing");
-const code = document.querySelector("#code");
+const agentPicker = document.querySelector("#agent-picker");
+const agentSelect = document.querySelector("#agent");
 const primary = document.querySelector("#primary");
 const refresh = document.querySelector("#refresh");
-const settings = document.querySelector("#settings");
 const errorText = document.querySelector("#error");
 let next;
 let busy = false;
@@ -35,19 +34,26 @@ async function render() {
     primary.hidden = true;
     try {
         const state = await send("status");
-        settings.hidden = !state.paired;
-        pairing.hidden = !!state.paired;
-        refresh.hidden = !state.paired || state.sharing;
-        if (!state.paired) {
-            heading.textContent = "Connect your agent";
-            description.textContent = "Paste the one-time pairing code from your Riptide Safari relay.";
+        const selected = state.agents.find(agent => agent.id === state.agentID);
+        agentPicker.hidden = state.agents.length < 2 || !!state.sharing || !!state.canRelease;
+        agentSelect.replaceChildren(...state.agents.map(agent => new Option(agent.name, agent.id)));
+        if (selected) agentSelect.value = selected.id;
+        refresh.hidden = !!state.sharing || !!state.canRelease;
+        if (!selected) {
+            heading.textContent = "Pair an agent in Riptide";
+            description.textContent = "Open Riptide to use an existing SSH pairing or connect an agent.";
+        } else if (state.connectionError) {
+            heading.textContent = "Relay unavailable";
+            description.textContent = selected.name;
+            setError(state.connectionError);
+            if (state.canRelease) action("Take back control", "release");
         } else if (state.sharing) {
             heading.textContent = "Agent is in control";
             description.textContent = new URL(state.handoff.origin).host + " is shared. Keep this Safari tab open.";
             action("Take back control", "release");
-        } else if (state.handoff?.active) {
-            heading.textContent = "Handoff ended on this phone";
-            description.textContent = "Wait for the relay to release the old tab, then request a new handoff.";
+        } else if (state.busy || state.handoff?.active) {
+            heading.textContent = "A tab is already shared";
+            description.textContent = "Take back control on the device sharing the tab or ask your agent to finish.";
         } else if (state.handoff) {
             heading.textContent = new URL(state.handoff.origin).host;
             description.textContent = state.matchingTab
@@ -57,13 +63,12 @@ async function render() {
                 state.matchingTab ? "grant" : "open", { id: state.handoff.id });
         } else {
             heading.textContent = "Ready for a handoff";
-            description.textContent = "Ask your agent to request a Safari handoff, then check here.";
+            description.textContent = "Ask " + selected.name + " to request a Safari handoff, then check here.";
         }
     } catch (error) {
-        heading.textContent = "Relay unavailable";
-        description.textContent = "Check that your phone can reach the private agent host.";
-        if (error.status === 401) description.textContent = "Disconnect and pair this Safari extension again.";
-        settings.hidden = false;
+        heading.textContent = "Pairings unavailable";
+        description.textContent = "Open Riptide to refresh your agent connections.";
+        agentPicker.hidden = true;
         refresh.hidden = false;
         setError(error.message);
     }
@@ -72,7 +77,7 @@ async function render() {
 async function perform(operation) {
     if (busy) return;
     busy = true;
-    for (const button of document.querySelectorAll("button")) button.disabled = true;
+    for (const button of document.querySelectorAll("button, select")) button.disabled = true;
     setError();
     try {
         await operation();
@@ -81,18 +86,14 @@ async function perform(operation) {
         setError(error.message);
     } finally {
         busy = false;
-        for (const button of document.querySelectorAll("button")) button.disabled = false;
+        for (const button of document.querySelectorAll("button, select")) button.disabled = false;
     }
 }
 
-pairing.addEventListener("submit", event => {
-    event.preventDefault();
-    void perform(async () => {
-        await send("pair", { code: code.value });
-        code.value = "";
-        await render();
-    });
-});
+agentSelect.addEventListener("change", () => void perform(async () => {
+    await send("select", { id: agentSelect.value });
+    await render();
+}));
 
 primary.addEventListener("click", () => {
     if (!next) return;
@@ -105,11 +106,4 @@ primary.addEventListener("click", () => {
 });
 
 refresh.addEventListener("click", () => void perform(render));
-document.querySelector("#disconnect").addEventListener("click", () => {
-    void perform(async () => {
-        await send("forget");
-        await render();
-    });
-});
-
 void perform(render);

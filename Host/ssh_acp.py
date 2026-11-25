@@ -121,14 +121,54 @@ async def serve(workspace, command):
                 await agent.wait()
 
 
+async def serve_safari(socket_path, device):
+    from pathlib import Path
+    from safari_bridge import MAX_BODY, RelayError, browser_call
+
+    loop = asyncio.get_running_loop()
+    source = asyncio.StreamReader(limit=MAX_BODY)
+    stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
+    try:
+        while line := await asyncio.wait_for(source.readline(), 45):
+            request = json.loads(line)
+            if not isinstance(request, dict) or set(request) != {"operation", "body"} or not isinstance(
+                    request["operation"], str) or not isinstance(request["body"], dict):
+                raise ValueError("Invalid Safari request.")
+            try:
+                body = await asyncio.to_thread(
+                    browser_call, Path(socket_path), device, request["operation"], request["body"])
+                response = {"status": 200, "body": body}
+            except RelayError as exc:
+                response = {"status": exc.status, "body": {"error": str(exc)}}
+            sys.stdout.buffer.write(json.dumps(response, ensure_ascii=False, allow_nan=False).encode() + b"\n")
+            sys.stdout.buffer.flush()
+    finally:
+        stdin.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Narrow a dedicated OpenSSH key to Riptide’s ACP client.")
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--hermes-screen", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
+    parser.add_argument("--safari", nargs=2, metavar=("BROWSER_SOCKET", "DEVICE_ID"))
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     requested = os.environ.get("SSH_ORIGINAL_COMMAND")
+    if requested == "riptide-safari":
+        if args.safari is None:
+            print(json.dumps({"status": 403, "body": {"error": "This SSH key has no Safari relay enabled."}}))
+            sys.exit(1)
+        socket_path, device = args.safari
+        if not os.path.isabs(socket_path):
+            parser.error("An absolute Safari relay socket is required.")
+        try:
+            asyncio.run(serve_safari(socket_path, device))
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        except (OSError, ValueError):
+            parser.exit(1, "The Safari transport closed.\n")
+        sys.exit(0)
     if requested == "riptide-hermes-screen":
         if args.hermes_screen is None:
             print(json.dumps({"event": "error", "message": "This SSH pairing has no Hermes screen."}))

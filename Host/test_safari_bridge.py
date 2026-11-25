@@ -1,47 +1,45 @@
 import concurrent.futures
 from http import HTTPStatus
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
-from safari_bridge import OFFLINE_SECONDS, PREFIX, Relay, RelayError, agent_call, https_origin
+from safari_bridge import OFFLINE_SECONDS, Relay, RelayError, agent_call, https_origin
 
 
 class SafariHandoffTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
         self.now = 100
-        self.device_file = Path(self.directory.name) / "device.sha256"
-        self.relay = Relay(self.device_file, lambda: self.now)
-        self.code = self.relay.agent("pair", {})["code"]
-        self.token = self.relay.browser("pair", {}, self.code)["token"]
+        self.relay = Relay(lambda: self.now)
+        self.device = "device-first-abcdef"
 
     def request(self):
         request = self.relay.agent("request", {"url": "https://example.test/login"})
         return {"id": request["request_id"], "origin": request["origin"]}
 
-    def test_one_use_pairing_and_revocation(self):
-        with self.assertRaises(RelayError):
-            self.relay.browser("pair", {}, self.code)
-        self.assertNotIn(self.token, self.device_file.read_text())
-        self.assertEqual(self.device_file.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(Relay(self.device_file).browser("state", {}, self.token), {})
-        self.relay.agent("unpair", {})
-        with self.assertRaises(RelayError):
-            self.relay.browser("state", {}, self.token)
+    def test_another_paired_device_cannot_read_or_revoke_an_active_tab(self):
+        request = self.request()
+        other = "device-second-abcdef"
+        self.relay.browser("grant", request, self.device)
+        self.assertEqual(self.relay.browser("state", {}, other), {"busy": True})
+        for operation in ("next", "result", "release"):
+            with self.subTest(operation=operation), self.assertRaises(RelayError) as error:
+                self.relay.browser(operation, request, other)
+            self.assertEqual(error.exception.status, HTTPStatus.FORBIDDEN)
+        self.assertEqual(self.relay.browser("state", {}, self.device)["handoff"]["id"], request["id"])
 
     def test_grant_is_required_and_only_admits_requested_origin(self):
         request = self.request()
         with self.assertRaisesRegex(RelayError, "hand back"):
             self.relay.agent("action", {"request_id": request["id"], "kind": "snapshot"})
         with self.assertRaisesRegex(RelayError, "different website"):
-            self.relay.browser("grant", {**request, "origin": "https://lookalike.test"}, self.token)
-        self.relay.browser("grant", request, self.token)
+            self.relay.browser("grant", {**request, "origin": "https://lookalike.test"}, self.device)
+        self.relay.browser("grant", request, self.device)
         state = self.relay.agent("wait", {"request_id": request["id"]})
         self.assertEqual(state, {"state": "shared", "origin": "https://example.test"})
         with self.assertRaisesRegex(RelayError, "within"):
@@ -52,44 +50,44 @@ class SafariHandoffTests(unittest.TestCase):
 
     def test_command_is_delivered_once_and_stale_result_cannot_complete_it(self):
         request = self.request()
-        self.relay.browser("grant", request, self.token)
+        self.relay.browser("grant", request, self.device)
         with concurrent.futures.ThreadPoolExecutor() as pool:
             future = pool.submit(self.relay.agent, "action", {"request_id": request["id"], "kind": "snapshot"})
             for _ in range(100):
-                command = self.relay.browser("next", request, self.token).get("command")
+                command = self.relay.browser("next", request, self.device).get("command")
                 if command:
                     break
                 time.sleep(0.01)
             else:
                 self.fail("Agent command did not reach Safari.")
             self.assertEqual(command["kind"], "snapshot")
-            self.assertEqual(self.relay.browser("next", request, self.token), {})
+            self.assertEqual(self.relay.browser("next", request, self.device), {})
             stale = {**request, "commandID": "stale", "result": {"text": "Wrong"}}
-            self.assertEqual(self.relay.browser("result", stale, self.token), {"accepted": False})
+            self.assertEqual(self.relay.browser("result", stale, self.device), {"accepted": False})
             self.assertFalse(future.done())
             result = {"text": "Signed-in fixture"}
             response = {**request, "commandID": command["id"], "result": result}
-            self.assertEqual(self.relay.browser("result", response, self.token), {"accepted": True})
+            self.assertEqual(self.relay.browser("result", response, self.device), {"accepted": True})
             self.assertEqual(future.result(timeout=1), result)
-            self.assertEqual(self.relay.browser("result", response, self.token), {"accepted": True})
+            self.assertEqual(self.relay.browser("result", response, self.device), {"accepted": True})
 
     def test_an_offline_tab_expires_and_cannot_rejoin(self):
         request = self.request()
-        self.relay.browser("grant", request, self.token)
+        self.relay.browser("grant", request, self.device)
         self.now += OFFLINE_SECONDS + 1
-        self.assertEqual(self.relay.browser("state", {}, self.token), {})
+        self.assertEqual(self.relay.browser("state", {}, self.device), {})
         with self.assertRaisesRegex(RelayError, "ended"):
-            self.relay.browser("next", request, self.token)
+            self.relay.browser("next", request, self.device)
         self.assertNotEqual(self.request()["id"], request["id"])
 
     def test_release_invalidates_only_its_own_request(self):
         request = self.request()
-        self.relay.browser("grant", request, self.token)
-        self.relay.browser("release", request, self.token)
+        self.relay.browser("grant", request, self.device)
+        self.relay.browser("release", request, self.device)
         next_request = self.request()
         with self.assertRaisesRegex(RelayError, "ended"):
-            self.relay.browser("release", request, self.token)
-        self.assertEqual(self.relay.browser("state", {}, self.token)["handoff"]["id"], next_request["id"])
+            self.relay.browser("release", request, self.device)
+        self.assertEqual(self.relay.browser("state", {}, self.device)["handoff"]["id"], next_request["id"])
 
     def test_only_real_https_origins_are_supported(self):
         self.assertEqual(https_origin("https://EXAMPLE.test:443/path"), "https://example.test")
@@ -100,42 +98,47 @@ class SafariHandoffTests(unittest.TestCase):
 
 
 class SafariRelayTransportTests(unittest.TestCase):
-    def test_public_socket_has_no_agent_operations_and_requires_browser_token(self):
+    def test_forced_ssh_command_uses_the_browser_socket_and_rejects_agent_operations(self):
+        host = Path(__file__).resolve().parent
         with tempfile.TemporaryDirectory() as temporary:
             state_dir = Path(temporary)
-            # Port zero asks the kernel for a loopback port. The test discovers it in the same process.
-            from http.server import ThreadingHTTPServer
-            from threading import Thread
-            from safari_bridge import AgentHandler, AgentServer, BrowserHandler
+            relay = subprocess.Popen([sys.executable, str(host / "safari_bridge.py"),
+                                      "--state-dir", str(state_dir), "serve"])
+            self.addCleanup(wait_for_exit, relay)
+            browser_socket = state_dir / "browser.sock"
+            for _ in range(100):
+                if browser_socket.is_socket():
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("The Safari relay did not start.")
+            self.assertEqual(browser_socket.stat().st_mode & 0o777, 0o600)
+            self.assertEqual((state_dir / "agent.sock").stat().st_mode & 0o777, 0o600)
 
-            relay = Relay(state_dir / "device.sha256")
-            with (ThreadingHTTPServer(("127.0.0.1", 0), BrowserHandler) as public,
-                  AgentServer(str(state_dir / "agent.sock"), AgentHandler) as private):
-                public.relay = private.relay = relay
-                threads = [Thread(target=server.serve_forever, daemon=True) for server in (public, private)]
-                for thread in threads:
-                    thread.start()
-                try:
-                    address = f"http://127.0.0.1:{public.server_port}" + PREFIX
+            args = [sys.executable, str(host / "ssh_acp.py"), "--workspace", temporary]
+            environment = {**os.environ, "SSH_ORIGINAL_COMMAND": "riptide-safari"}
+            missing = subprocess.run(args, env=environment, capture_output=True, check=False, timeout=4)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertEqual(json.loads(missing.stdout)["status"], 403)
 
-                    def send(operation, token=""):
-                        request = Request(address + operation, data=b"{}", headers={"Authorization": f"Bearer {token}"})
-                        return json.loads(urlopen(request, timeout=2).read())
+            request = agent_call(state_dir, "request", url="https://example.test/login")
+            denied = {"operation": "request", "body": {"url": "https://other.test"}}
+            state = {"operation": "state", "body": {}}
+            grant = {"operation": "grant", "body": {"id": request["request_id"], "origin": request["origin"]}}
+            inputs = "".join(json.dumps(value) + "\n" for value in (denied, state, grant))
+            browser = subprocess.run([*args, "--safari", str(browser_socket), "fixture-device-ssh"],
+                                     env=environment, input=inputs, capture_output=True, text=True,
+                                     check=True, timeout=4)
+            responses = [json.loads(line) for line in browser.stdout.splitlines()]
+            self.assertEqual([item["status"] for item in responses], [403, 200, 200])
+            self.assertEqual(responses[1]["body"]["handoff"]["id"], request["request_id"])
+            self.assertEqual(agent_call(state_dir, "wait", request_id=request["request_id"])["state"], "shared")
 
-                    with self.assertRaises(HTTPError) as error:
-                        send("request")
-                    self.assertEqual(error.exception.code, HTTPStatus.NOT_FOUND)
-                    with self.assertRaises(HTTPError) as error:
-                        send("state")
-                    self.assertEqual(error.exception.code, HTTPStatus.UNAUTHORIZED)
-                    code = agent_call(state_dir, "pair")["code"]
-                    token = send("pair", code)["token"]
-                    self.assertEqual(send("state", token), {})
-                finally:
-                    for server in (public, private):
-                        server.shutdown()
-                    for thread in threads:
-                        thread.join()
+
+def wait_for_exit(process):
+    if process.poll() is None:
+        process.terminate()
+    process.wait(timeout=5)
 
 
 if __name__ == "__main__":

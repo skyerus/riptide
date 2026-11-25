@@ -91,6 +91,10 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
         return sshTransport(credential: credential, command: "riptide-hermes-screen")
     }
 
+    func safariSSHTransport(credential: String) -> SSHACPTransport? {
+        sshTransport(credential: credential, command: "riptide-safari")
+    }
+
     private func sshTransport(credential: String, command: String) -> SSHACPTransport? {
         guard let sshHostFingerprint, let endpoint = Self.sshEndpoint(address), let pin = SSHHostPin(sshHostFingerprint),
               let identity = SSHDeviceIdentity(privateCredential: credential) else { return nil }

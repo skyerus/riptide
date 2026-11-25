@@ -1,12 +1,13 @@
 """Private relay for an explicitly shared Safari tab and a local MCP client."""
 
+from __future__ import annotations
+
 import argparse
 from dataclasses import dataclass
 import fcntl
-import hashlib
 from http import HTTPStatus
 from http.client import HTTPConnection
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import json
 import os
 from pathlib import Path
@@ -21,11 +22,11 @@ from urllib.parse import urlsplit
 DEFAULT_STATE = Path.home() / ".local" / "state" / "riptide-safari"
 PREFIX = "/v1/safari/"
 MAX_BODY = 96 * 1024
-PAIR_SECONDS = 600
 REQUEST_SECONDS = 300
 SHARE_SECONDS = 900
 OFFLINE_SECONDS = 25
 COMMAND_SECONDS = 25
+BROWSER_OPERATIONS = frozenset(("state", "grant", "next", "result", "release"))
 
 
 class RelayError(Exception):
@@ -49,10 +50,6 @@ def https_origin(url):
     return f"https://{host}" + (f":{port}" if port not in (None, 443) else "")
 
 
-def digest(token):
-    return hashlib.sha256(token.encode()).hexdigest()
-
-
 @dataclass
 class Command:
     id: str
@@ -67,21 +64,21 @@ class Handoff:
     url: str
     origin: str
     expires_at: float
-    active: bool = False
+    owner: str | None = None
     seen_at: float = 0
     command: Command | None = None
     last_result_id: str | None = None
 
+    @property
+    def active(self):
+        return self.owner is not None
+
 
 class Relay:
-    def __init__(self, device_file, clock=monotonic):
-        self.device_file = device_file
+    def __init__(self, clock=monotonic):
         self.clock = clock
         self.changed = Condition()
         self.handoff = None
-        self.pair_code = None
-        self.pair_expires_at = 0
-        self.device_digest = device_file.read_text().strip() if device_file.exists() else ""
 
     def clear(self):
         self.handoff = None
@@ -102,55 +99,35 @@ class Relay:
             raise RelayError("Waiting for you to hand back the tab in Safari.")
         return handoff
 
-    def save_device(self, token):
-        next_digest = digest(token) if token else ""
-        temporary = self.device_file.with_suffix(".tmp")
-        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as stream:
-            stream.write(next_digest)
-        temporary.replace(self.device_file)
-        self.device_digest = next_digest
-
-    def browser(self, operation, body, token):
+    def browser(self, operation, body, device):
         with self.changed:
-            if operation == "pair":
-                if (self.pair_code is None or self.clock() >= self.pair_expires_at
-                        or not secrets.compare_digest(token, self.pair_code)):
-                    raise RelayError("That pairing code is invalid or expired.", HTTPStatus.UNAUTHORIZED)
-                device_token = secrets.token_urlsafe(32)
-                self.save_device(device_token)
-                self.pair_code = None
-                self.clear()
-                return {"token": device_token}
-
-            if not self.device_digest or not secrets.compare_digest(digest(token), self.device_digest):
-                raise RelayError("Pair Riptide Safari with this agent again.", HTTPStatus.UNAUTHORIZED)
-            if operation == "forget":
-                self.save_device(None)
-                self.clear()
-                return {}
             if operation == "state":
                 handoff = self.current()
                 if handoff is None:
                     return {}
+                if handoff.active and handoff.owner != device:
+                    return {"busy": True}
                 return {"handoff": {"id": handoff.id, "url": handoff.url,
                                     "origin": handoff.origin, "active": handoff.active}}
 
             handoff = self.require(body.get("id"))
+            if operation == "grant":
+                if handoff.active:
+                    raise RelayError("A Safari tab is already shared.")
+                if body.get("origin") != handoff.origin:
+                    raise RelayError("The handoff is for a different website.", HTTPStatus.FORBIDDEN)
+                handoff.owner = device
+                handoff.seen_at = self.clock()
+                handoff.expires_at = self.clock() + SHARE_SECONDS
+                self.changed.notify_all()
+                return {}
+            if not handoff.active or handoff.owner != device:
+                raise RelayError("This device doesn’t control the Safari handoff.", HTTPStatus.FORBIDDEN)
             if operation == "release":
                 self.clear()
                 return {}
             if body.get("origin") != handoff.origin:
                 raise RelayError("The handoff is for a different website.", HTTPStatus.FORBIDDEN)
-            if operation == "grant":
-                if handoff.active:
-                    raise RelayError("A Safari tab is already shared.")
-                handoff.active = True
-                handoff.seen_at = self.clock()
-                handoff.expires_at = self.clock() + SHARE_SECONDS
-                self.changed.notify_all()
-                return {}
-            if not handoff.active:
-                raise RelayError("Waiting for the user to share their Safari tab.")
             handoff.seen_at = self.clock()
             command = handoff.command
             if operation == "next":
@@ -174,15 +151,6 @@ class Relay:
 
     def agent(self, operation, body):
         with self.changed:
-            if operation == "pair":
-                self.pair_code = secrets.token_urlsafe(32)
-                self.pair_expires_at = self.clock() + PAIR_SECONDS
-                return {"code": self.pair_code}
-            if operation == "unpair":
-                self.pair_code = None
-                self.save_device(None)
-                self.clear()
-                return {}
             if operation == "request":
                 origin = https_origin(body.get("url"))
                 if self.current() is not None:
@@ -285,29 +253,29 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class BrowserHandler(Handler):
-    operations = frozenset(("pair", "state", "grant", "next", "result", "release", "forget"))
+    operations = BROWSER_OPERATIONS
 
     def dispatch(self, operation, body):
-        prefix, _, token = self.headers.get("Authorization", "").partition(" ")
-        if prefix.lower() != "bearer" or not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
-            raise RelayError("Safari pairing is required.", HTTPStatus.UNAUTHORIZED)
-        return self.server.relay.browser(operation, body, token)
+        device = self.headers.get("Riptide-Device", "")
+        if not valid_device(device):
+            raise RelayError("The SSH key has no Safari device binding.", HTTPStatus.UNAUTHORIZED)
+        return self.server.relay.browser(operation, body, device)
 
 
 class AgentHandler(Handler):
-    operations = frozenset(("pair", "unpair", "request", "wait", "action", "finish"))
+    operations = frozenset(("request", "wait", "action", "finish"))
 
     def dispatch(self, operation, body):
         return self.server.relay.agent(operation, body)
 
 
-class AgentServer(ThreadingUnixStreamServer):
+class RelayServer(ThreadingUnixStreamServer):
     daemon_threads = True
 
 
 class LocalConnection(HTTPConnection):
-    def __init__(self, path):
-        super().__init__("localhost", timeout=85)
+    def __init__(self, path, timeout):
+        super().__init__("localhost", timeout=timeout)
         self.path = path
 
     def connect(self):
@@ -316,23 +284,37 @@ class LocalConnection(HTTPConnection):
         self.sock.connect(str(self.path))
 
 
-def agent_call(state_dir, operation, **body):
-    connection = LocalConnection(state_dir / "agent.sock")
+def valid_device(device):
+    return re.fullmatch(r"[A-Za-z0-9_-]{16,96}", device) is not None
+
+
+def relay_call(socket_path, operation, body, *, timeout, headers=None):
+    connection = LocalConnection(socket_path, timeout)
     try:
-        connection.request("POST", PREFIX + operation, json.dumps(body),
-                           {"Content-Type": "application/json"})
+        connection.request("POST", PREFIX + operation, json.dumps(body, ensure_ascii=False).encode(),
+                           {"Content-Type": "application/json", **(headers or {})})
         response = connection.getresponse()
         result = json.loads(response.read(MAX_BODY + 1))
         if response.status != HTTPStatus.OK:
             raise RelayError(result.get("error", "Safari bridge error."), response.status)
         return result
     except OSError as exc:
-        raise RelayError("The local Riptide Safari relay is unavailable.") from exc
+        raise RelayError("The local Riptide Safari relay is unavailable.", HTTPStatus.SERVICE_UNAVAILABLE) from exc
     finally:
         connection.close()
 
 
-def serve(state_dir, port):
+def agent_call(state_dir, operation, **body):
+    return relay_call(state_dir / "agent.sock", operation, body, timeout=85)
+
+
+def browser_call(socket_path, device, operation, body):
+    if operation not in BROWSER_OPERATIONS or not valid_device(device):
+        raise RelayError("This operation is outside the paired Safari route.", HTTPStatus.FORBIDDEN)
+    return relay_call(socket_path, operation, body, timeout=5, headers={"Riptide-Device": device})
+
+
+def serve(state_dir):
     state_dir.mkdir(mode=0o700, exist_ok=True, parents=True)
     info = state_dir.stat()
     if state_dir.is_symlink() or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -342,13 +324,17 @@ def serve(state_dir, port):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise SystemExit("A Safari relay is already running in that state directory.") from exc
-        socket_path = state_dir / "agent.sock"
-        socket_path.unlink(missing_ok=True)
-        relay = Relay(state_dir / "device.sha256")
-        with ThreadingHTTPServer(("127.0.0.1", port), BrowserHandler) as browser:
-            with AgentServer(str(socket_path), AgentHandler) as agent:
-                socket_path.chmod(0o600)
-                browser.relay = agent.relay = relay
+
+        paths = [state_dir / name for name in ("agent.sock", "browser.sock")]
+        relay = Relay()
+        for path in paths:
+            path.unlink(missing_ok=True)
+        try:
+            with (RelayServer(str(paths[0]), AgentHandler) as agent,
+                  RelayServer(str(paths[1]), BrowserHandler) as browser):
+                for path in paths:
+                    path.chmod(0o600)
+                agent.relay = browser.relay = relay
                 thread = Thread(target=agent.serve_forever, daemon=True)
                 thread.start()
                 try:
@@ -358,34 +344,17 @@ def serve(state_dir, port):
                 finally:
                     agent.shutdown()
                     thread.join()
-                    socket_path.unlink(missing_ok=True)
+        finally:
+            for path in paths:
+                path.unlink(missing_ok=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    serve_parser = subparsers.add_parser("serve")
-    serve_parser.add_argument("--port", type=int, default=8772)
-    subparsers.add_parser("unpair", help="Revoke the paired Safari device")
-    pair_parser = subparsers.add_parser("pair")
-    pair_parser.add_argument("endpoint", help="Private HTTPS origin or reverse-proxy base path")
+    parser.add_argument("command", choices=("serve",))
     args = parser.parse_args()
-    if args.command == "serve":
-        serve(args.state_dir, args.port)
-        return
-    try:
-        if args.command == "unpair":
-            agent_call(args.state_dir, "unpair")
-            return
-        https_origin(args.endpoint)
-        parts = urlsplit(args.endpoint)
-        if parts.query or parts.fragment:
-            raise RelayError("The relay endpoint must have no query or fragment.")
-        code = agent_call(args.state_dir, "pair")["code"]
-        print(f"{args.endpoint.rstrip('/')}#{code}")
-    except RelayError as exc:
-        raise SystemExit(str(exc)) from exc
+    serve(args.state_dir)
 
 
 if __name__ == "__main__":

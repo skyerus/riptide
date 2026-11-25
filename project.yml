@@ -21,7 +21,7 @@ targets:
     platform: iOS
     sources:
       - path: App
-        excludes: [BuildInfo.plist, RiptidePush.entitlements]
+        excludes: [BuildInfo.plist, Riptide.entitlements, RiptidePush.entitlements]
       - path: Rendering/RichContent
         type: folder
         buildPhase: resources
@@ -45,6 +45,7 @@ targets:
         INFOPLIST_KEY_NSMicrophoneUsageDescription: Riptide uses your microphone only during an outgoing voice call.
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: Riptide connects to agents and notification relays you pair on your private network.
         CODE_SIGN_ENTITLEMENTS: $(RIPTIDE_PUSH_ENTITLEMENTS)
+        RIPTIDE_PUSH_ENTITLEMENTS: App/Riptide.entitlements
         RIPTIDE_PUSH_ENVIRONMENT: ""
         SWIFT_VERSION: "6.0"
   RiptideSafari:
@@ -52,13 +53,16 @@ targets:
     platform: iOS
     sources:
       - path: SafariExtension
-        excludes: [Info.plist]
+        excludes: [Info.plist, RiptideSafari.entitlements]
+    dependencies:
+      - package: RiptideCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.riptide.client.safari
         INFOPLIST_FILE: SafariExtension/Info.plist
         GENERATE_INFOPLIST_FILE: YES
         APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_ENTITLEMENTS: SafariExtension/RiptideSafari.entitlements
         TARGETED_DEVICE_FAMILY: "1"
         SKIP_INSTALL: YES
         SWIFT_VERSION: "6.0"
