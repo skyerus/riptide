@@ -293,7 +293,7 @@ private struct WorkspaceSwitcher: View {
         return matches.map(\.agent)
     }
     private func chatMatches(_ search: WorkspaceSearch, names: [String: String]) -> [WorkspaceVisit] {
-        if search.isEmpty { return Array(workspace.recent.prefix(4)) }
+        if search.isEmpty { return Array(workspace.recent.lazy.filter { names[$0.id.workspace] != nil }.prefix(4)) }
         var matches: [(chat: WorkspaceVisit, score: Int, index: Int)] = []
         for (index, chat) in workspace.knownChats.enumerated() {
             if let score = search.score(title: chat.title, context: names[chat.id.workspace] ?? "") {

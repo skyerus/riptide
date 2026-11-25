@@ -9,40 +9,45 @@ struct RiptideApp: App {
     private let localCodex: CodexLocalEndpoint?
     private let remotes: RemoteStore
     @State private var workspace: WorkspaceState
+    #if DEBUG
     @State private var seededBusyInbox = false
-
-    private static var fixtureNamespace: UUID? {
-        ProcessInfo.processInfo.environment["RIPTIDE_FIXTURE_NAMESPACE"].flatMap(UUID.init(uuidString:))
-    }
+    #endif
 
     init() {
-        let base = AgentTarget.demos.map { Self.makeDemo($0) }
         #if DEBUG
-        let busy = Self.fixtureNamespace != nil && ProcessInfo.processInfo.environment["RIPTIDE_BUSY_WORKSPACE"] == "1"
+        let environment = ProcessInfo.processInfo.environment
+        let namespace = environment["RIPTIDE_FIXTURE_NAMESPACE"].flatMap(UUID.init(uuidString:))
+        let demos = environment["RIPTIDE_DEMO"] == "1" || (namespace != nil && environment["RIPTIDE_DEMO"] != "0")
+        let base = demos ? AgentTarget.demos.map { Self.makeDemo($0, namespace: namespace) } : []
+        let busy = demos && namespace != nil && environment["RIPTIDE_BUSY_WORKSPACE"] == "1"
         roster = base + (busy ? (1...12).map { index in
             let id = "ops-\(index)"
             return Self.makeDemo(
                 AgentTarget(id: id, name: "Ops \(index)", mainSessionID: "\(id)-main", cwd: "/demo/\(id)"),
+                namespace: namespace,
                 catalog: (1...24).map { "Incident \($0) review" })
         } : [])
+        preferences = namespace.flatMap { UserDefaults(suiteName: "app.riptide.fixture.\($0.uuidString)") } ?? .standard
+        localCodex = CodexLocalEndpoint(environment: environment)
         #else
-        roster = base
-        #endif
-        preferences = Self.fixtureNamespace.flatMap { UserDefaults(suiteName: "app.riptide.fixture.\($0.uuidString)") }
-            ?? .standard
-        remotes = RemoteStore(defaults: preferences)
-        #if DEBUG
-        localCodex = CodexLocalEndpoint(environment: ProcessInfo.processInfo.environment)
-        #else
+        roster = []
+        preferences = .standard
         localCodex = nil
         #endif
+        remotes = RemoteStore(defaults: preferences)
         _workspace = State(initialValue: WorkspaceState(roster: roster, localCodex: localCodex,
                                                         remotes: remotes, defaults: preferences))
     }
 
     var body: some Scene {
         WindowGroup {
-            WorkspaceNavigation(workspace: workspace)
+            Group {
+                if workspace.needsFirstAgent {
+                    FirstAgentOnboarding(remotes: remotes)
+                } else {
+                    WorkspaceNavigation(workspace: workspace)
+                }
+            }
             .defaultAppStorage(preferences)
             .preferredColorScheme(.dark)
             .tint(ChatTheme.accent)
@@ -53,7 +58,7 @@ struct RiptideApp: App {
     @MainActor
     private func seedBusyInbox() async {
         #if DEBUG
-        guard Self.fixtureNamespace != nil, !seededBusyInbox,
+        guard !seededBusyInbox,
               ProcessInfo.processInfo.environment["RIPTIDE_BUSY_INBOX"] == "1" else { return }
         seededBusyInbox = true
         for model in roster where model.target.id.hasPrefix("ops-") {
@@ -63,9 +68,10 @@ struct RiptideApp: App {
         #endif
     }
 
-    private static func makeDemo(_ target: AgentTarget, catalog: [String] = []) -> AgentChatModel {
+    #if DEBUG
+    private static func makeDemo(_ target: AgentTarget, namespace: UUID?, catalog: [String] = []) -> AgentChatModel {
         var directory = URL.applicationSupportDirectory.appending(path: "RiptideFixtures", directoryHint: .isDirectory)
-        if let id = fixtureNamespace {
+        if let id = namespace {
             directory.append(path: id.uuidString, directoryHint: .isDirectory)
         }
         let file = directory.appending(path: "\(target.id).json")
@@ -76,6 +82,7 @@ struct RiptideApp: App {
             return AgentChatModel(target: target, unavailable: "Saved demo chats could not be opened.")
         }
     }
+    #endif
 }
 
 enum ChatTheme {
