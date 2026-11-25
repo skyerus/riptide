@@ -199,7 +199,7 @@ private struct MarkdownBlocks: View {
 
 enum ChatLinks {
     private static let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
-    @MainActor static let openURL = OpenURLAction { url in isWebLink(url) ? .systemAction : .discarded }
+    @MainActor static let openURL = OpenURLAction { url in isWebLink(url) ? SafariLinks.open(url) : .discarded }
 
     static func styled(_ text: AttributedString) -> AttributedString {
         var result = text

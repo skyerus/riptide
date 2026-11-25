@@ -50,6 +50,7 @@ struct RiptideApp: App {
                 }
             }
             .defaultAppStorage(preferences)
+            .environment(\.openURL, SafariLinks.openURL)
             .preferredColorScheme(.dark)
             .tint(ChatTheme.accent)
             .task { await seedBusyInbox() }
