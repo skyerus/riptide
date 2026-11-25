@@ -8,3 +8,7 @@
 
 - For every user-visible UI change, run the updated app on an iPhone simulator or device, capture the changed screens or states, and include the screenshots in the final reply. Attach or embed the images; a description or local path alone is not enough.
 - Use fixture or sanitized data in screenshots. Keep captures out of Git unless requested. If capture is blocked, say why rather than substituting a mockup for the running app.
+
+## VPS changes
+
+- Make every Riptide VPS runtime, configuration, and deployment change reproducible from this repository. Commit the implementation, deployment automation, or configuration templates before applying them. Use the versioned deployment path so a fresh VPS can reproduce the setup without manual edits or dashboard clicks.

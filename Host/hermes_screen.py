@@ -45,7 +45,7 @@ class BrowserWindow:
         self.states = ()
         self.env = None
         display = view.get("display") or ""
-        state = Path(home) / "bot-desktop"
+        self.state = state = Path(home) / "bot-desktop"
         if (view.get("placement") == "gateway" and re.fullmatch(r":\d{1,5}", display)
                 and view.get("socket") == str(state / "rfb.sock") and (state / "Xauthority").is_file()):
             self.env = {**os.environ, "DISPLAY": display, "XAUTHORITY": str(state / "Xauthority")}
@@ -54,18 +54,18 @@ class BrowserWindow:
         return subprocess.run(["xprop", *args], env=self.env, capture_output=True, text=True,
                               check=True, timeout=1).stdout
 
+    def browser_details(self, window):
+        details = self.properties("-id", hex(window), "WM_CLASS", "_NET_WM_STATE", "WM_NORMAL_HINTS")
+        classes = set(re.findall(r'"([^"]+)"', details.lower()))
+        return details if classes & self.CHROMIUM else None
+
     def active_browser(self):
         if self.env is None:
             return
         root = self.properties("-root", "_NET_ACTIVE_WINDOW")
         match = re.search(r"# (0x[0-9a-fA-F]+)", root)
-        if match is None or int(match[1], 16) == 0:
-            return
-        details = self.properties("-id", match[1], "WM_CLASS", "_NET_WM_STATE", "WM_NORMAL_HINTS")
-        classes = set(re.findall(r'"([^"]+)"', details.lower()))
-        if not (classes & self.CHROMIUM):
-            return
-        return int(match[1], 16), details
+        if match and (window := int(match[1], 16)) and (details := self.browser_details(window)):
+            return window, details
 
     def minimum_width(self):
         active = self.active_browser()
@@ -75,6 +75,44 @@ class BrowserWindow:
         minimum = re.search(r"minimum size: (\d+) by", details)
         # Chromium's minimum is for the client area. Leave room for the window frame.
         return int(minimum[1]) + 12 if minimum else 512
+
+    def open_or_activate(self):
+        if self.active_browser():
+            return
+        windows = self.properties("-root", "_NET_CLIENT_LIST_STACKING")
+        for identifier in reversed(re.findall(r"0x[0-9a-fA-F]+", windows)):
+            window = int(identifier, 16)
+            try:
+                details = self.browser_details(window)
+            except subprocess.CalledProcessError:
+                continue  # The window was closed after the list was read.
+            if details:
+                self.send_window_message(window, "_NET_ACTIVE_WINDOW", 2)
+                return
+
+        # Use the same Desktop Entry the Hermes dock uses. Its Exec line selects
+        # the agent's Chromium executable, persistent profile, and launch flags.
+        panel = self.state / "xdg" / "xfce4" / "panel"
+        marker = panel / ".hermes-browser-launcher"
+        launcher_id = marker.read_text().strip() if marker.is_file() else ""
+        if not re.fullmatch(r"\d{1,8}", launcher_id):
+            raise ScreenError("Hermes has no browser launcher for this profile.")
+        launcher = panel / f"launcher-{launcher_id}" / "hermes.desktop"
+        if not launcher.is_file():
+            raise ScreenError("Hermes has no browser launcher for this profile.")
+        env = dict(self.env)
+        for key, _, value in (line.partition("=") for line in (self.state / "env").read_text().splitlines()):
+            if key in {"DBUS_SESSION_BUS_ADDRESS", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"}:
+                env[key] = value
+        env.pop("WAYLAND_DISPLAY", None)
+        env.update(GDK_BACKEND="x11", XDG_SESSION_TYPE="x11")
+        subprocess.run(["gio", "launch", str(launcher)], env=env, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=3)
+
+    def is_maximized(self):
+        active = self.active_browser()
+        return active is not None and ("_NET_WM_STATE_FULLSCREEN" in active[1]
+                                       or all(state in active[1] for state in self.STATES))
 
     def maximize(self):
         if self.window is not None:
@@ -100,7 +138,11 @@ class BrowserWindow:
             self.window = None
 
     def set_state(self, window, states, *, enable):
-        # EWMH asks the window manager to change the active Chromium window.
+        return self.send_window_message(window, "_NET_WM_STATE", int(enable),
+                                        states[0], states[1] if len(states) == 2 else 0, 2)
+
+    def send_window_message(self, window, message, *data):
+        # EWMH asks this profile's window manager to change its Chromium window.
         # Xlib reads XAUTHORITY from this adapter's environment.
         library = CDLL("libX11.so.6")
         library.XOpenDisplay.argtypes = [c_char_p]
@@ -126,10 +168,9 @@ class BrowserWindow:
             def atom(name):
                 return library.XInternAtom(display, name.encode(), 0)
 
-            state_atoms = [atom(name) for name in states]
             event = XEvent(message=XWindowMessage(
-                type=33, window=window, message_type=atom("_NET_WM_STATE"), format=32,
-                data=(c_long * 5)(int(enable), state_atoms[0], state_atoms[1] if len(state_atoms) == 2 else 0, 2),
+                type=33, window=window, message_type=atom(message), format=32,
+                data=(c_long * 5)(*(atom(item) if isinstance(item, str) else item for item in data)),
             ))
             return bool(library.XSendEvent(display, library.XDefaultRootWindow(display), 0,
                                            (1 << 20) | (1 << 19), byref(event)))
@@ -202,7 +243,7 @@ class Display:
         url = urlunsplit(self.endpoint._replace(path="/api/display/ws",
                           query=urlencode({"display_ticket": view["ticket"]})))
         self.stream = await websockets.connect(url, open_timeout=8, close_timeout=2, max_size=MAX_LINE)
-        report("opened", in_use=view["lease"]["holder"] == "human")
+        report("opened", in_use=view["lease"]["holder"] == "human", browser_visible=await self.browser_visible())
 
     async def output(self):
         async for frame in self.stream:
@@ -219,17 +260,47 @@ class Display:
                 await self.stream.send(base64.b64decode(command["data"], validate=True))
             elif command == {"command": "acquire"}:
                 result = await self.call("display.lease.acquire", viewer_id=self.viewer)
-                width = await self.frame_browser(self.browser.minimum_width) if self.owns(result) else None
-                report("control", held=result["lease"]["holder"] == "human", minimum_browser_width=width)
+                owns_lease = self.owns(result)
+                width = await self.prepare_browser() if owns_lease and self.browser.env is not None else None
+                report("control", held=owns_lease, in_use=result["lease"]["holder"] == "human",
+                       minimum_browser_width=width)
             elif command == {"command": "fit"}:
-                if self.owns(await self.call("display.status")):
+                if self.browser.env is not None and self.owns(await self.call("display.status")):
                     await self.frame_browser(self.browser.maximize)
+                    if not await self.wait_for_browser(self.browser.is_maximized, 2):
+                        raise ScreenError("Hermes could not fit the browser to this screen.")
+                    report("fitted")
             elif command == {"command": "release"}:
                 await self.restore_browser()
                 result = await self.call("display.lease.release", viewer_id=self.viewer)
-                report("released", in_use=result["lease"]["holder"] == "human")
+                report("released", in_use=result["lease"]["holder"] == "human",
+                       browser_visible=await self.browser_visible())
             else:
                 raise ScreenError("Riptide sent an unsupported screen command.")
+
+    async def browser_visible(self):
+        # A terminal-hosted display does not expose its local window manager to the SSH adapter.
+        if self.browser.env is not None:
+            return await self.frame_browser(self.browser.minimum_width) is not None
+
+    async def prepare_browser(self):
+        try:
+            await asyncio.to_thread(self.browser.open_or_activate)
+        except (OSError, subprocess.SubprocessError):
+            raise ScreenError("Hermes could not start or bring forward its browser.") from None
+        width = await self.wait_for_browser(self.browser.minimum_width, 10)
+        if width is None:
+            raise ScreenError("Hermes started its browser, but no browser window appeared.")
+        if self.owns(await self.call("display.status")):
+            return width
+        raise ScreenError("Someone else took control of the Hermes screen.")
+
+    async def wait_for_browser(self, operation, seconds):
+        deadline = asyncio.get_running_loop().time() + seconds
+        while asyncio.get_running_loop().time() < deadline:
+            if value := await self.frame_browser(operation):
+                return value
+            await asyncio.sleep(0.1)
 
     def owns(self, result):
         lease = result["lease"]
