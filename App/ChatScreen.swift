@@ -45,8 +45,13 @@ struct ChatScreen: View {
     }
 
     private var awaitingHistory: Bool {
-        resolvingInitialChat || (!model.selected.loaded && model.selected.error == nil &&
+        resolvingInitialChat || (!model.selected.loaded && !model.selected.connectionLost && model.selected.error == nil &&
                                  model.selected.transcript.entries.isEmpty && model.selected.permissions.isEmpty)
+    }
+
+    private var disconnectedChat: WorkspaceChatID? {
+        guard scenePhase == .active, !landing, !couldNotOpen, model.selected.connectionLost else { return nil }
+        return chatKey
     }
 
     var body: some View {
@@ -201,6 +206,9 @@ struct ChatScreen: View {
         .onChange(of: model.selected.working) { showsCompletedToolCalls = false }
         .onChange(of: model.title) { visit() }
         .onChange(of: model.selected.loaded) { visit() }
+        .task(id: disconnectedChat) {
+            if let disconnectedChat { await model.open(disconnectedChat.chat) }
+        }
         .onChange(of: scenePhase) {
             if scenePhase != .active { safariApproval.cancelTurn() }
         }
@@ -384,7 +392,9 @@ struct ChatScreen: View {
                 ForEach(model.selected.permissions) { request in
                     permissionCard(request)
                 }
-                if let error = model.selected.error {
+                if model.selected.connectionLost && model.selected.loading {
+                    Text("Reconnecting…").font(.footnote).foregroundStyle(.secondary)
+                } else if let error = model.selected.error {
                     Text(error).font(.footnote)
                     if !model.selected.loaded {
                         Button("Try again") { Task { await model.open(model.selectedID) } }

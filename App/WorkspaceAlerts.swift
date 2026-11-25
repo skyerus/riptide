@@ -29,7 +29,8 @@ final class RiptideNotificationDelegate: NSObject, UIApplicationDelegate, UNUser
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async
         -> UNNotificationPresentationOptions { [] }
 
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                            withCompletionHandler completionHandler: @escaping @Sendable () -> Void) {
         let data = response.notification.request.content.userInfo
         let chat = (data["workspace"] as? String).flatMap { workspace in
             (data["chat"] as? String).flatMap { chat in
@@ -37,9 +38,11 @@ final class RiptideNotificationDelegate: NSObject, UIApplicationDelegate, UNUser
                     ? WorkspaceChatID(workspace: workspace, chat: chat) : nil
             }
         }
-        await MainActor.run {
+        Task { @MainActor in
             if let opened = Self.opened { opened(chat) }
             else { Self.pendingOpen = (chat, true) }
+            // UIKit uses the completion handler to update the app's foreground snapshot.
+            completionHandler()
         }
     }
 }
