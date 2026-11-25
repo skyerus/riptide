@@ -214,6 +214,7 @@ private struct TranscriptContact: UIGestureRecognizerRepresentable {
 }
 
 struct LiveTurnActivity<Details: View>: View {
+    let startedAt: Date
     let currentTool: String?
     let hasActivity: Bool
     @ViewBuilder let details: () -> Details
@@ -222,10 +223,15 @@ struct LiveTurnActivity<Details: View>: View {
     var body: some View {
         let title = currentTool ?? "Thinking"
         VStack(alignment: .leading, spacing: 4) {
-            Text("Working")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(ChatTheme.muted)
-                .accessibilityIdentifier("turn-working")
+            TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                let seconds = max(0, context.date.timeIntervalSince(startedAt))
+                let elapsed = Duration.seconds(Int(seconds))
+                Text("Working \(elapsed, format: .units(allowed: [.hours, .minutes, .seconds], width: .narrow))")
+                    .font(.caption.weight(.medium))
+                    .monospacedDigit()
+                    .foregroundStyle(ChatTheme.muted)
+                    .accessibilityIdentifier("turn-working")
+            }
             Button {
                 expanded.toggle()
             } label: {

@@ -396,10 +396,11 @@ struct ChatScreen: View {
                 if !model.selected.plan.isEmpty {
                     TurnPlanCard(steps: model.selected.plan)
                 }
-                if model.selected.working {
+                if let startedAt = model.selected.turnStartedAt {
                     let calls = model.selected.transcript.activeToolCalls
                     let current = calls.last { $0.status == nil || $0.status == "in_progress" || $0.status == "pending" }
                     LiveTurnActivity(
+                        startedAt: startedAt,
                         currentTool: current.map { $0.title ?? "Tool call" },
                         hasActivity: !calls.isEmpty
                     ) {
