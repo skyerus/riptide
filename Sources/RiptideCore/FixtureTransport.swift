@@ -311,20 +311,23 @@ public actor FixtureTransport: ACPTransport {
     }
 
     private func configuration(_ session: SavedSession) -> JSON {
-        let model = session.model ?? "atlas"
-        var efforts: [JSON] = [
-            ["value": "low", "name": "Low"],
-            ["value": "medium", "name": "Medium"]
+        let hermes = mainSessionID == "demo-hermes-main"
+        let models: [JSON] = hermes ? ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6.1-sol-900k"].map { model in
+            ["value": .string("openai-codex:\(model)"), "name": .string("ChatGPT or Codex Subscription · \(model)")]
+        } : [
+            ["value": "atlas", "name": "Atlas", "description": "General-purpose demo model"],
+            ["value": "atlas-mini", "name": "Atlas Mini", "description": "Lightweight demo model"]
         ]
-        if model == "atlas" { efforts.append(["value": "high", "name": "High"]) }
+        let model = models.first { $0["value"]?.string == session.model }?["value"]?.string
+            ?? (hermes ? "openai-codex:gpt-6.2-sol" : "atlas")
+        let effortValues = hermes ? ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+            : model == "atlas" ? ["low", "medium", "high"] : ["low", "medium"]
+        let efforts: [JSON] = effortValues.map { ["value": .string($0), "name": .string($0)] }
         return .array([
             ["id": "model", "name": "Model", "category": "model", "type": "select",
-             "currentValue": .string(model), "options": .array([
-                ["value": "atlas", "name": "Atlas", "description": "General-purpose demo model"],
-                ["value": "atlas-mini", "name": "Atlas Mini", "description": "Lightweight demo model"]
-             ])],
+             "currentValue": .string(model), "options": .array(models)],
             ["id": "effort", "name": "Reasoning effort", "category": "thought_level", "type": "select",
-             "currentValue": .string(session.effort ?? "medium"), "options": .array(efforts)]
+             "currentValue": .string(session.effort ?? (hermes ? "xhigh" : "medium")), "options": .array(efforts)]
         ])
     }
 

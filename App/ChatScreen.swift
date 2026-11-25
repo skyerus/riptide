@@ -7,6 +7,8 @@ struct ChatScreen: View {
     var remoteStore: RemoteStore? = nil
     var initialChatID: String? = nil
     @State private var showChats = false
+    @State private var showModelPicker = false
+    @State private var showAdvancedModelPicker = false
     @State private var landing = true
     @State private var couldNotOpen = false
     @State private var viewport = TranscriptViewport()
@@ -15,6 +17,7 @@ struct ChatScreen: View {
     @State private var activeCall: ChatCall?
     @State private var voiceError: String?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(WorkspaceState.self) private var workspace
 
     private var chatKey: WorkspaceChatID { .init(workspace: model.target.id, chat: model.selectedID) }
@@ -41,13 +44,41 @@ struct ChatScreen: View {
                 }
             } else {
                 transcript.id(model.selectedID)
+                    .accessibilityHidden(showModelPicker)
+                    .overlay {
+                        if showModelPicker, !model.selected.configOptions.isEmpty {
+                            ZStack(alignment: .bottom) {
+                                Button {
+                                    showModelPicker = false
+                                } label: {
+                                    Rectangle()
+                                        .fill(.black.opacity(0.02))
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Dismiss model controls")
+                                .accessibilityIdentifier("dismiss-model-picker")
+
+                                QuickModelPicker(model: model, sessionID: model.selectedID) {
+                                    showModelPicker = false
+                                    showAdvancedModelPicker = true
+                                }
+                            }
+                            .transition(.opacity)
+                            .accessibilityAction(.escape) { showModelPicker = false }
+                        }
+                    }
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: showModelPicker)
                 ChatComposer(
                     model: model,
                     draft: Binding(
                         get: { workspace.drafts[chatKey] },
                         set: { workspace.drafts[chatKey] = $0 }
                     ),
+                    modelPickerVisible: $showModelPicker,
                     didSend: {
+                        showModelPicker = false
                         workspace.rememberReadingOffset(nil, for: chatKey)
                         viewport.restore(nil)
                     }
@@ -109,6 +140,16 @@ struct ChatScreen: View {
         }
         .sheet(isPresented: $showChats) {
             ChatPicker(model: model, openClaw: voiceRemote?.kind == .openClaw)
+        }
+        .sheet(isPresented: $showAdvancedModelPicker) {
+            AdvancedModelPicker(model: model, sessionID: model.selectedID)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(.regularMaterial)
+        }
+        .onChange(of: model.selectedID) {
+            showModelPicker = false
+            showAdvancedModelPicker = false
         }
         .sheet(isPresented: $pairingVoice) {
             if let voiceRemote, let remoteStore { PairNativeVoiceScreen(remote: voiceRemote, store: remoteStore) }

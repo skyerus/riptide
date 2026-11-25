@@ -146,14 +146,38 @@ final class AgentChatsUITests: XCTestCase {
         XCTAssertTrue(openClaw.waitForExistence(timeout: 5))
         XCTAssertLessThan(openClaw.frame.minX, hermes.frame.minX)
         openOpenClaw(app)
+        let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        composer.tap()
+        composer.typeText("Keep this draft")
         let modelOptions = app.buttons["model-options"]
         XCTAssertTrue(modelOptions.waitForExistence(timeout: 5))
         modelOptions.tap()
+        let quickPicker = app.buttons["advanced-model-controls"]
+        XCTAssertTrue(quickPicker.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "The quick picker should stay above the keyboard.")
+        let effort = app.descendants(matching: .any).matching(identifier: "intelligence-steps").firstMatch
+        XCTAssertTrue(effort.exists)
+        XCTAssertEqual(effort.value as? String, "Medium")
+        effort.coordinate(withNormalizedOffset: CGVector(dx: 0.84, dy: 0.5)).tap()
+        let activeEffort = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "High"), object: effort)
+        XCTAssertEqual(XCTWaiter.wait(for: [activeEffort], timeout: 5), .completed)
+        capture(app, as: "Quick intelligence selector")
+
+        quickPicker.tap()
+        let modelRow = app.buttons["config-picker-model"]
+        XCTAssertTrue(modelRow.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["config-picker-effort"].value as? String, "High")
+        capture(app, as: "Advanced model settings")
+        modelRow.tap()
         let mini = app.buttons["config-model-atlas-mini"]
         XCTAssertTrue(mini.waitForExistence(timeout: 5))
         mini.tap()
-        app.buttons["Done"].tap()
+        let done = app.buttons["Done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 5))
+        done.tap()
+        XCTAssertTrue(quickPicker.waitForNonExistence(timeout: 5))
         XCTAssertEqual(modelOptions.value as? String, "Atlas Mini, Medium")
+        XCTAssertEqual(composer.value as? String, "Keep this draft")
         capture(app, as: "Composer")
 
         app.buttons["context-usage"].tap()
@@ -171,6 +195,51 @@ final class AgentChatsUITests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         row.tap()
         XCTAssertTrue(title(app).waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testHermesIntelligenceReachesBothEndsAndDismissesWithoutLosingTheDraft() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launch()
+        let hermes = app.buttons["sidebar-agent-hermes"]
+        XCTAssertTrue(hermes.waitForExistence(timeout: 5))
+        hermes.tap()
+        let mainChat = app.buttons["sidebar-main-chat"]
+        XCTAssertTrue(mainChat.waitForExistence(timeout: 5))
+        mainChat.tap()
+        let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        composer.typeText("A draft for Hermes")
+        let controls = app.buttons["model-options"]
+        XCTAssertEqual(controls.value as? String, "6.2 Sol, Extra High")
+        controls.tap()
+        let effort = app.descendants(matching: .any).matching(identifier: "intelligence-steps").firstMatch
+        XCTAssertTrue(effort.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        capture(app, as: "Hermes Intelligence at Extra High")
+
+        for (position, value) in [(0.99, "Ultra"), (0.01, "Low")] {
+            effort.coordinate(withNormalizedOffset: CGVector(dx: position, dy: 0.5)).tap()
+            let selection = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: effort)
+            XCTAssertEqual(XCTWaiter.wait(for: [selection], timeout: 5), .completed)
+            capture(app, as: "Hermes Intelligence at \(value)")
+        }
+
+        let outside = app.buttons["dismiss-model-picker"]
+        XCTAssertTrue(outside.exists)
+        outside.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        XCTAssertTrue(effort.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "A draft for Hermes")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+
+        controls.tap()
+        app.buttons["advanced-model-controls"].tap()
+        app.buttons["config-picker-effort"].tap()
+        XCTAssertTrue(app.buttons["config-effort-low"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["config-effort-none"].exists)
+        XCTAssertFalse(app.buttons["config-effort-minimal"].exists)
     }
 
     @MainActor
