@@ -22,12 +22,18 @@ struct ChatScreen: View {
     @Environment(WorkspaceState.self) private var workspace
 
     private var chatKey: WorkspaceChatID { .init(workspace: model.target.id, chat: model.selectedID) }
+    private var resolvingInitialChat: Bool {
+        landing && model.selectedID != (initialChatID ?? model.target.mainSessionID)
+    }
+
+    private var awaitingHistory: Bool {
+        resolvingInitialChat || (!model.selected.loaded && model.selected.error == nil &&
+                                 model.selected.transcript.entries.isEmpty && model.selected.permissions.isEmpty)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            if landing {
-                ProgressView("Opening chat…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if couldNotOpen {
+            if couldNotOpen {
                 ContentUnavailableView {
                     Label("Chat unavailable", systemImage: "bubble.left")
                 } description: {
@@ -44,8 +50,16 @@ struct ChatScreen: View {
                     .buttonStyle(.bordered)
                 }
             } else {
-                transcript.id(model.selectedID)
-                    .accessibilityHidden(showModelPicker)
+                ZStack {
+                    transcript.id(model.selectedID)
+                        .opacity(awaitingHistory ? 0 : 1)
+                        .accessibilityHidden(awaitingHistory || showModelPicker)
+                        .allowsHitTesting(!awaitingHistory)
+                    if awaitingHistory {
+                        ChatHistorySkeleton().transition(.opacity)
+                    }
+                }
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: awaitingHistory)
                     .overlay {
                         if showModelPicker, !model.selected.configOptions.isEmpty {
                             ZStack(alignment: .bottom) {
@@ -71,19 +85,21 @@ struct ChatScreen: View {
                         }
                     }
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: showModelPicker)
-                ChatComposer(
-                    model: model,
-                    draft: Binding(
-                        get: { workspace.drafts[chatKey] },
-                        set: { workspace.drafts[chatKey] = $0 }
-                    ),
-                    modelPickerVisible: $showModelPicker,
-                    didSend: {
-                        showModelPicker = false
-                        workspace.rememberReadingOffset(nil, for: chatKey)
-                        viewport.restore(nil)
-                    }
-                )
+                if !resolvingInitialChat {
+                    ChatComposer(
+                        model: model,
+                        draft: Binding(
+                            get: { workspace.drafts[chatKey] },
+                            set: { workspace.drafts[chatKey] = $0 }
+                        ),
+                        modelPickerVisible: $showModelPicker,
+                        didSend: {
+                            showModelPicker = false
+                            workspace.rememberReadingOffset(nil, for: chatKey)
+                            viewport.restore(nil)
+                        }
+                    )
+                }
             }
         }
         .background(ChatTheme.background.ignoresSafeArea())
@@ -259,9 +275,7 @@ struct ChatScreen: View {
     private var transcript: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
-                if model.selected.loading {
-                    ProgressView("Opening chat…")
-                } else if model.selected.loaded && model.selected.transcript.entries.isEmpty {
+                if model.selected.loaded && model.selected.transcript.entries.isEmpty {
                     Text("Start a conversation")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)

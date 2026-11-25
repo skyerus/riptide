@@ -18,7 +18,8 @@ struct RiptideApp: App {
         let environment = ProcessInfo.processInfo.environment
         let namespace = environment["RIPTIDE_FIXTURE_NAMESPACE"].flatMap(UUID.init(uuidString:))
         let demos = environment["RIPTIDE_DEMO"] == "1" || (namespace != nil && environment["RIPTIDE_DEMO"] != "0")
-        let base = demos ? AgentTarget.demos.map { Self.makeDemo($0, namespace: namespace) } : []
+        let historyDelay: Duration = environment["RIPTIDE_DELAYED_CHAT_HISTORY"] == "1" ? .seconds(14) : .zero
+        let base = demos ? AgentTarget.demos.map { Self.makeDemo($0, namespace: namespace, historyDelay: historyDelay) } : []
         let busy = demos && namespace != nil && environment["RIPTIDE_BUSY_WORKSPACE"] == "1"
         roster = base + (busy ? (1...12).map { index in
             let id = "ops-\(index)"
@@ -69,14 +70,15 @@ struct RiptideApp: App {
     }
 
     #if DEBUG
-    private static func makeDemo(_ target: AgentTarget, namespace: UUID?, catalog: [String] = []) -> AgentChatModel {
+    private static func makeDemo(_ target: AgentTarget, namespace: UUID?, catalog: [String] = [],
+                                 historyDelay: Duration = .zero) -> AgentChatModel {
         var directory = URL.applicationSupportDirectory.appending(path: "RiptideFixtures", directoryHint: .isDirectory)
         if let id = namespace {
             directory.append(path: id.uuidString, directoryHint: .isDirectory)
         }
         let file = directory.appending(path: "\(target.id).json")
         do {
-            let transport = try FixtureTransport(target: target, file: file, catalog: catalog)
+            let transport = try FixtureTransport(target: target, file: file, catalog: catalog, historyDelay: historyDelay)
             return AgentChatModel(target: target, client: ACPClient(transport: transport))
         } catch {
             return AgentChatModel(target: target, unavailable: "Saved demo chats could not be opened.")

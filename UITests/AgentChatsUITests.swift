@@ -2,6 +2,38 @@ import XCTest
 
 final class AgentChatsUITests: XCTestCase {
     @MainActor
+    func testColdMainChatShowsSkeletonUntilHistoryArrives() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        continueAfterFailure = false
+        app.launch()
+        openOpenClaw(app)
+        let history = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "This is your main chat.")).firstMatch
+        XCTAssertTrue(history.waitForExistence(timeout: 5))
+        app.terminate()
+
+        app.launchEnvironment["RIPTIDE_DELAYED_CHAT_HISTORY"] = "1"
+        app.launch()
+        let chat = app.buttons["inbox-last-opened-chat"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 5))
+        chat.tap()
+
+        let skeleton = app.descendants(matching: .any).matching(identifier: "chat-history-skeleton").firstMatch
+        XCTAssertTrue(skeleton.waitForExistence(timeout: 5))
+        XCTAssertFalse(history.exists)
+        XCTAssertFalse(app.staticTexts["Opening chat…"].exists)
+        let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(composer.exists)
+        XCTAssertFalse(composer.isEnabled)
+        capture(app, as: "Main Chat loading skeleton")
+
+        XCTAssertTrue(history.waitForExistence(timeout: 18))
+        XCTAssertTrue(skeleton.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(composer.isEnabled)
+        capture(app, as: "Main Chat history loaded")
+    }
+
+    @MainActor
     func testRichReplyRendersDiagramCodeAndDiff() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
