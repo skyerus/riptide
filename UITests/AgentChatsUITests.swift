@@ -120,6 +120,71 @@ final class AgentChatsUITests: XCTestCase {
     }
 
     @MainActor
+    func testChatPickerSearchesAndSwitchesBetweenMainAndSideChat() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        continueAfterFailure = false
+        app.launch()
+        openMainChat(app)
+
+        let heading = title(app)
+        let close = app.buttons["close-chats"]
+        let main = app.buttons["chat-picker-main"]
+        let newChat = app.buttons["new-chat"]
+        heading.tap()
+        XCTAssertTrue(main.waitForExistence(timeout: 5))
+        XCTAssertTrue(main.isSelected)
+        XCTAssertTrue(app.staticTexts["No side chats yet."].waitForExistence(timeout: 5))
+        newChat.tap()
+        XCTAssertTrue(app.staticTexts["empty-chat"].waitForExistence(timeout: 5))
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5))
+
+        let chatTitle = "Release checklist"
+        send(chatTitle, in: app)
+        let sideHeading = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", chatTitle), object: heading)
+        XCTAssertEqual(XCTWaiter.wait(for: [sideHeading], timeout: 8), .completed)
+        heading.tap()
+        let side = app.scrollViews["chat-picker-list"].buttons[chatTitle]
+        XCTAssertTrue(side.waitForExistence(timeout: 5))
+        XCTAssertTrue(side.isSelected)
+        XCTAssertFalse(main.isSelected)
+        main.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(heading.label, "Main Chat")
+
+        heading.tap()
+        let search = app.textFields["chat-picker-search"]
+        XCTAssertTrue(side.waitForExistence(timeout: 5))
+        XCTAssertTrue(search.isHittable)
+        XCTAssertTrue(newChat.isHittable)
+        XCTAssertLessThan(newChat.frame.maxY, main.frame.minY)
+        XCTAssertTrue(main.isSelected)
+        capture(app, as: "Chats sheet")
+
+        search.tap()
+        search.typeText("release")
+        XCTAssertTrue(main.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(side.isHittable)
+        capture(app, as: "Chats search")
+        search.typeText(" zz")
+        let noMatches = app.descendants(matching: .any).matching(identifier: "chat-picker-no-results").firstMatch
+        XCTAssertTrue(noMatches.waitForExistence(timeout: 5))
+        XCTAssertFalse(side.exists)
+
+        app.buttons["Clear chat search"].tap()
+        XCTAssertTrue(main.waitForExistence(timeout: 5))
+        side.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(heading.label, chatTitle)
+
+        heading.tap()
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        close.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(heading.label, chatTitle)
+    }
+
+    @MainActor
     func testDemoApprovalCanBeDenied() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
