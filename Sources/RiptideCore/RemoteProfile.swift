@@ -84,6 +84,20 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
         return ACPClient(transport: RemoteWebSocketTransport(url: url, bearer: credential))
     }
 
+    public func makeHermesDictation(credential: String) -> CodexDictation? {
+        guard kind == .hermes else { return nil }
+        if sshHostFingerprint != nil {
+            return CodexDictation {
+                guard let transport = sshTransport(credential: credential, command: "riptide-dictation") else {
+                    throw CodexDictationError.unavailable
+                }
+                return transport
+            }
+        }
+        guard let url = Self.secureURL(address), Self.validBearer(credential) else { return nil }
+        return .webSocket(at: url, bearer: credential)
+    }
+
     public var canOpenHermesScreen: Bool { kind == .hermes && sshHostFingerprint != nil }
 
     public func makeHermesScreenTransport(credential: String) -> (any JSONMessageTransport)? {

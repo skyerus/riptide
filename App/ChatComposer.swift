@@ -5,6 +5,7 @@ struct ChatComposer: View {
     let model: AgentChatModel
     @Binding var draft: String
     @Binding var modelPickerVisible: Bool
+    let transcribe: DictationTranscriber?
     let didSend: () -> Void
 
     @State private var showContext = false
@@ -12,9 +13,20 @@ struct ChatComposer: View {
 
     var body: some View {
         let prompt = "Message \(model.target.name)"
-        ComposerSurface(focused: editorFocused,
-                        showsOptions: model.selected.context != nil || model.selected.hasConfigChoices
-                            || model.selected.modelName != nil) {
+        DictatingComposer(
+            focused: editorFocused,
+            showsOptions: model.selected.context != nil || model.selected.hasConfigChoices
+                || model.selected.modelName != nil,
+            chatID: model.selectedID,
+            canDictate: model.selected.loaded,
+            draft: $draft,
+            transcribe: transcribe,
+            dismissKeyboard: {
+                editorFocused = false
+                modelPickerVisible = false
+                showContext = false
+            }
+        ) {
             TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
                 .focused($editorFocused)
@@ -151,12 +163,6 @@ extension View {
                         .allowsHitTesting(false)
                 }
         }
-    }
-}
-
-extension ComposerSurface where Options == EmptyView {
-    init(focused: Bool, @ViewBuilder field: () -> Field, @ViewBuilder actions: () -> Actions) {
-        self.init(focused: focused, showsOptions: false, field: field, options: { EmptyView() }, actions: actions)
     }
 }
 

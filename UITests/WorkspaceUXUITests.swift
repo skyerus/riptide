@@ -2,6 +2,37 @@ import XCTest
 
 final class WorkspaceUXUITests: XCTestCase {
     @MainActor
+    func testHermesDictationCancelsAndAppendsToAnUnsentDraft() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE"] = "1"
+        continueAfterFailure = false
+        app.launch()
+        openMainChat(in: app, agent: "hermes")
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        editor.tap()
+        editor.typeText("Please review this.")
+        let dictate = app.buttons["dictation-start"]
+        dictate.tap()
+        let finish = app.buttons["dictation-finish"]
+        XCTAssertTrue(finish.waitForExistence(timeout: 5))
+        capture(app, as: "Dictation recording")
+        app.buttons["dictation-cancel"].tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertEqual(editor.value as? String, "Please review this.")
+
+        dictate.tap()
+        XCTAssertTrue(finish.waitForExistence(timeout: 5))
+        finish.tap()
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        XCTAssertEqual(editor.value as? String, "Please review this. Add a quick summary of the open items.")
+        XCTAssertTrue(app.buttons["send-message"].isEnabled)
+        XCTAssertFalse(app.staticTexts["Please review this. Add a quick summary of the open items."].exists)
+        capture(app, as: "Dictation in editable draft")
+    }
+
+    @MainActor
     func testTheTranscriptFollowsNewLinesBeforeTheReplyFinishes() {
         let app = freshApp()
         openMainChat(in: app)

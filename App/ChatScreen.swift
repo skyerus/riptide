@@ -23,6 +23,14 @@ struct ChatScreen: View {
     @Environment(WorkspaceState.self) private var workspace
 
     private var chatKey: WorkspaceChatID { .init(workspace: model.target.id, chat: model.selectedID) }
+    private var dictationTranscriber: DictationTranscriber? {
+        if let voiceRemote, let bearer = remoteStore?.bearer(for: voiceRemote),
+           let dictation = voiceRemote.makeHermesDictation(credential: bearer) {
+            return dictation.transcribe
+        }
+        return model.target.id == "hermes" ? DictationFixture.transcribe : nil
+    }
+
     private var pickerIsOpen: Bool {
         showModelPicker && !resolvingInitialChat && model.selected.hasConfigChoices
     }
@@ -208,6 +216,7 @@ struct ChatScreen: View {
                         set: { workspace.drafts[chatKey] = $0 }
                     ),
                     modelPickerVisible: $showModelPicker,
+                    transcribe: dictationTranscriber,
                     didSend: {
                         showModelPicker = false
                         workspace.rememberReadingOffset(nil, for: chatKey)

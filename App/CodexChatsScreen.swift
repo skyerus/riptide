@@ -285,11 +285,18 @@ struct CodexSavedChatScreen: View {
     private var composer: some View {
         let prompt = working ? "Steer this turn" : "Message Codex"
         let disabled = sending || stopping || editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return ComposerSurface(focused: composerFocused) {
+        return DictatingComposer(
+            focused: composerFocused, showsOptions: false, chatID: chatKey?.chat,
+            canDictate: ready && !sending && !stopping, draft: editor,
+            transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
+            dismissKeyboard: { composerFocused = false }
+        ) {
             TextField(prompt, text: editor, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
                 .focused($composerFocused)
                 .accessibilityIdentifier("codex-composer")
+        } options: {
+            EmptyView()
         } actions: {
             if working {
                 Button {
