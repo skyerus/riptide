@@ -11,13 +11,25 @@ final class RemoteStore {
     private let defaults: UserDefaults
     private let metadataKey = "riptide.remote-profiles.v1"
     private let voiceKey = "riptide.native-voice-profiles.v1"
+    private let safariPairings: SafariSSHKeychain?
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
+        safariPairings = defaults === UserDefaults.standard ? SafariSSHKeychain() : nil
         profiles = defaults.data(forKey: metadataKey)
             .flatMap { try? JSONDecoder().decode([RemoteProfile].self, from: $0) } ?? []
         voices = defaults.data(forKey: voiceKey)
             .flatMap { try? JSONDecoder().decode([UUID: NativeVoiceProfile].self, from: $0) } ?? [:]
+        try? shareSafariPairings(profiles)
+    }
+
+    private func shareSafariPairings(_ profiles: [RemoteProfile]) throws {
+        guard let safariPairings else { return }
+        let agents = profiles.compactMap { profile -> SafariSSHAgent? in
+            guard profile.sshHostFingerprint != nil, let credential = KeychainToken.read(profile.id) else { return nil }
+            return SafariSSHAgent(profile: profile, credential: credential)
+        }
+        try safariPairings.replace(with: agents)
     }
 
     func pair(_ profile: RemoteProfile, credential: String) async throws {
@@ -52,6 +64,7 @@ final class RemoteStore {
         try KeychainToken.save(credential, for: profile.id)
         defaults.set(metadata, forKey: metadataKey)
         profiles.append(paired)
+        if paired.sshHostFingerprint != nil { try? shareSafariPairings(profiles) }
     }
 
     func bearer(for profile: RemoteProfile) -> String? { KeychainToken.read(profile.id) }
@@ -132,6 +145,7 @@ final class RemoteStore {
     func forget(_ profile: RemoteProfile) throws {
         let remaining = profiles.filter { $0.id != profile.id }
         let metadata = try JSONEncoder().encode(remaining)
+        if profile.sshHostFingerprint != nil { try shareSafariPairings(remaining) }
         try KeychainToken.remove(profile.id)
         try KeychainToken.remove(profile.id, purpose: "voice")
         try KeychainToken.remove(profile.id, purpose: "hermes-talk")

@@ -131,6 +131,11 @@ final class SSHACPTransport: ACPTransport {
         }
     }
 
+    func close() async {
+        startup.cancel()
+        if let channels = try? await startup.value { channels.parent.close(promise: nil) }
+    }
+
     func send(_ message: Data) async throws {
         guard !message.contains(10), message.count <= ACPExecChannel.maximumFrameBytes else {
             throw SSHACPError.invalidFrame
