@@ -42,10 +42,17 @@ public struct CodexWorkItem: Identifiable, Equatable, Sendable {
             let paths = item["changes"]?.array?.prefix(8).compactMap { $0["path"]?.string } ?? []
             name = paths.isEmpty ? "Edit files" : "Update \(paths.count) \(paths.count == 1 ? "file" : "files")"
             output = paths.joined(separator: "\n")
-        case "mcpToolCall", "dynamicToolCall", "collabToolCall":
+        case "mcpToolCall", "dynamicToolCall", "collabToolCall", "collabAgentToolCall":
             kind = .tool
             let tool = item["tool"]?.string ?? "Tool call"
             name = [item["server"]?.string, tool].compactMap { $0 }.joined(separator: " · ")
+        case "imageView":
+            kind = .tool
+            name = "View image"
+            output = item["path"]?.string ?? ""
+        case "sleep":
+            kind = .tool
+            name = "Wait"
         case "webSearch":
             kind = .search
             name = item["query"]?.string ?? "Search the web"
@@ -96,9 +103,6 @@ public struct CodexTurnProgress: Equatable, Sendable {
                 if item.detail.isEmpty { item.detail = items[index].detail }
                 items[index] = item
             } else {
-                if items.count >= 32 {
-                    items.remove(at: items.firstIndex { $0.state != .running } ?? items.startIndex)
-                }
                 items.append(item)
             }
         case .detail(let id, let kind, let text):

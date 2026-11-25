@@ -195,10 +195,18 @@ final class AgentChatsUITests: XCTestCase {
         XCTAssertTrue(deny.waitForExistence(timeout: 5))
         let receipt = app.staticTexts["message-receipt"]
         let tool = app.descendants(matching: .any).matching(identifier: "chat-tool-call").firstMatch
+        let activity = app.buttons["live-turn-activity"]
         XCTAssertEqual(receipt.label, "Delivered")
-        XCTAssertTrue(tool.exists)
+        XCTAssertEqual(app.staticTexts["turn-working"].label, "Working")
+        XCTAssertEqual(activity.label, "Review context")
+        XCTAssertTrue(app.buttons["stop-reply"].exists)
+        XCTAssertFalse(tool.exists)
+        activity.tap()
+        XCTAssertTrue(tool.waitForExistence(timeout: 5))
+        capture(app, as: "OpenClaw live activity")
         deny.tap()
         XCTAssertTrue(app.staticTexts["I skipped the sample action. Nothing was run."].waitForExistence(timeout: 5))
+        XCTAssertTrue(activity.waitForNonExistence(timeout: 5))
         XCTAssertTrue(tool.waitForNonExistence(timeout: 5))
         XCTAssertEqual(receipt.label, "Seen")
         app.buttons["chat-actions"].tap()

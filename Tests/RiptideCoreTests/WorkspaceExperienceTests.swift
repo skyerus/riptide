@@ -110,6 +110,23 @@ struct WorkspaceExperienceTests {
         #expect(progress.items.last?.detail == "Reviewed inputs")
     }
 
+    @Test func liveTurnKeepsEarlierCallsInTheActivityList() throws {
+        var progress = CodexTurnProgress()
+        for index in 0..<40 {
+            let update = try #require(CodexWorkDecoder.decode("item/completed", ["item": [
+                "id": .string("tool-\(index)"), "type": "commandExecution", "command": "List files"
+            ]]))
+            progress.apply(update)
+        }
+        let current = try #require(CodexWorkDecoder.decode("item/started", ["item": [
+            "id": "agent", "type": "collabAgentToolCall", "tool": "wait", "status": "inProgress"
+        ]]))
+        progress.apply(current)
+        #expect(progress.items.count == 41)
+        #expect(progress.items.first?.id == "tool-0")
+        #expect(progress.current?.id == "agent")
+    }
+
     @Test func relayRequiresTLSAndKeepsPairingSecretInTheAuthorizationHeader() async throws {
         let token = String(repeating: "t", count: 40)
         #expect(AttentionRelay(origin: "http://host.example", bearer: token) == nil)

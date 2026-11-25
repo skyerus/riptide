@@ -213,36 +213,79 @@ private struct TranscriptContact: UIGestureRecognizerRepresentable {
     }
 }
 
-struct TurnPulse: View {
-    let title: String
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ScaledMetric(relativeTo: .footnote) private var dotSize = 5.0
+struct LiveTurnActivity<Details: View>: View {
+    let currentTool: String?
+    let hasActivity: Bool
+    @ViewBuilder let details: () -> Details
+    @State private var expanded = false
 
     var body: some View {
-        HStack(spacing: 9) {
-            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
-                let cycle = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.25) / 1.25
-                HStack(spacing: dotSize * 0.75) {
-                    ForEach(0..<3) { index in
-                        let phase = cycle - Double(index) * 0.16
-                        let lift = reduceMotion ? 0 : max(0, sin(2 * .pi * phase))
-                        Circle()
-                            .fill(ChatTheme.sidebarAccent.opacity(0.58 + 0.42 * lift))
-                            .frame(width: dotSize, height: dotSize)
-                            .offset(y: -dotSize * 0.65 * lift)
-                    }
+        let title = currentTool ?? "Thinking"
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Working")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(ChatTheme.muted)
+                .accessibilityIdentifier("turn-working")
+            Button {
+                expanded.toggle()
+            } label: {
+                HStack(spacing: 5) {
+                    ActivityShimmer(title: title)
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2.weight(.semibold))
                 }
-                .frame(height: dotSize * 2)
+                .font(.subheadline)
+                .foregroundStyle(ChatTheme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
             }
-            .accessibilityHidden(true)
-            Text(title)
-                .font(.footnote.weight(.semibold))
-                .fixedSize(horizontal: false, vertical: true)
+            .buttonStyle(.plain)
+            .accessibilityLabel(title)
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            .accessibilityHint(expanded ? "Hides turn activity" : "Shows turn activity")
+            .accessibilityIdentifier("live-turn-activity")
+            if expanded {
+                if hasActivity {
+                    details()
+                        .padding(.leading, 12)
+                } else {
+                    Text("No tool calls yet")
+                        .font(.caption)
+                        .foregroundStyle(ChatTheme.muted)
+                        .padding(.leading, 12)
+                }
+            }
         }
-        .foregroundStyle(ChatTheme.muted)
-        .padding(.vertical, 3)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("turn-progress")
+    }
+}
+
+private struct ActivityShimmer: View {
+    let title: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var began = Date.now
+
+    var body: some View {
+        Text(title)
+            .lineLimit(1)
+            .overlay {
+                if !reduceMotion {
+                    TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                        let elapsed = max(0, context.date.timeIntervalSince(began) - 0.6)
+                        let sweep = min(1, elapsed.truncatingRemainder(dividingBy: 4))
+                        let center = -0.3 + 1.6 * sweep
+                        LinearGradient(
+                            colors: [.clear, ChatTheme.ink, .clear],
+                            startPoint: UnitPoint(x: center - 0.22, y: 0.5),
+                            endPoint: UnitPoint(x: center + 0.22, y: 0.5)
+                        )
+                    }
+                    .mask { Text(title).lineLimit(1) }
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
+                }
+            }
+            .onChange(of: title) { began = .now }
     }
 }
 
@@ -286,7 +329,7 @@ struct TurnPlanCard: View {
     }
 }
 
-struct CodexActivityCard: View {
+struct CodexActivityList: View {
     let items: [CodexWorkItem]
 
     var body: some View {
@@ -307,8 +350,6 @@ struct CodexActivityCard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .contentPanel()
         .accessibilityIdentifier("codex-activity")
     }
 

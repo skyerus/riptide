@@ -47,10 +47,18 @@ public struct Transcript: Equatable, Sendable {
     }
 
     public func visibleEntries(showCompletedToolCalls: Bool) -> [ChatEntry] {
-        if showCompletedToolCalls { return entries }
+        let activeStart = activePromptIndex ?? entries.endIndex
         return entries.enumerated().compactMap { index, entry in
-            if case .tool = entry.content, index < (activePromptIndex ?? entries.endIndex) { return nil }
+            if case .tool = entry.content, !showCompletedToolCalls || index >= activeStart { return nil }
             return entry
+        }
+    }
+
+    public var activeToolCalls: [ToolActivity] {
+        guard let activePromptIndex else { return [] }
+        return entries[activePromptIndex...].compactMap { entry in
+            if case .tool(let activity) = entry.content { return activity }
+            return nil
         }
     }
 

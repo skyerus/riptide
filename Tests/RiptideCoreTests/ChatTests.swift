@@ -85,7 +85,8 @@ struct ChatTests {
         let approval = try #require(model.selected.permissions.first)
         let liveTranscript = model.selected.transcript
         #expect(liveTranscript.entries.first(where: { $0.receipt != nil })?.receipt == .delivered)
-        #expect(liveTranscript.visibleEntries(showCompletedToolCalls: false) == liveTranscript.entries)
+        #expect(liveTranscript.activeToolCalls.map(\.title) == ["Review context"])
+        #expect(liveTranscript.visibleEntries(showCompletedToolCalls: true).count == liveTranscript.entries.count - 1)
 
         #expect(await model.createChat())
         await model.answer(approval, optionID: "allow-once")
@@ -98,6 +99,7 @@ struct ChatTests {
         #expect(model.selected.transcript.entries.last?.content == .message(.assistant, "I skipped the sample action. Nothing was run."))
         #expect(model.selected.transcript.entries.first(where: { $0.receipt != nil })?.receipt == .seen)
         #expect(model.selected.transcript.hasCompletedToolCalls)
+        #expect(model.selected.transcript.activeToolCalls.isEmpty)
         #expect(model.selected.transcript.visibleEntries(showCompletedToolCalls: false).count ==
                 model.selected.transcript.entries.count - 1)
     }

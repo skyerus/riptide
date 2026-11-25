@@ -216,7 +216,9 @@ struct CodexSavedChatScreen: View {
                 ForEach(turns) { turn in
                     ForEach(turn.messages) { transcriptMessage($0) }
                     if showsCompletedToolCalls && turn.id != activeTurnID && !turn.progress.items.isEmpty {
-                        CodexActivityCard(items: turn.progress.items)
+                        CodexActivityList(items: turn.progress.items)
+                            .padding(12)
+                            .contentPanel()
                     }
                 }
                 if let diff = session?.diff {
@@ -240,9 +242,14 @@ struct CodexSavedChatScreen: View {
                     Text("Start a conversation").foregroundStyle(.secondary)
                 }
                 if !progress.plan.isEmpty { TurnPlanCard(steps: progress.plan) }
-                if working && !progress.items.isEmpty { CodexActivityCard(items: progress.items) }
-                if approvals.isEmpty && (working || sending) {
-                    TurnPulse(title: workingLabel)
+                if let activeTurnID {
+                    let current = progress.items.last {
+                        $0.state == .running && $0.kind != .summary && $0.kind != .planning
+                    }
+                    LiveTurnActivity(currentTool: current?.title, hasActivity: !progress.items.isEmpty) {
+                        CodexActivityList(items: progress.items)
+                    }
+                    .id(activeTurnID)
                 }
             }
             .transcriptColumn()
@@ -264,21 +271,6 @@ struct CodexSavedChatScreen: View {
                 }
                 ChatMarkdown(source: message.text, streaming: message.streaming)
             }
-        }
-    }
-
-    private var workingLabel: String {
-        if stopping { return "Stopping…" }
-        switch progress.current?.kind {
-        case .command: return "Running a command…"
-        case .changes: return "Updating files…"
-        case .tool: return "Using a tool…"
-        case .search: return "Searching…"
-        case .planning: return "Planning…"
-        case .summary: return "Reviewing…"
-        case nil:
-            return turns.last(where: { $0.id == activeTurnID })?.messages.last?.streaming == true
-                ? "Writing reply…" : "Preparing reply…"
         }
     }
 
