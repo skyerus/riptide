@@ -35,7 +35,7 @@ final class WorkspaceUXUITests: XCTestCase {
         composer.tap()
         composer.typeText("streaming demo")
         app.buttons["send-message"].tap()
-        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
         let transcript = app.scrollViews["chat-transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["Update 4"].waitForExistence(timeout: 6))
