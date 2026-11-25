@@ -49,6 +49,19 @@ final class AgentChatsUITests: XCTestCase {
         app.terminate()
         app.launch()
 
+        let lastOpened = app.buttons["inbox-last-opened-chat"]
+        XCTAssertTrue(lastOpened.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["sidebar-inbox"].isSelected)
+        XCTAssertTrue(app.staticTexts["You’re caught up"].isHittable)
+        XCTAssertTrue(lastOpened.staticTexts["Project overview"].exists)
+        XCTAssertTrue(lastOpened.staticTexts["OpenClaw"].exists)
+        capture(app, as: "Last opened side chat alongside the Inbox")
+        lastOpened.tap()
+        XCTAssertTrue(app.staticTexts["Saved separately"].waitForExistence(timeout: 5))
+        XCTAssertEqual(title(app).label, "Project overview")
+        app.navigationBars.buttons["BackButton"].tap()
+        XCTAssertTrue(app.buttons["sidebar-inbox"].isSelected)
+
         app.buttons["sidebar-agent-openclaw"].tap()
         let main = app.buttons["sidebar-main-chat"]
         XCTAssertTrue(main.waitForExistence(timeout: 5))
@@ -90,6 +103,7 @@ final class AgentChatsUITests: XCTestCase {
         XCTAssertEqual(openClaw.frame.minY, hermes.frame.minY, accuracy: 1)
         XCTAssertEqual(app.buttons["sidebar-inbox"].value as? String, "All caught up")
         XCTAssertTrue(app.buttons["sidebar-inbox"].isSelected)
+        XCTAssertFalse(app.buttons["inbox-last-opened-chat"].exists)
         XCTAssertTrue(app.scrollViews["sidebar-workspace-tabs"].exists)
         XCTAssertFalse(app.buttons["workspace-switcher"].exists)
         capture(app, as: "Workspaces without waiting items")

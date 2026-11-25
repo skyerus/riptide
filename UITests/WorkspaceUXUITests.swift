@@ -167,6 +167,12 @@ final class WorkspaceUXUITests: XCTestCase {
         let reduced = NSPredicate(format: "value == %@", "11 waiting")
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: reduced, object: inbox)], timeout: 8), .completed)
         XCTAssertFalse(item.exists)
+        let lastOpened = app.buttons["inbox-last-opened-chat"]
+        XCTAssertTrue(lastOpened.waitForExistence(timeout: 5))
+        XCTAssertTrue(lastOpened.staticTexts["Main Chat"].exists)
+        XCTAssertTrue(lastOpened.staticTexts[name].exists)
+        XCTAssertTrue(rows.firstMatch.isHittable)
+        capture(app, as: "Last opened main chat alongside pending approvals")
     }
 
     @MainActor
@@ -196,6 +202,7 @@ final class WorkspaceUXUITests: XCTestCase {
         app.navigationBars.buttons["BackButton"].tap()
         XCTAssertTrue(search.waitForExistence(timeout: 8))
         XCTAssertEqual(search.value as? String, "Ops 8")
+        XCTAssertFalse(app.buttons["inbox-last-opened-chat"].exists)
         search.tap()
         search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "Ops 8".count) + "Ops 9")
         XCTAssertTrue(app.buttons["inbox-approval-ops-9"].waitForExistence(timeout: 8))

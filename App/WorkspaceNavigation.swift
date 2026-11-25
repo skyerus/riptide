@@ -504,6 +504,24 @@ struct WorkspaceInboxList: View {
                 .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 11))
                 .sidebarRowStyle()
             }
+            if search.isEmpty,
+               let chat = workspace.recent.first(where: { names[$0.id.workspace] != nil }),
+               let name = names[chat.id.workspace] {
+                Section {
+                    Button { workspace.open(chat.id.workspace, chat: chat.id.chat) } label: {
+                        WorkspaceRow(title: chat.title, subtitle: name, symbol: "bubble.left.fill",
+                                     color: ChatTheme.sidebarAccent, featured: true)
+                            .lineLimit(2)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("inbox-last-opened-chat")
+                    .sidebarRowStyle()
+                } header: {
+                    SidebarSectionTitle("Last opened chat")
+                        .sidebarHeaderStyle()
+                }
+                .listSectionSeparator(.hidden)
+            }
             if entries.isEmpty {
                 if search.isEmpty {
                     WorkspaceRow(title: "You’re caught up", subtitle: "New replies and requests will appear here.",
