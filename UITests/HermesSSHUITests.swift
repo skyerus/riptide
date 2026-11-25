@@ -102,7 +102,9 @@ final class HermesSSHUITests: XCTestCase {
 
         openHermes()
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
-        XCTAssertTrue(composer.waitForExistence(timeout: 25))
+        let ready = NSPredicate(format: "exists == true AND enabled == true")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: composer)],
+                                       timeout: 25), .completed)
         composer.tap()
         composer.typeText("Read-only Riptide check. Reply with the word Riptide immediately followed by Verified, as one word. Do not use any tools.")
         button("send-message").tap()

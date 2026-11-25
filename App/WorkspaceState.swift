@@ -83,6 +83,7 @@ final class WorkspaceState {
     private var readRelayReplies: [String]
     private var seenACPCompletions: [WorkspaceChatID: Date] = [:]
     private var reportedCodexCompletion: [WorkspaceChatID: Date] = [:]
+    @ObservationIgnored private var attemptedMainChatPreload = false
     private(set) var sceneIsActive = true
     private(set) var observedApprovals = Set<WorkspaceAttention.ID>()
 
@@ -252,6 +253,15 @@ final class WorkspaceState {
         if let demo = roster.first(where: { $0.target.id == workspaceID }) { return demo }
         guard let profile = profile(workspaceID), let bearer = remotes.bearer(for: profile) else { return nil }
         return configuredModel(profile, bearer: bearer)
+    }
+
+    func preloadRecentMainChat() async {
+        guard !attemptedMainChatPreload, !Task.isCancelled else { return }
+        attemptedMainChatPreload = true
+        guard path.isEmpty, let chat = recent.first?.id,
+              mainChatID(for: chat.workspace) == chat.chat,
+              let model = sidebarACPModel(for: chat.workspace) else { return }
+        await model.preloadMain()
     }
 
     func rememberCodexCatalog(_ chats: [CodexChatSummary], workspaceID: String) {
