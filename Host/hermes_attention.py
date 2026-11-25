@@ -9,6 +9,13 @@ import os
 from pathlib import Path
 import sys
 
+# Hermes may re-enter a script with runpy and isolated Python, which omits both
+# the script directory and PYTHONPATH. Restore this release's trusted paths.
+if __name__ == "__main__":
+    host = Path(__file__).resolve().parent
+    sys.path.insert(0, str(host))
+    sys.path.insert(0, str(host.parent / "dependencies"))
+
 from attention_relay import APNs, AttentionState, WORKSPACE_ID, valid
 
 
