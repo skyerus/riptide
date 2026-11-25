@@ -88,6 +88,14 @@ In a paired chat, open **Chat actions → Open Hermes browser** and tap **Take o
 
 Install `Host/hermes-browser-handoff/SKILL.md` under the Hermes profile’s `skills/riptide-browser-handoff/` to teach Hermes to request the handoff in chat. Riptide recognises the skill’s native `clarify` request and answers it only after Hermes confirms handback. These notifications use the active chat connection.
 
+For an existing SSH deployment laid out as `<releases-dir>/<git-sha>/Host`, use `Host/update_ssh_release.py` from a checkout or archive of the exact release. Run it as the OS account that owns the pairing. It stages the versioned payload, verifies the existing routes, and switches the selected key while keeping its SSH options and agent command.
+
+```sh
+python3 -B Host/update_ssh_release.py --fingerprint 'SHA256:…' \
+  --releases-dir /absolute/riptide/releases \
+  --previous "$previous_sha" --revision "$release_sha"
+```
+
 For agent-driven handoffs, use Hermes’s default tool runtime (`model.openai_runtime: auto`) and enable `browser` and `clarify` for ACP, alongside the profile’s existing toolsets. Hermes can use the `openai-codex` subscription provider in that runtime. A separate Hermes profile lets you keep browser work and its login sessions separate from chats using the optional Codex App Server runtime.
 
 ### Safari handoff through MCP
