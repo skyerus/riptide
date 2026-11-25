@@ -20,7 +20,7 @@ final class HermesSSHUITests: XCTestCase {
         XCTAssertTrue(chats.waitForExistence(timeout: 25))
         chats.tap()
         app.buttons["new-chat"].tap()
-        XCTAssertTrue(app.navigationBars["Chats"].waitForNonExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["close-chats"].waitForNonExistence(timeout: 20))
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"), object: composer)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 25), .completed)
