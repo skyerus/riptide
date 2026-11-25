@@ -1,6 +1,11 @@
 import Foundation
 import Observation
 
+public enum MessageReceipt: String, Equatable, Sendable {
+    case delivered = "Delivered"
+    case seen = "Seen"
+}
+
 public struct ChatEntry: Identifiable, Equatable, Sendable {
     public enum Content: Equatable, Sendable {
         case message(ChatRole, String)
@@ -9,6 +14,7 @@ public struct ChatEntry: Identifiable, Equatable, Sendable {
 
     public let id = UUID()
     public fileprivate(set) var content: Content
+    public fileprivate(set) var receipt: MessageReceipt?
 }
 
 public struct Transcript: Equatable, Sendable {
@@ -16,6 +22,8 @@ public struct Transcript: Equatable, Sendable {
     private var messageIndices: [String: Int] = [:]
     private var toolIndices: [String: Int] = [:]
     private var openMessage: Int?
+    private var latestPromptIndex: Int?
+    private var activePromptIndex: Int?
 
     public init() {}
 
@@ -29,29 +37,64 @@ public struct Transcript: Equatable, Sendable {
 
     public mutating func addPrompt(_ text: String) {
         openMessage = nil
+        latestPromptIndex = entries.count
+        activePromptIndex = entries.count
         entries.append(ChatEntry(content: .message(.user, text)))
+    }
+
+    public var hasCompletedToolCalls: Bool {
+        toolIndices.values.contains { $0 < (activePromptIndex ?? entries.endIndex) }
+    }
+
+    public func visibleEntries(showCompletedToolCalls: Bool) -> [ChatEntry] {
+        if showCompletedToolCalls { return entries }
+        return entries.enumerated().compactMap { index, entry in
+            if case .tool = entry.content, index < (activePromptIndex ?? entries.endIndex) { return nil }
+            return entry
+        }
+    }
+
+    fileprivate mutating func acknowledgePrompt() {
+        guard let index = activePromptIndex, entries[index].receipt == nil else { return }
+        entries[index].receipt = .delivered
+    }
+
+    fileprivate mutating func finishPrompt() {
+        activePromptIndex = nil
     }
 
     public mutating func apply(_ event: ACPEvent) {
         switch event {
         case .message(_, let messageID, let role, let text):
             let index = messageID.flatMap { messageIndices[$0] } ?? (messageID == nil ? openMessage : nil)
+            let messageIndex: Int
             if let index, case .message(let existingRole, let existing) = entries[index].content, existingRole == role {
+                messageIndex = index
                 entries[index].content = .message(role, existing + text)
             } else {
-                openMessage = entries.count
-                if let messageID { messageIndices[messageID] = entries.count }
-                entries.append(ChatEntry(content: .message(role, text)))
+                messageIndex = entries.count
+                openMessage = messageIndex
+                if let messageID { messageIndices[messageID] = messageIndex }
+                if role == .user { latestPromptIndex = messageIndex }
+                entries.append(ChatEntry(content: .message(role, text), receipt: role == .user ? .delivered : nil))
+            }
+            if role == .assistant, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let latestPromptIndex, messageIndex > latestPromptIndex {
+                entries[latestPromptIndex].receipt = .seen
             }
         case .tool(_, let activity):
+            let toolIndex: Int
             if let index = toolIndices[activity.id], case .tool(let previous) = entries[index].content {
+                toolIndex = index
                 entries[index].content = .tool(ToolActivity(id: activity.id,
                     title: activity.title ?? previous.title, status: activity.status ?? previous.status))
             } else {
+                toolIndex = entries.count
                 openMessage = nil
-                toolIndices[activity.id] = entries.count
+                toolIndices[activity.id] = toolIndex
                 entries.append(ChatEntry(content: .tool(activity)))
             }
+            if let activePromptIndex, toolIndex > activePromptIndex { acknowledgePrompt() }
         case .permission, .permissionClosed, .configOptions, .context, .plan:
             break
         }
@@ -94,16 +137,18 @@ public final class AgentChatModel {
         fileprivate mutating func receive(_ event: ACPEvent) {
             switch event {
             case .message(_, _, .user, _) where working:
-                break
+                transcript.acknowledgePrompt()
             case .message, .tool:
                 transcript.apply(event)
             case .plan(_, let steps):
+                transcript.acknowledgePrompt()
                 plan = steps
             case .configOptions(_, let options):
                 configOptions = options
             case .context(_, let usage):
                 context = usage
             case .permission(let request):
+                transcript.acknowledgePrompt()
                 permissions.append(request)
             case .permissionClosed(_, let id):
                 permissions.removeAll { $0.id == id }
@@ -271,7 +316,9 @@ public final class AgentChatModel {
         Task {
             defer { finishPrompt(sessionID, from: client) }
             do {
-                switch try await client.prompt(text, sessionID: sessionID) {
+                let reason = try await client.prompt(text, sessionID: sessionID)
+                chats[sessionID]?.transcript.acknowledgePrompt()
+                switch reason {
                 case "end_turn":
                     if chats[sessionID]?.transcript.latestAssistantEntryID != nil {
                         completedReplies[sessionID] = .now
@@ -290,8 +337,11 @@ public final class AgentChatModel {
             throw ACPError.rejected("This chat is already working or no longer open.")
         }
         defer { finishPrompt(sessionID, from: client) }
-        do { return try await client.promptForVoice(text, sessionID: sessionID) }
-        catch {
+        do {
+            let reply = try await client.promptForVoice(text, sessionID: sessionID)
+            chats[sessionID]?.transcript.acknowledgePrompt()
+            return reply
+        } catch {
             if !Task.isCancelled { chats[sessionID]?.error = error.localizedDescription }
             throw error
         }
@@ -330,6 +380,7 @@ public final class AgentChatModel {
 
     private func finishPrompt(_ sessionID: String, from client: ACPClient) {
         guard self.client === client else { return }
+        chats[sessionID]?.transcript.finishPrompt()
         chats[sessionID]?.working = false
         workingChats.remove(sessionID)
         chats[sessionID]?.stopping = false
@@ -374,6 +425,7 @@ public final class AgentChatModel {
             self.newlyCreatedOpenClawKeys.removeAll()
             self.observer = nil
             for id in Array(self.chats.keys) {
+                self.chats[id]?.transcript.finishPrompt()
                 self.chats[id]?.loaded = false
                 self.chats[id]?.working = false
                 self.chats[id]?.stopping = false

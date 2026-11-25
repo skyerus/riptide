@@ -226,7 +226,7 @@ public actor FixtureTransport: ACPTransport {
         "    let message = \"Connected\"\n}\n~~~\n\n",
         "~~~diff\ndiff --git a/App.swift b/App.swift\n--- a/App.swift\n+++ b/App.swift\n",
         "@@ -4,2 +4,2 @@\n let turn = activeTurn\n- reconnect(to: turn)\n+ watch(turn)\n~~~\n\n",
-        "Formatting demo complete."
+        "Read the [example guide](https://example.com/guide) or visit https://example.org.\n\nFormatting demo complete."
     ]
 
     private static let longStreamChunks = (1...27).map { index in

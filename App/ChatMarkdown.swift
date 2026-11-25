@@ -20,9 +20,7 @@ struct ChatMarkdown: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .lineSpacing(3)
         .textSelection(.enabled)
-        .environment(\.openURL, OpenURLAction { url in
-            ["http", "https"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
-        })
+        .environment(\.openURL, ChatLinks.openURL)
     }
 }
 
@@ -176,9 +174,41 @@ private struct MarkdownBlocks: View {
         if let rich = try? AttributedString(
             markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
-            SwiftUI.Text(rich)
+            SwiftUI.Text(ChatLinks.styled(rich))
         } else {
-            SwiftUI.Text(value)
+            SwiftUI.Text(ChatLinks.styled(AttributedString(value)))
         }
+    }
+}
+
+enum ChatLinks {
+    private static let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+    @MainActor static let openURL = OpenURLAction { url in isWebLink(url) ? .systemAction : .discarded }
+
+    static func styled(_ text: AttributedString) -> AttributedString {
+        var result = text
+        let plain = String(text.characters)
+        for match in detector?.matches(in: plain, range: NSRange(plain.startIndex..., in: plain)) ?? [] {
+            guard let url = match.url, isWebLink(url),
+                  let range = Range(match.range, in: plain),
+                  let start = AttributedString.Index(range.lowerBound, within: text),
+                  let end = AttributedString.Index(range.upperBound, within: text),
+                  text[start..<end].runs.allSatisfy({
+                      $0.link == nil && $0.inlinePresentationIntent?.contains(.code) != true
+                  }) else { continue }
+            result[start..<end].link = url
+        }
+        let webLinks = result.runs.compactMap { run in
+            run.link.flatMap { isWebLink($0) ? run.range : nil }
+        }
+        for range in webLinks {
+            result[range].foregroundColor = ChatTheme.sidebarAccent
+            result[range].underlineStyle = .single
+        }
+        return result
+    }
+
+    private static func isWebLink(_ url: URL) -> Bool {
+        ["http", "https"].contains(url.scheme?.lowercased() ?? "")
     }
 }

@@ -45,6 +45,7 @@ async def fixture(socket):
 
     async def show_live_feedback():
         try:
+            await asyncio.sleep(3)
             steps = [{"step": "Inspect the fixture workspace", "status": "inProgress"},
                      {"step": "Summarize the changes", "status": "pending"}]
             await notify("turn/plan/updated", {"turnId": TURN, "plan": steps})
@@ -94,6 +95,9 @@ async def fixture(socket):
                 result = {"turn": {"id": TURN}}
                 await notify("turn/started", {"turn": {"id": TURN}})
                 inputs = packet.get("params", {}).get("input", [])
+                await notify("item/completed", {"turnId": TURN, "item": {
+                    "id": "fixture-user-message", "type": "userMessage", "content": inputs,
+                }})
                 feedback = any("show live feedback" in item.get("text", "") for item in inputs)
                 needs_approval = not any("finish without approval" in item.get("text", "") for item in inputs)
                 approval = asyncio.create_task(show_live_feedback() if feedback else continue_turn(needs_approval))

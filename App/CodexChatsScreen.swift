@@ -114,11 +114,16 @@ struct CodexSavedChatScreen: View {
     @State private var showChats = false
     @State private var showCall = false
     @State private var viewport = TranscriptViewport()
+    @State private var showsCompletedToolCalls = false
     @FocusState private var composerFocused: Bool
     @Environment(WorkspaceState.self) private var workspace
 
     private var chat: CodexChatSummary? { session?.chat }
-    private var messages: [CodexChatMessage] { session?.messages ?? [] }
+    private var turns: [CodexTranscriptTurn] { session?.turns ?? [] }
+    private var activeTurnID: String? { session?.activeTurnID }
+    private var hasCompletedToolCalls: Bool {
+        turns.contains { $0.id != activeTurnID && !$0.progress.items.isEmpty }
+    }
     private var approvals: [CodexChatApproval] { session?.approvals ?? [] }
     private var responding: Set<UUID> { session?.responding ?? [] }
     private var ready: Bool { session?.ready == true }
@@ -161,6 +166,9 @@ struct CodexSavedChatScreen: View {
                 if includesSwitcher { WorkspaceSwitcherButton() }
                 if let chat, let chatKey {
                     Menu {
+                        if hasCompletedToolCalls {
+                            ToolCallsMenuButton(showsCompletedCalls: $showsCompletedToolCalls)
+                        }
                         FollowUpButton(chat: chatKey, title: chat.title)
                         Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                     } label: { Label("Chat actions", systemImage: "ellipsis.circle") }
@@ -187,6 +195,7 @@ struct CodexSavedChatScreen: View {
         }
         .onChange(of: ready) { visitIfReady() }
         .onChange(of: chat?.id) { visitIfReady() }
+        .onChange(of: activeTurnID) { showsCompletedToolCalls = false }
         .onDisappear {
             if let chatKey { workspace.leave(chatKey) }
         }
@@ -204,19 +213,10 @@ struct CodexSavedChatScreen: View {
                 if session?.hasOlderTurns == true {
                     Text("Showing the latest 30 turns.").font(.caption).foregroundStyle(.secondary)
                 }
-                ForEach(messages) { message in
-                    if message.role == .assistant {
-                        if !message.text.isEmpty {
-                            VStack(alignment: .leading, spacing: 6) {
-                                if message.phase == .commentary {
-                                    Label("Progress update", systemImage: "waveform").font(.caption.weight(.medium))
-                                        .foregroundStyle(ChatTheme.muted)
-                                }
-                                ChatMarkdown(source: message.text, streaming: message.streaming)
-                            }
-                        }
-                    } else {
-                        TranscriptUserMessage(text: message.text)
+                ForEach(turns) { turn in
+                    ForEach(turn.messages) { transcriptMessage($0) }
+                    if showsCompletedToolCalls && turn.id != activeTurnID && !turn.progress.items.isEmpty {
+                        CodexActivityCard(items: turn.progress.items)
                     }
                 }
                 if let diff = session?.diff {
@@ -236,10 +236,11 @@ struct CodexSavedChatScreen: View {
                     if !ready { Button("Reconnect") { session?.start() } }
                 } else if !ready {
                     ProgressView("Opening chat…")
-                } else if messages.isEmpty && !working {
+                } else if turns.allSatisfy({ $0.messages.isEmpty }) && !working {
                     Text("Start a conversation").foregroundStyle(.secondary)
                 }
-                if progress.hasContent { CodexActivityCard(progress: progress) }
+                if !progress.plan.isEmpty { TurnPlanCard(steps: progress.plan) }
+                if working && !progress.items.isEmpty { CodexActivityCard(items: progress.items) }
                 if approvals.isEmpty && (working || sending) {
                     TurnPulse(title: workingLabel)
                 }
@@ -251,6 +252,21 @@ struct CodexSavedChatScreen: View {
         .transcriptViewport($viewport, chat: ready ? chatKey : nil)
     }
 
+    @ViewBuilder
+    private func transcriptMessage(_ message: CodexChatMessage) -> some View {
+        if message.role == .user {
+            TranscriptUserMessage(text: message.text, receipt: message.receipt)
+        } else if !message.text.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                if message.phase == .commentary {
+                    Label("Progress update", systemImage: "waveform").font(.caption.weight(.medium))
+                        .foregroundStyle(ChatTheme.muted)
+                }
+                ChatMarkdown(source: message.text, streaming: message.streaming)
+            }
+        }
+    }
+
     private var workingLabel: String {
         if stopping { return "Stopping…" }
         switch progress.current?.kind {
@@ -260,7 +276,9 @@ struct CodexSavedChatScreen: View {
         case .search: return "Searching…"
         case .planning: return "Planning…"
         case .summary: return "Reviewing…"
-        case nil: return messages.last?.streaming == true ? "Writing reply…" : "Preparing reply…"
+        case nil:
+            return turns.last(where: { $0.id == activeTurnID })?.messages.last?.streaming == true
+                ? "Writing reply…" : "Preparing reply…"
         }
     }
 

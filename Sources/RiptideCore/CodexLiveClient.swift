@@ -190,24 +190,21 @@ public actor CodexLiveClient {
         if !turnChanged {
             activeTurnID = turns.first(where: { $0["status"] == "inProgress" })?["id"]?.string
         }
-        let messages = turns.reversed().flatMap { turn in
-            (turn["items"]?.array ?? []).compactMap { item -> CodexChatMessage? in
-                guard var message = CodexChatMessage(item) else { return nil }
-                if turn["status"] == "inProgress" && message.role == .assistant {
-                    message.streaming = true
+        let transcript = turns.reversed().compactMap { turn -> CodexTranscriptTurn? in
+            guard let id = turn["id"]?.string else { return nil }
+            var entry = CodexTranscriptTurn(id: id)
+            for item in turn["items"]?.array ?? [] {
+                if var message = CodexChatMessage(item) {
+                    message.streaming = turn["status"] == "inProgress" && message.role == .assistant
+                    entry.upsert(message)
+                } else if let work = CodexWorkItem(item, completed: turn["status"] != "inProgress") {
+                    entry.apply(.item(work))
                 }
-                return message
             }
+            return entry
         }
-        var progress = CodexTurnProgress()
-        if let current = turns.first(where: { $0["id"]?.string == activeTurnID }), activeTurnID != nil {
-            for item in current["items"]?.array ?? [] {
-                let done = ["completed", "failed", "declined"].contains(item["status"]?.string ?? "")
-                if let work = CodexWorkItem(item, completed: done) { progress.apply(.item(work)) }
-            }
-        }
-        return CodexChatSnapshot(messages: messages, working: activeTurnID != nil,
-                                 hasOlderTurns: history["nextCursor"]?.string != nil, progress: progress)
+        return CodexChatSnapshot(turns: transcript, activeTurnID: activeTurnID,
+                                 hasOlderTurns: history["nextCursor"]?.string != nil)
     }
 
     public func sendToSavedChat(_ text: String) async throws {
@@ -545,7 +542,7 @@ public actor CodexLiveClient {
         if method == "turn/started", let id = params["turn"]?["id"]?.string {
             turnChanged = true
             activeTurnID = id
-            emitChat.yield(.turnStarted)
+            emitChat.yield(.turnStarted(id))
             return
         }
         if let reportedTurn = params["turnId"]?.string,
@@ -557,19 +554,19 @@ public actor CodexLiveClient {
             emitChat.yield(.issue(params["willRetry"] == .boolean(true)
                                   ? "Codex is reconnecting…" : String(message.prefix(600))))
         }
-        if method == "item/started", let item = params["item"], item["type"] == "agentMessage",
-           let message = CodexChatMessage(item, starting: true) {
-            emitChat.yield(.message(message))
+        if method == "item/started", let item = params["item"],
+           let message = CodexChatMessage(item, starting: item["type"] == "agentMessage") {
+            emitChat.yield(.message(message, turnID: params["turnId"]?.string ?? activeTurnID))
         }
         if method == "item/completed", let item = params["item"], let message = CodexChatMessage(item) {
-            emitChat.yield(.message(message))
+            emitChat.yield(.message(message, turnID: params["turnId"]?.string ?? activeTurnID))
             if message.role == .assistant { return }
         }
         if method == "thread/realtime/item/completed", let item = params["item"],
            item["type"] == "transcriptSegment", let id = item["id"]?.string,
            let roleName = item["role"]?.string, let role = ChatRole(rawValue: roleName),
            let text = item["text"]?.string, !text.isEmpty {
-            emitChat.yield(.message(CodexChatMessage(id: id, role: role, text: text, streaming: false)))
+            emitChat.yield(.message(CodexChatMessage(id: id, role: role, text: text, streaming: false), turnID: activeTurnID))
         }
         if let event = Self.event(method, params) {
             if case .completed(let id, _) = event {

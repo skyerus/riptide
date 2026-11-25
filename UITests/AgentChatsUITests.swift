@@ -9,6 +9,7 @@ final class AgentChatsUITests: XCTestCase {
         openOpenClaw(app)
         send("formatting demo", in: app)
         XCTAssertTrue(app.staticTexts["Formatting demo complete."].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.staticTexts["Read the example guide or visit https://example.org."].exists)
         let diff = app.descendants(matching: .any).matching(identifier: "markdown-diff").firstMatch
         XCTAssertTrue(diff.exists)
         XCTAssertTrue(app.staticTexts["+ watch(turn)"].exists)
@@ -73,8 +74,20 @@ final class AgentChatsUITests: XCTestCase {
         send("Show an approval", in: app)
         let deny = app.buttons["approval-reject_once"]
         XCTAssertTrue(deny.waitForExistence(timeout: 5))
+        let receipt = app.staticTexts["message-receipt"]
+        let tool = app.descendants(matching: .any).matching(identifier: "chat-tool-call").firstMatch
+        XCTAssertEqual(receipt.label, "Delivered")
+        XCTAssertTrue(tool.exists)
         deny.tap()
         XCTAssertTrue(app.staticTexts["I skipped the sample action. Nothing was run."].waitForExistence(timeout: 5))
+        XCTAssertTrue(tool.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(receipt.label, "Seen")
+        app.buttons["chat-actions"].tap()
+        app.buttons["Show Tool Calls"].tap()
+        XCTAssertTrue(tool.waitForExistence(timeout: 5))
+        app.buttons["chat-actions"].tap()
+        app.buttons["Hide Tool Calls"].tap()
+        XCTAssertTrue(tool.waitForNonExistence(timeout: 5))
     }
 
     @MainActor

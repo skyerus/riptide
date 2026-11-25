@@ -10,20 +10,25 @@ final class CodexWorkspaceSession {
     @ObservationIgnored private weak var workspace: WorkspaceState?
     private(set) var chat: CodexChatSummary?
     private(set) var client: CodexLiveClient?
-    private(set) var messages: [CodexChatMessage] = []
+    private(set) var turns: [CodexTranscriptTurn] = []
+    private(set) var activeTurnID: String?
     private(set) var approvals: [CodexChatApproval] = []
     private(set) var responding = Set<UUID>()
     private(set) var ready = false
-    private(set) var working = false
     private(set) var stopping = false
     private(set) var sending = false
     private(set) var issue: String?
     private(set) var hasOlderTurns = false
     private(set) var diff: String?
-    private(set) var progress = CodexTurnProgress()
     private var assistantReplied = false
+    private var unscopedTurnID: String?
 
     var locator: WorkspaceChatID? { chat.map { .init(workspace: workspaceID, chat: $0.id) } }
+    var working: Bool { activeTurnID != nil }
+    var progress: CodexTurnProgress {
+        if let activeTurnID { return turns.last { $0.id == activeTurnID }?.progress ?? .init() }
+        return turns.last?.progress ?? .init()
+    }
     var needsConnection: Bool { working || sending || !approvals.isEmpty || !ready && listener != nil }
 
     init(endpoint: CodexLocalEndpoint, chat: CodexChatSummary?, workspaceID: String, workspace: WorkspaceState) {
@@ -71,7 +76,7 @@ final class CodexWorkspaceSession {
         listener = nil
         client = nil
         ready = false
-        working = false
+        activeTurnID = nil
         stopping = false
         sending = false
         approvals = []
@@ -114,10 +119,10 @@ final class CodexWorkspaceSession {
 
     private func setSnapshot(_ snapshot: CodexChatSnapshot, peer: CodexLiveClient) {
         guard client === peer else { return }
-        messages = snapshot.messages
-        working = snapshot.working
+        turns = snapshot.turns
+        activeTurnID = snapshot.activeTurnID
+        unscopedTurnID = nil
         hasOlderTurns = snapshot.hasOlderTurns
-        progress = snapshot.progress
         assistantReplied = snapshot.messages.contains { $0.streaming && $0.role == .assistant &&
             $0.phase != .commentary && !$0.text.isEmpty }
     }
@@ -139,7 +144,7 @@ final class CodexWorkspaceSession {
         listener = nil
         client = nil
         ready = false
-        working = false
+        activeTurnID = nil
         stopping = false
         approvals = []
         responding = []
@@ -168,15 +173,15 @@ final class CodexWorkspaceSession {
 
     private func apply(_ event: CodexChatEvent) {
         switch event {
-        case .message(let message):
-            upsert(message)
+        case .message(let message, let turnID):
+            turns[turnIndex(for: turnID)].upsert(message)
             if message.role == .assistant, message.phase != .commentary, !message.text.isEmpty { assistantReplied = true }
-        case .turnStarted:
-            working = true
+        case .turnStarted(let id):
+            guard activeTurnID != id else { return }
+            activeTurnID = id
             assistantReplied = false
             stopping = false
             diff = nil
-            progress = .init()
             issue = nil
             publishAttention()
         case .approval(let approval):
@@ -187,29 +192,23 @@ final class CodexWorkspaceSession {
             responding.remove(id)
             publishAttention()
         case .progress(let update):
-            progress.apply(update)
+            if let activeTurnID { turns[turnIndex(for: activeTurnID)].apply(update) }
         case .issue(let message):
             issue = message
         case .live(let update):
             switch update {
-            case .assistantDelta(_, let item, let text):
-                if let index = messages.firstIndex(where: { $0.id == item }) {
-                    if messages[index].streaming { messages[index].text += text }
-                    if messages[index].phase != .commentary, !text.isEmpty { assistantReplied = true }
-                } else {
-                    messages.append(CodexChatMessage(id: item, role: .assistant, text: text, streaming: true))
-                    if !text.isEmpty { assistantReplied = true }
-                }
-            case .assistantCompleted(_, let item, let text):
-                upsert(CodexChatMessage(id: item, role: .assistant, text: text, streaming: false))
+            case .assistantDelta(let turn, let item, let text):
+                if turns[turnIndex(for: turn)].appendReply(text, id: item) { assistantReplied = true }
+            case .assistantCompleted(let turn, let item, let text):
+                turns[turnIndex(for: turn)].upsert(.init(id: item, role: .assistant, text: text, streaming: false))
                 if !text.isEmpty { assistantReplied = true }
-            case .completed(_, let status):
-                working = false
+            case .completed(let turn, let status):
+                activeTurnID = nil
                 publishAttention()
                 stopping = false
                 if status == "completed" { issue = nil }
                 if status == "interrupted" { issue = "Turn stopped." }
-                for index in messages.indices where messages[index].streaming { messages[index].streaming = false }
+                if let index = turns.lastIndex(where: { $0.id == turn }) { turns[index].finishStreaming() }
                 if status == "completed", assistantReplied, let locator, let chat {
                     workspace?.receivedCodexReply(locator, title: chat.title)
                 }
@@ -222,11 +221,18 @@ final class CodexWorkspaceSession {
         }
     }
 
-    private func upsert(_ message: CodexChatMessage) {
-        if let index = messages.firstIndex(where: { $0.id == message.id }) {
-            messages[index] = message
+    private func turnIndex(for reportedID: String?) -> Int {
+        let id: String
+        if let reportedID {
+            id = reportedID
+        } else if let unscopedTurnID, turns.last?.id == unscopedTurnID {
+            id = unscopedTurnID
         } else {
-            messages.append(message)
+            id = UUID().uuidString
+            unscopedTurnID = id
         }
+        if let index = turns.lastIndex(where: { $0.id == id }) { return index }
+        turns.append(CodexTranscriptTurn(id: id))
+        return turns.index(before: turns.endIndex)
     }
 }

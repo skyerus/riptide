@@ -36,6 +36,8 @@ struct ChatTests {
         await reopened.showMain()
         await reopened.open(sideID)
         #expect(reopened.selected.transcript.entries.count == 3)
+        #expect(reopened.selected.transcript.entries.first?.receipt == .seen)
+        #expect(reopened.selected.transcript.visibleEntries(showCompletedToolCalls: false).count == 2)
         let contents = reopened.selected.transcript.entries.map(\.content)
         #expect(contents.first == .message(.user, "A separate conversation"))
         guard case .tool(let tool) = contents[1], case .message(.assistant, let reply) = contents[2] else {
@@ -52,6 +54,9 @@ struct ChatTests {
         model.submit("Show an approval")
         try await waitUntil { !model.selected.permissions.isEmpty }
         let approval = try #require(model.selected.permissions.first)
+        let liveTranscript = model.selected.transcript
+        #expect(liveTranscript.entries.first(where: { $0.receipt != nil })?.receipt == .delivered)
+        #expect(liveTranscript.visibleEntries(showCompletedToolCalls: false) == liveTranscript.entries)
 
         #expect(await model.createChat())
         await model.answer(approval, optionID: "allow-once")
@@ -62,6 +67,10 @@ struct ChatTests {
         await model.answer(approval, optionID: "deny")
         try await waitUntil { model.selected.permissions.isEmpty && !model.selected.working }
         #expect(model.selected.transcript.entries.last?.content == .message(.assistant, "I skipped the sample action. Nothing was run."))
+        #expect(model.selected.transcript.entries.first(where: { $0.receipt != nil })?.receipt == .seen)
+        #expect(model.selected.transcript.hasCompletedToolCalls)
+        #expect(model.selected.transcript.visibleEntries(showCompletedToolCalls: false).count ==
+                model.selected.transcript.entries.count - 1)
     }
 
     @Test func stopExpiresOutstandingApprovalsAndLeavesConversationUsable() async throws {
@@ -72,6 +81,7 @@ struct ChatTests {
         await model.stop()
         try await waitUntil { model.selected.permissions.isEmpty && !model.selected.working }
         #expect(model.selected.notice == "Reply stopped.")
+        #expect(model.selected.transcript.entries.first(where: { $0.receipt != nil })?.receipt == .delivered)
 
         model.submit("Try the fixture again")
         try await waitUntil { !model.selected.working && model.selected.transcript.entries.count >= 6 }
