@@ -6,6 +6,35 @@ import Testing
 struct ChatTests {
     private let target = AgentTarget.demos[0]
 
+    @Test func openingMainJoinsAnInFlightPreloadWithoutChangingTheCurrentChatEarly() async throws {
+        let fixture = try FixtureTransport(target: target, catalog: ["Side chat"])
+        let transport = GatedHistoryTransport(fixture: fixture, mainID: target.mainSessionID)
+        let model = AgentChatModel(target: target, client: ACPClient(transport: transport))
+        await model.refreshSessions()
+        let side = try #require(model.sessions.first { $0.id != target.mainSessionID })
+        await model.open(side.id)
+
+        let preload = Task { await model.preloadMain() }
+        defer { Task { await transport.releaseHistory() } }
+        try await waitUntil { await transport.mainLoads == 1 }
+        #expect(model.selectedID == side.id)
+
+        let open = Task {
+            await model.showMain()
+            #expect(model.selected.loaded)
+        }
+        try await waitUntil { model.selectedID == target.mainSessionID }
+        #expect(model.selected.loading)
+        #expect(model.selected.transcript.entries.isEmpty)
+
+        await transport.releaseHistory()
+        await open.value
+        await preload.value
+        await model.showMain()
+        #expect(await transport.mainLoads == 1)
+        #expect(model.selected.transcript.entries.count == 1)
+    }
+
     @Test func mainStaysTheDefaultWhileSavedSideChatsReopen() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let file = directory.appending(path: "fixture.json")
@@ -123,12 +152,41 @@ struct ChatTests {
         return AgentChatModel(target: target, client: ACPClient(transport: transport))
     }
 
-    private func waitUntil(_ condition: () -> Bool) async throws {
+    private func waitUntil(_ condition: () async -> Bool) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(2))
-        while !condition() {
+        while !(await condition()) {
             guard clock.now < deadline else { throw ACPError.rejected("Fixture did not settle in time.") }
             try await Task.sleep(for: .milliseconds(10))
         }
+    }
+}
+
+private actor GatedHistoryTransport: ACPTransport {
+    nonisolated var incoming: AsyncThrowingStream<Data, any Error> { fixture.incoming }
+    private let fixture: FixtureTransport
+    private let mainID: String
+    private var released = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private(set) var mainLoads = 0
+
+    init(fixture: FixtureTransport, mainID: String) {
+        self.fixture = fixture
+        self.mainID = mainID
+    }
+
+    func send(_ message: Data) async throws {
+        let request = try JSONDecoder().decode(JSON.self, from: message)
+        if request["method"] == "session/load", request["params"]?["sessionId"]?.string == mainID {
+            mainLoads += 1
+            if !released { await withCheckedContinuation { waiting.append($0) } }
+        }
+        try await fixture.send(message)
+    }
+
+    func releaseHistory() {
+        released = true
+        for task in waiting { task.resume() }
+        waiting.removeAll()
     }
 }

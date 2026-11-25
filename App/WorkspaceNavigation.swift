@@ -48,6 +48,9 @@ struct WorkspaceNavigation: View {
             }
         }
         .task(id: scenePhase) {
+            if scenePhase == .active { await workspace.preloadRecentMainChat() }
+        }
+        .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
                 notify(await workspace.pollCodex())

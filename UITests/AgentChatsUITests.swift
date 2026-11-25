@@ -39,6 +39,16 @@ final class AgentChatsUITests: XCTestCase {
 
         openOpenClaw(app)
         XCTAssertEqual(title(app).label, "Main Chat")
+        let history = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "This is your main chat.")).firstMatch
+        XCTAssertTrue(history.waitForExistence(timeout: 5))
+        app.terminate()
+        app.launch()
+        let lastOpened = app.buttons["inbox-last-opened-chat"]
+        XCTAssertTrue(lastOpened.waitForExistence(timeout: 5))
+        XCTAssertTrue(lastOpened.staticTexts["Main Chat"].exists)
+        lastOpened.tap()
+        XCTAssertTrue(history.waitForExistence(timeout: 5))
+
         app.buttons["chats-button"].tap()
         app.buttons["new-chat"].tap()
         XCTAssertTrue(app.staticTexts["empty-chat"].waitForExistence(timeout: 5))
@@ -49,7 +59,6 @@ final class AgentChatsUITests: XCTestCase {
         app.terminate()
         app.launch()
 
-        let lastOpened = app.buttons["inbox-last-opened-chat"]
         XCTAssertTrue(lastOpened.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["sidebar-inbox"].isSelected)
         XCTAssertTrue(app.staticTexts["You’re caught up"].isHittable)

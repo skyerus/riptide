@@ -75,6 +75,7 @@ public final class AgentChatModel {
     @ObservationIgnored private var client: ACPClient?
     @ObservationIgnored private var makeClient: (@Sendable () -> ACPClient)?
     @ObservationIgnored private var observer: Task<Void, Never>?
+    @ObservationIgnored private var mainPreload: Task<Void, Never>?
 
     public struct ChatState {
         public fileprivate(set) var transcript = Transcript()
@@ -150,10 +151,29 @@ public final class AgentChatModel {
 
     public func showMain() async { await open(target.mainSessionID) }
 
+    public func preloadMain() async {
+        let main = target.mainSessionID
+        guard mainPreload == nil, chats[main]?.loaded != true, chats[main]?.loading != true else { return }
+        let preload = Task {
+            defer { mainPreload = nil }
+            await load(main)
+        }
+        mainPreload = preload
+        await preload.value
+    }
+
     public func open(_ sessionID: String) async {
         if makeClient != nil, sessionID != target.mainSessionID,
            !sessions.contains(where: { $0.id == sessionID && $0.cwd == target.cwd }) { return }
         selectedID = sessionID
+        if sessionID == target.mainSessionID, let mainPreload {
+            await mainPreload.value
+            return
+        }
+        await load(sessionID)
+    }
+
+    private func load(_ sessionID: String) async {
         if client == nil { client = makeClient?() }
         guard let client, chats[sessionID]?.loaded != true, chats[sessionID]?.loading != true else { return }
         observe(client)
@@ -166,7 +186,8 @@ public final class AgentChatModel {
             markLoaded(opened)
         } catch {
             if !Task.isCancelled { chats[sessionID]?.error = error.localizedDescription }
-            if makeClient != nil && !chats.values.contains(where: \.loaded) {
+            if makeClient != nil, !chats.values.contains(where: \.loaded),
+               !chats.contains(where: { $0.key != sessionID && $0.value.loading }) {
                 await client.close()
             }
         }
