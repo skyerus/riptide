@@ -1,0 +1,2 @@
+-r safari-requirements.txt
+PyYAML>=6,<7
