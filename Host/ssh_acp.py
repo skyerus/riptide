@@ -60,7 +60,7 @@ def admitted(packet, workspace, pending):
     return True
 
 
-async def serve(workspace, command, safari_mcp=None):
+async def serve(workspace, command, safari_mcp=None, attention_socket=None):
     loop = asyncio.get_running_loop()
     source = asyncio.StreamReader(limit=MAX_FRAME)
     stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
@@ -73,6 +73,8 @@ async def serve(workspace, command, safari_mcp=None):
         stdin.close()
         raise
     pending = set()
+    openings = {}
+    opened = set()
 
     def write(message):
         sys.stdout.buffer.write(message)
@@ -82,6 +84,16 @@ async def serve(workspace, command, safari_mcp=None):
         while line := await source.readline():
             packet = json.loads(line)
             if admitted(packet, workspace, pending):
+                if attention_socket:
+                    method = packet.get("method")
+                    if method in ("session/new", "session/load") and len(openings) < 128:
+                        openings[packet["id"]] = packet["params"].get("sessionId")
+                    if method == "session/prompt" and packet["params"]["sessionId"] in opened:
+                        from hermes_attention import exchange
+                        try:
+                            await exchange(attention_socket, {"operation": "watch", "chat": packet["params"]["sessionId"]})
+                        except (OSError, ValueError, TimeoutError):
+                            pass  # Alert availability must never interrupt a chat.
                 if safari_mcp and packet.get("method") in ("session/new", "session/load"):
                     # The device can only send an empty MCP list. Supply this
                     # administrator-configured connector after validating the request.
@@ -98,6 +110,12 @@ async def serve(workspace, command, safari_mcp=None):
         while line := await agent.stdout.readline():
             packet = json.loads(line)
             request_id = packet.get("id")
+            if rpc_id(request_id) and "method" not in packet and request_id in openings:
+                held_id = openings.pop(request_id)
+                if isinstance(packet.get("result"), dict):
+                    chat = held_id or packet["result"].get("sessionId")
+                    if isinstance(chat, str) and len(opened) < 128:
+                        opened.add(chat)
             if isinstance(packet.get("method"), str) and rpc_id(request_id):
                 if len(pending) >= 128:
                     raise ValueError("Too many pending ACP requests.")
@@ -157,10 +175,20 @@ if __name__ == "__main__":
     parser.add_argument("--codex-dictation-auth", metavar="CODEX_AUTH_FILE")
     parser.add_argument("--safari", nargs=2, metavar=("BROWSER_SOCKET", "DEVICE_ID"))
     parser.add_argument("--safari-mcp-python", metavar="PYTHON")
+    parser.add_argument("--attention-socket", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     requested = os.environ.get("SSH_ORIGINAL_COMMAND")
+    if args.attention_socket and not args.attention_socket.is_absolute():
+        parser.error("An absolute notification relay socket path is required.")
+    if requested == "riptide-attention":
+        if args.attention_socket is None:
+            print('{"ok":false}')
+            sys.exit(0)
+        from hermes_attention import serve_ssh
+        asyncio.run(serve_ssh(args.attention_socket))
+        sys.exit(0)
     if requested == "riptide-dictation":
         if args.codex_dictation_auth is None:
             print(json.dumps({"error": "disabled"}))
@@ -211,6 +239,6 @@ if __name__ == "__main__":
             "env": [],
         }
     try:
-        asyncio.run(serve(args.workspace, command, safari_mcp))
+        asyncio.run(serve(args.workspace, command, safari_mcp, args.attention_socket))
     except (OSError, ValueError):
         parser.exit(1, "The ACP transport closed.\n")

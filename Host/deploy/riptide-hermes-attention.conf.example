@@ -1,0 +1,8 @@
+RIPTIDE_ATTENTION_RELEASE=/usr/local/libexec/riptide/attention/releases/FULL_GIT_SHA
+PYTHONPATH=/usr/local/libexec/riptide/attention/releases/FULL_GIT_SHA/dependencies
+HERMES_PYTHON=/absolute/path/to/the/running/gateways/python3
+HERMES_HOME=/absolute/path/to/hermes/profile
+HERMES_SOURCE=/absolute/path/to/hermes-agent
+HERMES_WORKSPACE=/absolute/path/to/paired/workspace
+APNS_TEAM=YOURTEAMID
+APNS_KEY_ID=YOURKEYID

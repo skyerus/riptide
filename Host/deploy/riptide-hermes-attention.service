@@ -1,0 +1,18 @@
+[Unit]
+Description=Riptide private Hermes notification relay
+After=network-online.target hermes-gateway.service
+
+[Service]
+Type=simple
+UMask=0077
+StateDirectory=riptide-hermes-attention
+StateDirectoryMode=0700
+EnvironmentFile=/etc/riptide-hermes-attention.conf
+ExecStart=/usr/bin/env ${HERMES_PYTHON} -B ${RIPTIDE_ATTENTION_RELEASE}/Host/hermes_attention.py --state /var/lib/riptide-hermes-attention --profile ${HERMES_HOME} --hermes-source ${HERMES_SOURCE} --workspace ${HERMES_WORKSPACE} --key /var/lib/riptide-hermes-attention/apns.p8 --team ${APNS_TEAM} --key-id ${APNS_KEY_ID}
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
