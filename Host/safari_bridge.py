@@ -26,7 +26,8 @@ REQUEST_SECONDS = 300
 SHARE_SECONDS = 900
 OFFLINE_SECONDS = 25
 COMMAND_SECONDS = 25
-BROWSER_OPERATIONS = frozenset(("state", "grant", "next", "result", "release"))
+CHAT_TURN_SECONDS = 90
+BROWSER_OPERATIONS = frozenset(("state", "prepare_chat", "grant", "next", "result", "release"))
 
 
 class RelayError(Exception):
@@ -59,6 +60,14 @@ class Command:
 
 
 @dataclass
+class ChatTurn:
+    token: str
+    device: str
+    expires_at: float
+    confirmed: bool = False
+
+
+@dataclass
 class Handoff:
     id: str
     url: str
@@ -68,6 +77,7 @@ class Handoff:
     seen_at: float = 0
     command: Command | None = None
     last_result_id: str | None = None
+    chat_turn: ChatTurn | None = None
 
     @property
     def active(self):
@@ -99,6 +109,10 @@ class Relay:
             raise RelayError("Waiting for you to hand back the tab in Safari.")
         return handoff
 
+    def current_chat_turn(self, handoff):
+        turn = handoff.chat_turn
+        return turn if turn and turn.expires_at > self.clock() else None
+
     def browser(self, operation, body, device):
         with self.changed:
             if operation == "state":
@@ -107,16 +121,31 @@ class Relay:
                     return {}
                 if handoff.active and handoff.owner != device:
                     return {"busy": True}
-                return {"handoff": {"id": handoff.id, "url": handoff.url,
-                                    "origin": handoff.origin, "active": handoff.active}}
+                state = {"id": handoff.id, "url": handoff.url, "origin": handoff.origin, "active": handoff.active}
+                turn = self.current_chat_turn(handoff)
+                if turn and turn.device == device and turn.confirmed:
+                    state["chat_confirmation"] = turn.token
+                return {"handoff": state}
 
             handoff = self.require(body.get("id"))
+            if operation == "prepare_chat":
+                if handoff.active:
+                    raise RelayError("Safari is already shared.")
+                token = body.get("token")
+                if not isinstance(token, str) or not re.fullmatch(r"(?i)[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", token):
+                    raise RelayError("Invalid chat turn token.", HTTPStatus.BAD_REQUEST)
+                turn = self.current_chat_turn(handoff)
+                if turn and turn.device != device:
+                    raise RelayError("Another device is confirming this handoff.", HTTPStatus.FORBIDDEN)
+                handoff.chat_turn = ChatTurn(token, device, self.clock() + CHAT_TURN_SECONDS)
+                return {}
             if operation == "grant":
                 if handoff.active:
                     raise RelayError("A Safari tab is already shared.")
                 if body.get("origin") != handoff.origin:
                     raise RelayError("The handoff is for a different website.", HTTPStatus.FORBIDDEN)
                 handoff.owner = device
+                handoff.chat_turn = None
                 handoff.seen_at = self.clock()
                 handoff.expires_at = self.clock() + SHARE_SECONDS
                 self.changed.notify_all()
@@ -158,12 +187,20 @@ class Relay:
                 handoff = Handoff(secrets.token_urlsafe(18), body["url"], origin, self.clock() + REQUEST_SECONDS)
                 self.handoff = handoff
                 return {"request_id": handoff.id, "url": handoff.url, "origin": origin,
-                        "message": "Open this address in Safari, sign in, then open the Riptide extension and tap Hand back."}
+                        "message": "Open this address in Safari, sign in, and tell the agent when you’re done."}
 
             handoff = self.require(body.get("request_id"))
             if operation == "finish":
                 self.clear()
                 return {"state": "finished"}
+            if operation == "confirm_chat":
+                if handoff.active:
+                    return {"state": "shared"}
+                turn = self.current_chat_turn(handoff)
+                if turn is None:
+                    return {"state": "no_chat_turn"}
+                turn.confirmed = True
+                return {"state": "confirmed"}
             if operation == "wait":
                 seconds = body.get("timeout", 60)
                 if type(seconds) is not int or not 1 <= seconds <= 75:
@@ -263,7 +300,7 @@ class BrowserHandler(Handler):
 
 
 class AgentHandler(Handler):
-    operations = frozenset(("request", "wait", "action", "finish"))
+    operations = frozenset(("request", "confirm_chat", "wait", "action", "finish"))
 
     def dispatch(self, operation, body):
         return self.server.relay.agent(operation, body)

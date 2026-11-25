@@ -3,14 +3,28 @@ import Testing
 @testable import RiptideCore
 
 struct SafariChatHandoffTests {
-    @Test func onlyExplicitFirstPersonConfirmationsApproveTheTab() {
-        for message in ["I've signed in.", "I’ve signed in!", "  I'M LOGGED IN  ", "I have signed in"] {
-            #expect(SafariChatHandoff.isConfirmation(message), Comment(rawValue: message))
+    @Test func confirmationMustMatchThePendingRequestAndCurrentTurnToken() throws {
+        let decoder = JSONDecoder()
+        let token = UUID()
+        func request(id: String = "request-id", path: String = "login", origin: String = "https://example.com",
+                     active: Bool = false, confirmation: UUID? = nil) throws -> SafariChatHandoff.Request {
+            var json: [String: Any] = ["id": id, "url": "\(origin)/\(path)", "origin": origin, "active": active]
+            json["chat_confirmation"] = confirmation?.uuidString
+            return try decoder.decode(SafariChatHandoff.Request.self, from: JSONSerialization.data(withJSONObject: json))
         }
-        for message in ["Have I signed in?", "I’ve signed in?", "I haven’t signed in", "When I’ve signed in",
-                        "Hermes says I've signed in", "Please sign in", "I’ve signed in on another tab"] {
-            #expect(!SafariChatHandoff.isConfirmation(message), Comment(rawValue: message))
-        }
+        let now = Date(timeIntervalSince1970: 1_000)
+        var handoff = SafariChatHandoff(request: try request(), agentID: UUID(), chatID: "chat", now: now)
+        let confirmed = try request(confirmation: token)
+        #expect(handoff.acceptsConfirmation(confirmed, token: token, now: now))
+        #expect(!handoff.acceptsConfirmation(confirmed, token: UUID(), now: now))
+        #expect(try !handoff.acceptsConfirmation(request(), token: token, now: now))
+        #expect(try !handoff.acceptsConfirmation(request(id: "other", confirmation: token), token: token, now: now))
+        #expect(try !handoff.acceptsConfirmation(request(path: "other", confirmation: token), token: token, now: now))
+        #expect(try !handoff.acceptsConfirmation(request(origin: "https://other.example", confirmation: token), token: token, now: now))
+        #expect(try !handoff.acceptsConfirmation(request(active: true, confirmation: token), token: token, now: now))
+        #expect(!handoff.acceptsConfirmation(confirmed, token: token, now: now.addingTimeInterval(300)))
+        handoff.approve(now: now)
+        #expect(!handoff.acceptsConfirmation(confirmed, token: token, now: now))
     }
 
     @Test func approvalUsesSeparateOriginBoundTokensAndPreservesTheSiteFragment() throws {

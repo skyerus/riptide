@@ -344,12 +344,18 @@ public final class AgentChatModel {
         }
     }
 
-    public func submit(_ rawText: String) {
+    public func submit(_ rawText: String, beforePrompt: (@MainActor () async -> Void)? = nil) {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         let sessionID = selectedID
         guard let client = preparePrompt(text, for: sessionID) else { return }
         Task {
             defer { finishPrompt(sessionID, from: client) }
+            await beforePrompt?()
+            guard self.client === client else { return }
+            if chats[sessionID]?.stopping == true {
+                chats[sessionID]?.notice = "Reply stopped."
+                return
+            }
             do {
                 let reason = try await client.prompt(text, sessionID: sessionID)
                 chats[sessionID]?.transcript.acknowledgePrompt()
