@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ChatComposer: View {
     let model: AgentChatModel
+    let chatID: String
     @Binding var draft: String
     @Binding var modelPickerVisible: Bool
     let transcribe: DictationTranscriber?
@@ -17,7 +18,7 @@ struct ChatComposer: View {
             focused: editorFocused,
             showsOptions: model.selected.context != nil || model.selected.hasConfigChoices
                 || model.selected.modelName != nil,
-            chatID: model.selectedID,
+            chatID: chatID,
             canDictate: model.selected.loaded,
             draft: $draft,
             transcribe: transcribe,
@@ -25,7 +26,9 @@ struct ChatComposer: View {
                 editorFocused = false
                 modelPickerVisible = false
                 showContext = false
-            }
+            },
+            canSubmit: canSubmit,
+            submitDraft: submitDraft
         ) {
             TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
@@ -83,19 +86,28 @@ struct ChatComposer: View {
         }
     }
 
+    private var canSubmit: Bool {
+        model.selectedID == chatID && model.selected.loaded && !model.selected.configuring && !model.selected.working
+    }
+
+    private func submitDraft() {
+        guard canSubmit, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        model.submit(draft)
+        draft = ""
+        editorFocused = false
+        didSend()
+    }
+
     private var actionButton: some View {
         let working = model.selected.working
-        let disabled = working ? model.selected.stopping : !model.selected.loaded || model.selected.configuring
+        let disabled = working ? model.selected.stopping : !canSubmit
             || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return ComposerAction(working ? "Stop reply" : "Send", symbol: working ? "stop.fill" : "arrow.up",
                               disabled: disabled) {
             if working {
                 Task { await model.stop() }
             } else {
-                model.submit(draft)
-                draft = ""
-                editorFocused = false
-                didSend()
+                submitDraft()
             }
         }
         .accessibilityIdentifier(working ? "stop-reply" : "send-message")

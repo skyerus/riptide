@@ -197,7 +197,8 @@ struct ChatScreen: View {
     }
 
     private var chat: some View {
-        ZStack {
+        let chatKey = self.chatKey
+        return ZStack {
             transcript.id(model.selectedID)
                 .opacity(awaitingHistory ? 0 : 1)
                 .accessibilityHidden(awaitingHistory || pickerIsOpen)
@@ -211,6 +212,7 @@ struct ChatScreen: View {
             if !resolvingInitialChat {
                 ChatComposer(
                     model: model,
+                    chatID: chatKey.chat,
                     draft: Binding(
                         get: { workspace.drafts[chatKey] },
                         set: { workspace.drafts[chatKey] = $0 }

@@ -12,6 +12,8 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
     @Binding var draft: String
     let transcribe: DictationTranscriber?
     let dismissKeyboard: () -> Void
+    let canSubmit: Bool
+    let submitDraft: () -> Void
     @ViewBuilder let field: () -> Field
     @ViewBuilder let options: () -> Options
     @ViewBuilder let actions: () -> Actions
@@ -32,10 +34,16 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
             if dictation.active {
                 control("Cancel dictation", symbol: "xmark", identifier: "dictation-cancel", action: dictation.cancel)
                 if dictation.canFinish, let transcribe {
-                    ComposerAction("Finish dictating", symbol: "checkmark", disabled: false) {
+                    control("Stop dictation", symbol: "stop.fill", identifier: "dictation-stop") {
                         dictation.finish(transcribe: transcribe, insert: insert)
                     }
-                    .accessibilityIdentifier("dictation-finish")
+                    ComposerAction("Send", symbol: "arrow.up", disabled: !canSubmit) {
+                        dictation.finish(transcribe: transcribe) { transcript in
+                            insert(transcript)
+                            submitDraft()
+                        }
+                    }
+                    .accessibilityIdentifier("dictation-send")
                 }
             } else {
                 if transcribe != nil {
@@ -117,7 +125,7 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
                          action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: symbol == "stop.fill" ? 12 : 16, weight: .medium))
                 .foregroundStyle(ChatTheme.muted)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())

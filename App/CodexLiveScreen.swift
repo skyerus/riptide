@@ -121,7 +121,9 @@ struct CodexLiveScreen: View {
             focused: editorFocused, showsOptions: false, chatID: turn?.turnID,
             canDictate: active && !steering, draft: $draft,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
-            dismissKeyboard: { editorFocused = false }
+            dismissKeyboard: { editorFocused = false },
+            canSubmit: active && !steering,
+            submitDraft: submitDraft
         ) {
             TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
@@ -130,10 +132,7 @@ struct CodexLiveScreen: View {
         } options: {
             EmptyView()
         } actions: {
-            ComposerAction("Steer", symbol: "arrow.up", disabled: disabled) {
-                editorFocused = false
-                Task { await steer() }
-            }
+            ComposerAction("Steer", symbol: "arrow.up", disabled: disabled, action: submitDraft)
             .accessibilityIdentifier("codex-steer-send")
         }
     }
@@ -192,6 +191,11 @@ struct CodexLiveScreen: View {
         } else {
             replies.append(Reply(id: id, text: text, finished: !appending))
         }
+    }
+
+    private func submitDraft() {
+        editorFocused = false
+        Task { await steer() }
     }
 
     private func steer() async {

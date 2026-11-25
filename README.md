@@ -122,7 +122,7 @@ The opt-in `CodexLiveUITests` flow expects a private directory containing the to
 
 ## Composer dictation
 
-Tap the microphone in a Codex or Hermes composer, speak, then tap the checkmark to transcribe. The text is appended to your editable draft. Tap Send when it is ready. Recording stops after two minutes. The paired host forwards confirmed recordings to ChatGPT transcription using its existing Codex sign-in.
+Tap the microphone in a Codex or Hermes composer and speak. Tap **Stop Dictation** to add the transcript to your editable draft, or tap **Send** to transcribe and send it in one step. Recording stops after two minutes. The paired host forwards confirmed recordings to ChatGPT transcription using its existing Codex sign-in.
 
 Enable the dictation relay on the host with Python 3.11+, curl, and the signed-in Codex account’s absolute, mode-0600 `auth.json` path. Sign in using ChatGPT. For Codex hosts, use the same sign-in as App Server. If Codex uses the OS credential store, select file storage with `cli_auth_credentials_store = "file"` and sign in there first. Run the relay as the OS user who owns that sign-in.
 
