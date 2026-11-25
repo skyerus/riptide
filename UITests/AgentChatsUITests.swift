@@ -196,7 +196,7 @@ final class AgentChatsUITests: XCTestCase {
         let receipt = app.staticTexts["message-receipt"]
         let tool = app.descendants(matching: .any).matching(identifier: "chat-tool-call").firstMatch
         let activity = app.buttons["live-turn-activity"]
-        XCTAssertEqual(receipt.label, "Delivered")
+        XCTAssertEqual(receipt.label, "Seen")
         XCTAssertEqual(app.staticTexts["turn-working"].label, "Working")
         XCTAssertEqual(activity.label, "Review context")
         XCTAssertTrue(app.buttons["stop-reply"].exists)

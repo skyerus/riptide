@@ -67,6 +67,16 @@ public struct Transcript: Equatable, Sendable {
         entries[index].receipt = .delivered
     }
 
+    fileprivate var hasUnseenPrompt: Bool {
+        guard let latestPromptIndex else { return false }
+        return entries[latestPromptIndex].receipt != .seen
+    }
+
+    fileprivate mutating func markPromptSeen() {
+        guard let latestPromptIndex else { return }
+        entries[latestPromptIndex].receipt = .seen
+    }
+
     fileprivate mutating func finishPrompt() {
         activePromptIndex = nil
     }
@@ -88,7 +98,7 @@ public struct Transcript: Equatable, Sendable {
             }
             if role == .assistant, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                let latestPromptIndex, messageIndex > latestPromptIndex {
-                entries[latestPromptIndex].receipt = .seen
+                markPromptSeen()
             }
         case .tool(_, let activity):
             let toolIndex: Int
@@ -102,8 +112,12 @@ public struct Transcript: Equatable, Sendable {
                 toolIndices[activity.id] = toolIndex
                 entries.append(ChatEntry(content: .tool(activity)))
             }
-            if let activePromptIndex, toolIndex > activePromptIndex { acknowledgePrompt() }
-        case .permission, .permissionClosed, .configOptions, .context, .plan:
+            if let latestPromptIndex, toolIndex > latestPromptIndex { markPromptSeen() }
+        case .agentActivity, .permission:
+            markPromptSeen()
+        case .plan(_, let steps):
+            if !steps.isEmpty { markPromptSeen() }
+        case .permissionClosed, .configOptions, .context:
             break
         }
     }
@@ -138,6 +152,7 @@ public final class AgentChatModel {
         public fileprivate(set) var configError: String?
         public fileprivate(set) var loading = false
         public fileprivate(set) var loaded = false
+        public fileprivate(set) var connectionLost = false
         public fileprivate(set) var working = false
         public fileprivate(set) var stopping = false
         public fileprivate(set) var error: String?
@@ -153,17 +168,17 @@ public final class AgentChatModel {
             switch event {
             case .message(_, _, .user, _) where working:
                 transcript.acknowledgePrompt()
-            case .message, .tool:
+            case .message, .tool, .agentActivity:
                 transcript.apply(event)
             case .plan(_, let steps):
-                transcript.acknowledgePrompt()
+                transcript.apply(event)
                 plan = steps
             case .configOptions(_, let options):
                 configOptions = options
             case .context(_, let usage):
                 context = usage
             case .permission(let request):
-                transcript.acknowledgePrompt()
+                transcript.apply(event)
                 permissions.append(request)
             case .permissionClosed(_, let id):
                 permissions.removeAll { $0.id == id }
@@ -233,17 +248,22 @@ public final class AgentChatModel {
     }
 
     private func load(_ sessionID: String) async {
+        guard chats[sessionID]?.loaded != true, chats[sessionID]?.loading != true else { return }
         if client == nil { client = makeClient?() }
-        guard let client, chats[sessionID]?.loaded != true, chats[sessionID]?.loading != true else { return }
+        guard let client else { return }
         observe(client)
         chats[sessionID, default: ChatState()].loading = true
         chats[sessionID]?.error = nil
-        defer { chats[sessionID]?.loading = false }
+        defer {
+            if self.client === client { chats[sessionID]?.loading = false }
+        }
         do {
             let cwd = sessions.first { $0.id == sessionID }?.cwd ?? target.cwd
             let opened = try await client.load(sessionID: sessionID, cwd: cwd)
+            guard self.client === client else { return }
             markLoaded(opened)
         } catch {
+            guard self.client === client else { return }
             if !Task.isCancelled { chats[sessionID]?.error = error.localizedDescription }
             if makeClient != nil, !chats.values.contains(where: \.loaded),
                !chats.contains(where: { $0.key != sessionID && $0.value.loading }) {
@@ -358,9 +378,11 @@ public final class AgentChatModel {
             }
             do {
                 let reason = try await client.prompt(text, sessionID: sessionID)
+                guard self.client === client else { return }
                 chats[sessionID]?.transcript.acknowledgePrompt()
                 switch reason {
                 case "end_turn":
+                    chats[sessionID]?.transcript.markPromptSeen()
                     if chats[sessionID]?.transcript.latestAssistantEntryID != nil {
                         completedReplies[sessionID] = .now
                     }
@@ -368,7 +390,9 @@ public final class AgentChatModel {
                 case "max_tokens": chats[sessionID]?.notice = "The agent reached its reply limit."
                 default: chats[sessionID]?.notice = "The agent ended this turn early."
                 }
-            } catch { chats[sessionID]?.error = error.localizedDescription }
+            } catch {
+                if self.client === client { chats[sessionID]?.error = error.localizedDescription }
+            }
         }
     }
 
@@ -449,6 +473,7 @@ public final class AgentChatModel {
         observer = Task { [weak self] in
             for await event in client.events {
                 guard let self else { break }
+                if case .agentActivity = event, chats[event.sessionID]?.transcript.hasUnseenPrompt != true { continue }
                 chats[event.sessionID, default: ChatState()].receive(event)
                 switch event {
                 case .permission:
@@ -466,12 +491,20 @@ public final class AgentChatModel {
             self.newlyCreatedOpenClawKeys.removeAll()
             self.observer = nil
             for id in Array(self.chats.keys) {
-                self.chats[id]?.transcript.finishPrompt()
-                self.chats[id]?.loaded = false
-                self.chats[id]?.working = false
-                self.chats[id]?.stopping = false
-                self.chats[id]?.permissions = []
-                self.chats[id]?.error = "Connection closed. Reconnect to reopen this chat."
+                guard var chat = self.chats[id] else { continue }
+                if chat.loaded {
+                    chat.connectionLost = true
+                    chat.error = "Connection closed. Reconnect to reopen this chat."
+                } else if chat.loading && chat.error == nil {
+                    chat.error = ACPError.disconnected.localizedDescription
+                }
+                chat.transcript.finishPrompt()
+                chat.loading = false
+                chat.loaded = false
+                chat.working = false
+                chat.stopping = false
+                chat.permissions = []
+                self.chats[id] = chat
             }
         }
     }
@@ -483,6 +516,7 @@ public final class AgentChatModel {
         if let options = opened.configOptions { chat.configOptions = options }
         chat.reportedModelName = opened.reportedModelName
         chat.loaded = true
+        chat.connectionLost = false
         chats[opened.id] = chat
     }
 }

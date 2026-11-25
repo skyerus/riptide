@@ -77,6 +77,41 @@ struct ChatTests {
         #expect(reply.contains("| Area | Status |\n| --- | --- |"))
     }
 
+    @Test func reopeningAfterDisconnectReplaysTheReplyWithoutSendingThePromptAgain() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let file = directory.appending(path: "fixture.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let target = self.target
+        let transport = try FixtureTransport(target: target, file: file, pace: .milliseconds(40))
+        let first = ACPClient(transport: transport)
+        let model = AgentChatModel(target: target, connect: {
+            guard FileManager.default.fileExists(atPath: file.path),
+                  let replay = try? FixtureTransport(target: target, file: file) else { return first }
+            return ACPClient(transport: replay)
+        })
+
+        await model.showMain()
+        model.submit("An acknowledged message")
+        try await waitUntil { model.selected.transcript.entries.contains { $0.receipt == .seen } }
+        await first.close()
+        try await waitUntil { model.selected.connectionLost }
+        #expect(!model.selected.loaded)
+        #expect(!model.selected.working)
+        #expect(model.selected.transcript.entries.contains { $0.receipt == .seen })
+
+        try await waitUntil {
+            (try? String(contentsOf: file, encoding: .utf8))?
+                .contains("You can come back to this conversation whenever you need it.") == true
+        }
+        await model.open(target.mainSessionID)
+        #expect(model.selected.loaded)
+        #expect(!model.selected.connectionLost)
+        #expect(model.selected.error == nil)
+        let sent = model.selected.transcript.entries.filter { $0.content == .message(.user, "An acknowledged message") }
+        #expect(sent.map(\.receipt) == [.seen])
+        #expect(model.selected.transcript.latestAssistantEntryID != nil)
+    }
+
     @Test func canDenyPermissionAndOnlyUpdatesItsOriginalConversation() async throws {
         let model = try makeModel()
         await model.showMain()
@@ -84,7 +119,7 @@ struct ChatTests {
         try await waitUntil { !model.selected.permissions.isEmpty }
         let approval = try #require(model.selected.permissions.first)
         let liveTranscript = model.selected.transcript
-        #expect(liveTranscript.entries.first(where: { $0.receipt != nil })?.receipt == .delivered)
+        #expect(liveTranscript.entries.first(where: { $0.receipt != nil })?.receipt == .seen)
         #expect(liveTranscript.activeToolCalls.map(\.title) == ["Review context"])
         #expect(liveTranscript.visibleEntries(showCompletedToolCalls: true).count == liveTranscript.entries.count - 1)
 
@@ -112,7 +147,7 @@ struct ChatTests {
         await model.stop()
         try await waitUntil { model.selected.permissions.isEmpty && !model.selected.working }
         #expect(model.selected.notice == "Reply stopped.")
-        #expect(model.selected.transcript.entries.first(where: { $0.receipt != nil })?.receipt == .delivered)
+        #expect(model.selected.transcript.entries.first(where: { $0.receipt != nil })?.receipt == .seen)
 
         model.submit("Try the fixture again")
         try await waitUntil { !model.selected.working && model.selected.transcript.entries.count >= 6 }
@@ -129,6 +164,15 @@ struct ChatTests {
             .message(.assistant, "one two"),
             .tool(ToolActivity(id: "tool", title: "Example", status: "completed"))
         ])
+    }
+
+    @Test func agentActivityMarksTheMessageSeenBeforeAReply() {
+        var transcript = Transcript()
+        transcript.apply(.message(sessionID: "demo", messageID: "prompt", role: .user, text: "Take a look"))
+        #expect(transcript.entries.first?.receipt == .delivered)
+        transcript.apply(.agentActivity(sessionID: "demo"))
+        #expect(transcript.entries.first?.receipt == .seen)
+        #expect(transcript.entries.count == 1)
     }
 
     @Test func composerControlsAreBackendOwnedAndPersistPerChat() async throws {
