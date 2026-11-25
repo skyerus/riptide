@@ -45,7 +45,7 @@ async def fixture(socket):
 
     async def show_live_feedback():
         try:
-            await asyncio.sleep(3)
+            await asyncio.sleep(6)
             steps = [{"step": "Inspect the fixture workspace", "status": "inProgress"},
                      {"step": "Summarize the changes", "status": "pending"}]
             await notify("turn/plan/updated", {"turnId": TURN, "plan": steps})

@@ -356,7 +356,7 @@ struct ChatScreen: View {
                     case .message(.assistant, let text):
                         ChatMarkdown(
                             source: text,
-                            streaming: model.selected.working && !hasVisibleRunningTool &&
+                            streaming: model.selected.working && !transcriptEndsWithRunningTool &&
                                 model.selected.transcript.latestAssistantEntryID == entry.id,
                             openLink: openAgentLink
                         )
@@ -379,9 +379,18 @@ struct ChatScreen: View {
                 if !model.selected.plan.isEmpty {
                     TurnPlanCard(steps: model.selected.plan)
                 }
-                if model.selected.permissions.isEmpty && model.selected.working &&
-                    (!hasVisibleRunningTool || model.selected.stopping) {
-                    TurnPulse(title: workingLabel)
+                if model.selected.working {
+                    let calls = model.selected.transcript.activeToolCalls
+                    let current = calls.last { $0.status == nil || $0.status == "in_progress" || $0.status == "pending" }
+                    LiveTurnActivity(
+                        currentTool: current.map { $0.title ?? "Tool call" },
+                        hasActivity: !calls.isEmpty
+                    ) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(calls, id: \.id) { toolRow($0) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
             .transcriptColumn()
@@ -391,12 +400,7 @@ struct ChatScreen: View {
         .transcriptViewport($viewport, chat: model.selected.loaded ? chatKey : nil, showsJumpToLatest: !pickerIsOpen)
     }
 
-    private var workingLabel: String {
-        if model.selected.stopping { return "Stopping…" }
-        return model.selected.transcript.latestAssistantEntryID != nil ? "Writing reply…" : "Preparing reply…"
-    }
-
-    private var hasVisibleRunningTool: Bool {
+    private var transcriptEndsWithRunningTool: Bool {
         guard let entry = model.selected.transcript.entries.last, case .tool(let tool) = entry.content else { return false }
         return tool.status == "in_progress"
     }
