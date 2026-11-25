@@ -18,6 +18,8 @@ struct ChatScreen: View {
     @State private var activeCall: ChatCall?
     @State private var voiceError: String?
     @State private var browserHandoff: BrowserHandoff?
+    @State private var safariApproval = SafariChatApproval()
+    @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(WorkspaceState.self) private var workspace
@@ -135,6 +137,9 @@ struct ChatScreen: View {
                 .presentationDragIndicator(.visible)
                 .presentationBackground(.regularMaterial)
         }
+        .task(id: chatKey) {
+            safariApproval.restore(agentID: voiceRemote?.id, chatID: chatKey.chat)
+        }
         .onChange(of: model.selectedID) {
             showModelPicker = false
             showAdvancedModelPicker = false
@@ -196,6 +201,30 @@ struct ChatScreen: View {
         .onDisappear { workspace.leave(chatKey) }
     }
 
+    private func openAgentLink(_ url: URL) {
+        guard url.scheme?.lowercased() == "https",
+              let profile = voiceRemote, let credential = remoteStore?.bearer(for: profile),
+              let agent = SafariSSHAgent(profile: profile, credential: credential) else {
+            openURL(url)
+            return
+        }
+        let chatID = model.selectedID
+        Task {
+            let launch = await safariApproval.launchURL(for: url, agent: agent, chatID: chatID) {
+                model.selectedID == chatID
+            }
+            guard model.selectedID == chatID else { return }
+            openURL(launch ?? url)
+        }
+    }
+
+    private func approveSafari(_ text: String) -> Bool {
+        guard let resume = safariApproval.approve() else { return false }
+        if !model.selected.working { model.submit(text) }
+        openURL(resume)
+        return true
+    }
+
     private var chat: some View {
         let chatKey = self.chatKey
         return ZStack {
@@ -210,21 +239,34 @@ struct ChatScreen: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: awaitingHistory)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !resolvingInitialChat {
-                ChatComposer(
-                    model: model,
-                    chatID: chatKey.chat,
-                    draft: Binding(
-                        get: { workspace.drafts[chatKey] },
-                        set: { workspace.drafts[chatKey] = $0 }
-                    ),
-                    modelPickerVisible: $showModelPicker,
-                    transcribe: dictationTranscriber,
-                    didSend: {
-                        showModelPicker = false
-                        workspace.rememberReadingOffset(nil, for: chatKey)
-                        viewport.restore(nil)
+                VStack(spacing: 0) {
+                    if let status = safariApproval.status {
+                        Text(status)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 4)
+                            .accessibilityIdentifier("safari-chat-status")
                     }
-                )
+                    ChatComposer(
+                        model: model,
+                        chatID: chatKey.chat,
+                        draft: Binding(
+                            get: { workspace.drafts[chatKey] },
+                            set: { workspace.drafts[chatKey] = $0 }
+                        ),
+                        modelPickerVisible: $showModelPicker,
+                        transcribe: dictationTranscriber,
+                        didSend: {
+                            showModelPicker = false
+                            workspace.rememberReadingOffset(nil, for: chatKey)
+                            viewport.restore(nil)
+                        },
+                        isSafariApproval: { safariApproval.handles($0, agentID: voiceRemote?.id, chatID: chatKey.chat) },
+                        canDictateSafariApproval: safariApproval.pending?.chatID == chatKey.chat,
+                        approveSafari: approveSafari
+                    )
+                }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
             }
         }
@@ -314,7 +356,9 @@ struct ChatScreen: View {
                     case .message(.assistant, let text):
                         ChatMarkdown(
                             source: text,
-                            streaming: model.selected.working && model.selected.transcript.latestAssistantEntryID == entry.id
+                            streaming: model.selected.working && !hasVisibleRunningTool &&
+                                model.selected.transcript.latestAssistantEntryID == entry.id,
+                            openLink: openAgentLink
                         )
                     case .tool(let activity):
                         toolRow(activity)

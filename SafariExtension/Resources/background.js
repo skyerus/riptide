@@ -54,12 +54,44 @@ async function inject(tabID) {
     if (!results.length) throw new Error("Safari needs permission for this tab.");
 }
 
+function chatSite(tab) {
+    if (!originOf(tab?.url)) return null;
+    const host = new URL(tab.url).hostname;
+    return { id: `chat-${host}`, pattern: `https://${host}/*` };
+}
+
+async function chatAccess(tab) {
+    const site = chatSite(tab);
+    if (!site) return null;
+    const scripts = await browser.scripting.getRegisteredContentScripts({ ids: [site.id] });
+    const permitted = await browser.permissions.contains({ origins: [site.pattern] });
+    return permitted && scripts.length ? null : site.pattern;
+}
+
+async function enableChat(tab, pattern) {
+    const site = chatSite(tab);
+    if (site?.pattern !== pattern || !await browser.permissions.contains({ origins: [pattern] })) {
+        throw new Error("Allow Riptide access to this site to enable chat handoff.");
+    }
+    const scripts = await browser.scripting.getRegisteredContentScripts({ ids: [site.id] });
+    if (!scripts.length) {
+        await browser.scripting.registerContentScripts([{
+            id: site.id, matches: [pattern], js: ["chat-handoff.js"], runAt: "document_start",
+            persistAcrossSessions: true
+        }]);
+    }
+    await browser.scripting.executeScript({ target: { tabId: tab.id }, files: ["chat-handoff.js"] });
+    return {};
+}
+
 async function runPopup(message) {
     const share = await sharedTab();
     if (message.type === "release" && share) {
         await release(share);
         return {};
     }
+
+    if (message.type === "enable-chat") return enableChat(await currentTab(), message.pattern);
 
     const { agents } = await relay(undefined, "agents");
     const { selectedAgent } = await browser.storage.local.get("selectedAgent");
@@ -92,7 +124,8 @@ async function runPopup(message) {
 
     if (message.type === "status") {
         const sharing = !!share && handoff?.id === share.id;
-        return { agents, agentID, handoff, busy, matchingTab, sharing };
+        const chatPattern = sharing ? null : await chatAccess(tab).catch(() => null);
+        return { agents, agentID, handoff, busy, matchingTab, sharing, chatPattern };
     }
     if (!handoff || handoff.active || handoff.id !== message.id) {
         throw new Error("This request has changed. Check for a new handoff.");
@@ -105,25 +138,69 @@ async function runPopup(message) {
         if (!matchingTab || !Number.isInteger(tab?.id)) {
             throw new Error("Switch to the site requested by your agent before handing back.");
         }
-        const probe = await browser.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: () => location.origin
-        });
-        if (probe.length !== 1 || probe[0].result !== handoff.origin) {
-            throw new Error("Allow Riptide access to this Safari tab and try again.");
-        }
-        const nextShare = { id: handoff.id, origin: handoff.origin, tabID: tab.id, agentID };
-        await relay(agentID, "grant", { id: nextShare.id, origin: nextShare.origin });
-        try {
-            await browser.storage.session.set({ share: nextShare });
-            await inject(tab.id);
-        } catch {
-            await release(nextShare);
-            throw new Error("Safari couldn’t start sharing. Ask your agent for a fresh handoff.");
-        }
+        await grantTab({ id: handoff.id, origin: handoff.origin, tabID: tab.id, agentID });
         return {};
     }
     throw new Error("Unknown Riptide action.");
+}
+
+async function grantTab(share) {
+    const probe = await browser.scripting.executeScript({
+        target: { tabId: share.tabID },
+        func: () => location.origin
+    });
+    if (probe.length !== 1 || probe[0].result !== share.origin) {
+        throw new Error("Allow Riptide access to this Safari tab and try again.");
+    }
+    await relay(share.agentID, "grant", { id: share.id, origin: share.origin });
+    try {
+        await browser.storage.session.set({ share });
+        await inject(share.tabID);
+    } catch (error) {
+        await release(share);
+        throw error;
+    }
+}
+
+let pendingChatMessage = Promise.resolve();
+
+function trackChatTab(message, sender) {
+    const next = pendingChatMessage.then(() => handleChatTab(message, sender));
+    pendingChatMessage = next.catch(() => {});
+    return next;
+}
+
+async function handleChatTab(message, sender) {
+    const tabID = sender.tab?.id;
+    const origin = originOf(sender.url);
+    if (sender.frameId !== 0 || !Number.isInteger(tabID) || !origin) return {};
+    const { token } = message;
+    if (typeof token !== "string" || !/^[a-f0-9-]{36}$/i.test(token)) return {};
+
+    const context = await relay(undefined, "chat-context", { token, origin });
+    const { chatTab } = await browser.storage.session.get("chatTab");
+    if (context.purpose === "open") {
+        // A second tab with the same launch URL cannot replace the original tab.
+        if (chatTab?.openToken === context.openToken && chatTab.tabID !== tabID) return {};
+        await browser.storage.session.set({ chatTab: { openToken: context.openToken, tabID } });
+        await relay(undefined, "chat-bound", { token, origin });
+        return {};
+    }
+    if (context.openToken !== chatTab?.openToken || context.purpose !== "resume") return {};
+    const share = await sharedTab();
+    if (share) return {};
+
+    const state = await relay(context.agentID, "state");
+    if (state.handoff?.id !== context.id || state.handoff.active) return {};
+    const original = await browser.tabs.get(chatTab.tabID);
+    if (originOf(original.url) !== origin) {
+        throw new Error("Return to the original sign-in tab at the requested website.");
+    }
+    await browser.tabs.update(original.id, { active: true });
+    await grantTab({ id: context.id, origin, tabID: original.id, agentID: context.agentID });
+    await browser.storage.session.remove("chatTab");
+    if (original.id !== tabID) await browser.tabs.remove(tabID).catch(() => {});
+    return {};
 }
 
 async function tick(message, sender) {
@@ -150,8 +227,9 @@ async function tick(message, sender) {
 
 browser.runtime.onMessage.addListener((message, sender, respond) => {
     const isPopup = sender.url === browser.runtime.getURL("popup.html");
-    const popupActions = ["status", "select", "open", "grant", "release"];
+    const popupActions = ["status", "select", "open", "grant", "release", "enable-chat"];
     const action = message?.type === "tick" ? tick(message, sender)
+        : message?.type === "chat-tab" ? trackChatTab(message, sender)
         : isPopup && popupActions.includes(message?.type) ? runPopup(message) : null;
     if (!action) return false;
     action.then(result => respond(result), error => respond({ error: error.message, status: error.status }));
@@ -161,9 +239,14 @@ browser.runtime.onMessage.addListener((message, sender, respond) => {
 browser.tabs.onUpdated.addListener((tabID, update, tab) => {
     if (!update.url && update.status !== "complete") return;
     void (async () => {
+        const url = update.url ?? tab.url;
+        const marker = typeof url === "string" && /#riptide-handoff=([a-f0-9-]{36})&/i.exec(url);
+        if (marker) {
+            await trackChatTab({ token: marker[1] }, { tab: { id: tabID }, frameId: 0, url });
+        }
         const share = await sharedTab();
         if (share?.tabID !== tabID) return;
-        const origin = originOf(update.url ?? tab.url);
+        const origin = originOf(url);
         if (origin && origin !== share.origin) {
             await release(share);
         } else if (update.status === "complete") {
@@ -174,6 +257,8 @@ browser.tabs.onUpdated.addListener((tabID, update, tab) => {
 
 browser.tabs.onRemoved.addListener(tabID => {
     void (async () => {
+        const { chatTab } = await browser.storage.session.get("chatTab");
+        if (chatTab?.tabID === tabID) await browser.storage.session.remove("chatTab");
         const share = await sharedTab();
         if (share?.tabID !== tabID) return;
         await release(share);

@@ -12,6 +12,7 @@
     "512": "riptide-icon-512.png"
   },
   "permissions": ["activeTab", "nativeMessaging", "scripting", "storage"],
+  "optional_host_permissions": ["https://*/*"],
   "background": {
     "scripts": ["background.js"],
     "persistent": false

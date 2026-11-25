@@ -5,9 +5,13 @@ import SwiftUI
 struct ChatMarkdown: View {
     let source: String
     var streaming = false
+    var openLink: ((URL) -> Void)? = nil
 
     var body: some View {
-        let stream = MarkdownStreamSource(source, streaming: streaming)
+        let split = MarkdownStreamSource(source, streaming: streaming)
+        let stream = hasCompleteLink(in: split.pending)
+            ? MarkdownStreamSource(source, streaming: false)
+            : split
         VStack(alignment: .leading, spacing: 4) {
             if !stream.committed.isEmpty {
                 FormattedMarkdown(source: stream.committed, streaming: streaming).equatable()
@@ -20,7 +24,19 @@ struct ChatMarkdown: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .lineSpacing(3)
         .textSelection(.enabled)
-        .environment(\.openURL, ChatLinks.openURL)
+        .environment(\.openURL, openLink.map { openLink in
+            OpenURLAction { url in
+                guard ChatLinks.isWebLink(url) else { return .discarded }
+                openLink(url)
+                return .handled
+            }
+        } ?? ChatLinks.openURL)
+    }
+
+    private func hasCompleteLink(in tail: String) -> Bool {
+        guard openLink != nil, tail.last == ")" || tail.last == ">",
+              let paragraph = Array(Document(parsing: source).children).last as? Paragraph else { return false }
+        return paragraph.children.contains { $0 is Markdown.Link }
     }
 }
 
@@ -208,7 +224,7 @@ enum ChatLinks {
         return result
     }
 
-    private static func isWebLink(_ url: URL) -> Bool {
+    static func isWebLink(_ url: URL) -> Bool {
         ["http", "https"].contains(url.scheme?.lowercased() ?? "")
     }
 }
