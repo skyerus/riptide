@@ -63,7 +63,8 @@ final class SSHACPTransport: ACPTransport {
     let incoming: AsyncThrowingStream<Data, any Error>
     private let startup: Task<(parent: any Channel, session: any Channel), any Error>
 
-    init(host: String, port: Int, username: String, identity: SSHDeviceIdentity, pin: SSHHostPin) {
+    init(host: String, port: Int, username: String, identity: SSHDeviceIdentity, pin: SSHHostPin,
+         command: String = "riptide-acp") {
         let (stream, output) = AsyncThrowingStream<Data, any Error>.makeStream(bufferingPolicy: .bufferingOldest(256))
         incoming = stream
         startup = Task {
@@ -99,7 +100,9 @@ final class SSHACPTransport: ACPTransport {
                                 return channel.eventLoop.makeFailedFuture(SSHACPError.channelRejected)
                             }
                             return channel.eventLoop.makeCompletedFuture {
-                                try channel.pipeline.syncOperations.addHandler(ACPExecChannel(accepted: accepted, output: output))
+                                try channel.pipeline.syncOperations.addHandler(ACPExecChannel(
+                                    accepted: accepted, output: output, command: command
+                                ))
                             }
                         }
                         return opened.futureResult
@@ -188,15 +191,17 @@ private final class ACPExecChannel: ChannelInboundHandler {
     static let maximumFrameBytes = 2 * 1024 * 1024
     private var accepted: EventLoopPromise<Void>?
     private let output: AsyncThrowingStream<Data, any Error>.Continuation
+    private let command: String
     private var partialFrame = ByteBuffer()
 
-    init(accepted: EventLoopPromise<Void>, output: AsyncThrowingStream<Data, any Error>.Continuation) {
+    init(accepted: EventLoopPromise<Void>, output: AsyncThrowingStream<Data, any Error>.Continuation, command: String) {
         self.accepted = accepted
         self.output = output
+        self.command = command
     }
 
     func channelActive(context: ChannelHandlerContext) {
-        context.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: "riptide-acp", wantReply: true),
+        context.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true),
                                          promise: nil)
         context.fireChannelActive()
     }

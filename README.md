@@ -76,7 +76,17 @@ Copy the public key from Riptide and authorize it for a fixed command in the age
 restrict,command="/usr/bin/python3 /usr/local/libexec/riptide/ssh_acp.py --workspace /srv/agent-workspace -- /home/agent/.local/bin/hermes-acp" ssh-ed25519 PUBLIC_KEY riptide-device
 ```
 
-Use absolute paths for the regular agent account, workspace, and native ACP launcher. This key cannot start a shell, request a terminal, or forward ports. The launcher only admits Riptide’s chat methods: it does not accept client-supplied MCP servers, alternate workspaces, or approval-policy changes. It does not sandbox the agent itself: prompts still reach the regular agent with its configured tools and approvals. Use a trusted device and the least-privilege agent account available. Removing the key on the host revokes access; the private key never leaves the device’s Keychain. SSH pairing is for ACP chat only; voice keeps its separate native endpoint.
+Use absolute paths for the regular agent account, workspace, and native ACP launcher. The key disallows SSH shell access, terminal allocation, and port forwarding. The launcher limits chat to the paired workspace and refuses client-supplied MCP servers and approval-policy changes. Use a trusted device and the least-privilege agent account available, since prompts reach the real agent with its configured tools. Removing the key on the host revokes access. The private key stays in the device’s Keychain. Voice keeps its separate native endpoint.
+
+### Hermes browser handoff over SSH
+
+Configure native [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) in the Hermes profile that owns the chat. Install its listed Linux packages, set `browser.headed` and `bot_desktop.auto_start` to `true`, and install the `websockets` Python package for the interpreter in the forced command. Install `Host/hermes_screen.py` beside the updated `Host/ssh_acp.py` at the same trusted path. Add `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` before `--` in the authorized key’s fixed command. Give this option only to devices trusted to control that profile’s native desktop.
+
+In a paired chat, open **Chat actions → Open Hermes browser**, tap **Take over**, and complete the interaction in the remote browser. **Hand back** returns control to Hermes. **Hand back and continue in chat** resumes the requesting chat. If the connection drops while you are typing, reopen the browser, take over again, then hand back when ready. The adapter uses Hermes’s owner-only gateway ticket and its native control lease and display stream. It uses the existing SSH port and the phone’s existing device key. The viewer uses [noVNC 1.7.0](https://github.com/novnc/noVNC/tree/v1.7.0).
+
+Install `Host/hermes-browser-handoff/SKILL.md` under the Hermes profile’s `skills/riptide-browser-handoff/` to teach Hermes to request the handoff in chat. Riptide recognises the skill’s native `clarify` request and answers it only after Hermes confirms handback. These notifications use the active chat connection.
+
+For agent-driven handoffs, use Hermes’s default tool runtime (`model.openai_runtime: auto`) and enable `browser` and `clarify` for ACP, alongside the profile’s existing toolsets. Hermes can use the `openai-codex` subscription provider in that runtime. A separate Hermes profile lets you keep browser work and its login sessions separate from chats using the optional Codex App Server runtime.
 
 ## Local Codex handoff proof
 

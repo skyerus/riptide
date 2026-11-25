@@ -42,6 +42,7 @@ public struct PermissionRequest: Identifiable, Sendable, Equatable {
     public let sessionID: String
     public let title: String
     public let options: [Option]
+    public let toolCallID: String?
 }
 
 public enum ACPEvent: Sendable, Equatable {
@@ -314,7 +315,7 @@ public actor ACPClient {
                             guard let id = option["optionId"]?.string, let name = option["name"]?.string,
                                   let kind = option["kind"]?.string else { return nil }
                             return PermissionRequest.Option(id: id, name: name, kind: kind)
-                        }
+                        }, toolCallID: tool["toolCallId"]?.string
                     )
                     permissions[request.id] = (id, request)
                     emit.yield(.permission(request))

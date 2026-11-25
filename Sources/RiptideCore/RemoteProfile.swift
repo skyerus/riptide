@@ -77,13 +77,24 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
 
     public func makeACPClient(credential: String) -> ACPClient? {
         guard kind != .codex, mainSessionID != nil else { return nil }
-        if let sshHostFingerprint {
-            guard let endpoint = Self.sshEndpoint(address), let pin = SSHHostPin(sshHostFingerprint),
-                  let identity = SSHDeviceIdentity(privateCredential: credential) else { return nil }
-            return ACPClient(transport: SSHACPTransport(host: endpoint.host, port: endpoint.port,
-                                                        username: endpoint.username, identity: identity, pin: pin))
+        if sshHostFingerprint != nil {
+            return sshTransport(credential: credential, command: "riptide-acp").map(ACPClient.init(transport:))
         }
         guard let url = Self.secureURL(address), Self.validBearer(credential) else { return nil }
         return ACPClient(transport: RemoteWebSocketTransport(url: url, bearer: credential))
+    }
+
+    public var canOpenHermesScreen: Bool { kind == .hermes && sshHostFingerprint != nil }
+
+    public func makeHermesScreenTransport(credential: String) -> (any JSONMessageTransport)? {
+        guard canOpenHermesScreen else { return nil }
+        return sshTransport(credential: credential, command: "riptide-hermes-screen")
+    }
+
+    private func sshTransport(credential: String, command: String) -> SSHACPTransport? {
+        guard let sshHostFingerprint, let endpoint = Self.sshEndpoint(address), let pin = SSHHostPin(sshHostFingerprint),
+              let identity = SSHDeviceIdentity(privateCredential: credential) else { return nil }
+        return SSHACPTransport(host: endpoint.host, port: endpoint.port, username: endpoint.username,
+                               identity: identity, pin: pin, command: command)
     }
 }
