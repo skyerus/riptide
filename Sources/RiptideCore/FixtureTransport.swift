@@ -45,8 +45,7 @@ public actor FixtureTransport: ACPTransport {
     private struct Turn {
         let id: JSON
         let toolID: String
-        let showsRichContent: Bool
-        let showsLongStream: Bool
+        let response: [String]
         var pairingIndex = 0
         var work: Task<Void, Never>?
     }
@@ -186,9 +185,7 @@ public actor FixtureTransport: ACPTransport {
                     "title": pairingDemo ? "mcp.riptide_pairing.request_agent_pairing" : "Review context",
                     "status": "pending"
                 ], in: sessionID)
-                turns[sessionID] = Turn(id: id, toolID: toolID,
-                    showsRichContent: text.localizedCaseInsensitiveContains("formatting demo"),
-                    showsLongStream: text.localizedCaseInsensitiveContains("streaming demo"))
+                turns[sessionID] = Turn(id: id, toolID: toolID, response: Self.response(to: text))
                 prepare(in: sessionID, id: id, needsApproval: text.localizedCaseInsensitiveContains("approval"))
             default:
                 emit(.failure(id, code: -32601, message: "Unsupported fixture method."))
@@ -265,19 +262,25 @@ public actor FixtureTransport: ACPTransport {
         catch { fail(sessionID); return }
         turns[sessionID]?.work = Task { [weak self, pace] in
             let messageID = UUID().uuidString
-            let chunks = turn.showsLongStream ? Self.longStreamChunks : turn.showsRichContent ? Self.richContentChunks : [
-                "Here’s a quick rundown of the demo workspace.\n\n",
-                "| Area | Sta",
-                "tus |\n| --- | --- |\n| Main chat | Ready |\n",
-                "| Other chats | Saved separately |\n\n",
-                "You can come back to this conversation whenever you need it."
-            ]
-            for text in chunks {
+            for text in turn.response {
                 do { try await Task.sleep(for: pace) } catch { return }
                 guard await self?.append(text, messageID: messageID, in: sessionID, id: id) == true else { return }
             }
             await self?.complete(sessionID, id: id)
         }
+    }
+
+    private static func response(to text: String) -> [String] {
+        if text.localizedCaseInsensitiveContains("streaming demo") { return longStreamChunks }
+        if text.localizedCaseInsensitiveContains("formatting demo") { return richContentChunks }
+        if text.localizedCaseInsensitiveContains("sources demo") { return sourceChunks }
+        return [
+            "Here’s a quick rundown of the demo workspace.\n\n",
+            "| Area | Sta",
+            "tus |\n| --- | --- |\n| Main chat | Ready |\n",
+            "| Other chats | Saved separately |\n\n",
+            "You can come back to this conversation whenever you need it."
+        ]
     }
 
     private static let richContentChunks = [
@@ -290,6 +293,13 @@ public actor FixtureTransport: ACPTransport {
         "~~~diff\ndiff --git a/App.swift b/App.swift\n--- a/App.swift\n+++ b/App.swift\n",
         "@@ -4,2 +4,2 @@\n let turn = activeTurn\n- reconnect(to: turn)\n+ watch(turn)\n~~~\n\n",
         "Read the [example guide](https://example.com/guide) or visit https://example.org.\n\nFormatting demo complete."
+    ]
+
+    private static let sourceChunks = [
+        "**One OAuth client is enough.** Each Gmail account grants access separately.[2][3]\n\n",
+        "Enable the Gmail API for your Google Cloud project before requesting access.[7]\n\n",
+        "**Sources:** [2] [Consent screen setup](https://accounts.example.com/consent) · ",
+        "[3] [Test user settings](https://docs.example.org/test-users) · [7] [Gmail API overview](https://developers.example.net/gmail)"
     ]
 
     private static let longStreamChunks = (1...27).map { index in
