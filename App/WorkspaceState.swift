@@ -4,13 +4,8 @@ import SwiftUI
 
 enum WorkspaceTab: Hashable {
     case inbox
+    case agents
     case groups
-    case agent(String)
-
-    var agentID: String? {
-        if case .agent(let id) = self { return id }
-        return nil
-    }
 }
 
 struct WorkspaceRoute: Hashable {
@@ -18,6 +13,7 @@ struct WorkspaceRoute: Hashable {
     var chat: String?
     var startsNewChat = false
     var hermesGroup: String?
+    var showsAgentWorkspace = false
 }
 
 struct WorkspaceAgent: Identifiable, Equatable {
@@ -60,6 +56,7 @@ final class WorkspaceState {
     let localCodex: CodexLocalEndpoint?
     let remotes: RemoteStore
     let drafts = WorkspaceDrafts()
+    let avatars: AgentAvatarStore
     private let defaults: UserDefaults
     @ObservationIgnored private var hermesGroupsClients: [String: HermesGroupsClient] = [:]
     @ObservationIgnored private var hermesGroupSessions: [WorkspaceChatID: HermesGroupSession] = [:]
@@ -103,11 +100,13 @@ final class WorkspaceState {
     private(set) var sceneIsActive = true
     private(set) var observedApprovals = Set<WorkspaceAttention.ID>()
 
-    init(roster: [AgentChatModel], localCodex: CodexLocalEndpoint?, remotes: RemoteStore, defaults: UserDefaults) {
+    init(roster: [AgentChatModel], localCodex: CodexLocalEndpoint?, remotes: RemoteStore,
+         defaults: UserDefaults, avatarNamespace: UUID?) {
         self.roster = roster
         self.localCodex = localCodex
         self.remotes = remotes
         self.defaults = defaults
+        avatars = AgentAvatarStore(namespace: avatarNamespace)
         recent = (try? JSONDecoder().decode([WorkspaceVisit].self,
                                           from: defaults.data(forKey: "workspace.recent") ?? Data())) ?? []
         savedAttention = (try? JSONDecoder().decode([WorkspaceAttention].self,
@@ -321,6 +320,12 @@ final class WorkspaceState {
         push(WorkspaceRoute(workspace: workspaceID, chat: chat ?? cachedChat))
     }
 
+    func openAgentWorkspace(_ workspaceID: String) {
+        guard agent(workspaceID) != nil else { return }
+        sidebarTab = .agents
+        push(WorkspaceRoute(workspace: workspaceID, showsAgentWorkspace: true))
+    }
+
     var hermesGroupSources: [WorkspaceAgent] { agents.filter { supportsHermesGroups($0.id) } }
 
     func supportsHermesGroups(_ workspaceID: String) -> Bool {
@@ -366,9 +371,14 @@ final class WorkspaceState {
 
     private func push(_ route: WorkspaceRoute) {
         showingSwitcher = false
-        if path != [route] {
+        var destination = [route]
+        if let overview = path.first, overview.showsAgentWorkspace, overview.workspace == route.workspace,
+           !route.showsAgentWorkspace, route.hermesGroup == nil {
+            destination.insert(overview, at: 0)
+        }
+        if path != destination {
             visibleChat = nil
-            path = [route]
+            path = destination
         }
     }
 
@@ -381,12 +391,12 @@ final class WorkspaceState {
     }
 
     func step(from workspaceID: String, by direction: Int) {
-        let list = railAgents(selected: workspaceID)
+        let list = rosterAgents(including: workspaceID)
         guard list.count > 1, let index = list.firstIndex(where: { $0.id == workspaceID }) else { return }
         open(list[(index + direction + list.count) % list.count].id)
     }
 
-    func railAgents(selected: String?) -> [WorkspaceAgent] {
+    func rosterAgents(including selected: String? = nil) -> [WorkspaceAgent] {
         let all = agents
         let paired = all.filter { $0.connector != "Demo" }
         let demos = all.filter { $0.connector == "Demo" }
@@ -405,8 +415,6 @@ final class WorkspaceState {
     func setShowDemoAgents(_ value: Bool) {
         showDemoAgents = value
         defaults.set(value, forKey: "roster.show-demos")
-        if !value, !remotes.profiles.isEmpty, let selected = sidebarTab.agentID,
-           roster.contains(where: { $0.target.id == selected }) { sidebarTab = .inbox }
     }
 
     func visit(_ chat: WorkspaceChatID, title: String) {
@@ -455,9 +463,8 @@ final class WorkspaceState {
         hermesGroupsClients[workspaceID] = nil
         hermesGroupSessions = hermesGroupSessions.filter { $0.key.workspace != workspaceID }
         HermesGroupSession.removeDrafts(workspaceID: workspaceID)
-        if sidebarTab == .agent(workspaceID) || (sidebarTab == .groups && hermesGroupSources.isEmpty) {
-            sidebarTab = .inbox
-        }
+        try? avatars.removePhoto(for: workspaceID)
+        if path.contains(where: { $0.workspace == workspaceID }) { showSidebar(.agents) }
         for key in codexRecency.filter({ $0.workspace == workspaceID }) {
             codexSessions.removeValue(forKey: key)?.detach()
         }

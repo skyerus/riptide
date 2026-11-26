@@ -40,12 +40,14 @@ struct RiptideApp: App {
         preferences = namespace.flatMap { UserDefaults(suiteName: "app.riptide.fixture.\($0.uuidString)") } ?? .standard
         localCodex = CodexLocalEndpoint(environment: environment)
         #else
+        let namespace: UUID? = nil
         roster = []
         preferences = .standard
         localCodex = nil
         #endif
         remotes = RemoteStore(defaults: preferences)
-        let state = WorkspaceState(roster: roster, localCodex: localCodex, remotes: remotes, defaults: preferences)
+        let state = WorkspaceState(roster: roster, localCodex: localCodex, remotes: remotes,
+                                   defaults: preferences, avatarNamespace: namespace)
         #if DEBUG
         if let namespace, showGroupFixture {
             for source in ["hermes", "hermes-studio"] {

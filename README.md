@@ -13,7 +13,7 @@ xcodegen generate
 open Riptide.xcodeproj
 ```
 
-Run the **Riptide** scheme to connect your first agent. To try the local fixtures instead, set `RIPTIDE_DEMO=1` in the Debug scheme's Run environment. The demo opens on Inbox with sample OpenClaw and Hermes agents. Swipe the tabs and pick an agent to see its main chat and saved side chats.
+Run the **Riptide** scheme to connect your first agent. To try the local fixtures instead, set `RIPTIDE_DEMO=1` in the Debug scheme's Run environment. The demo opens on Inbox with sample OpenClaw and Hermes agents. Open **Agents** and tap an avatar to see its main chat and saved side chats.
 
 The composer’s model picker and context ring show session-specific settings and simulated usage from the demo backend. Send any text to see a streamed reply, tool status and a Markdown table; include `approval` to try the permission card. Chats and their settings stay in the app’s local fixture store across relaunches.
 
@@ -25,7 +25,7 @@ The composer’s model picker and context ring show session-specific settings an
 
 ## Switch and triage
 
-- **Inbox** and the connector tabs scroll together in the sidebar. Back returns to the tab you opened from. In a chat, **Switch** (or **⌘K**) finds live, recent and saved chats across workspaces. Search reads a bounded catalog, not message text. Drafts stay in memory when switching; they aren’t written to the host.
+- **Inbox**, **Agents**, and **Groups** are the top-level tabs. Tap an agent to open its workspace, or touch and hold its avatar to choose a profile photo stored on this device. In a chat, **Switch** (or **⌘K**) finds live, recent and saved chats across workspaces. Search reads a bounded catalog, not message text. Drafts stay in memory when switching; they aren’t written to the host.
 - **Inbox** separates approvals and input from missed replies and chats marked **Save to Inbox**. A chat appears once under its highest-priority item; its saved follow-up stays saved after an approval clears. Tap an item to open that exact chat. In a busy Inbox, search by workspace, chat title, or attention reason. Here, a connector is a paired Codex or ACP workspace, not an automatically integrated Slack or email account. The private relay can also supply attention events.
 - Follow streamed text, plans, tool activity, and approval state without leaving the chat. Codex shows App Server commentary, command output, tool updates, changes, and supported structured questions. The transcript follows incoming text, pauses while you hold it, and stays in place if you scroll back. Switch workspaces without losing your place, or tap **Latest** to return to the live edge.
 - Tap Send during a reply to steer it. If the reply has finished, the message starts a new turn. Touch and hold Send and choose **Queue** to wait for the current reply. Tap the queue count to review or remove a follow-up. The queue stays in the running app and pauses on Stop or disconnect. Hermes and OpenClaw hosts need the [ACP steering adapter](Host/compat/acp-steering.md) for live steering.

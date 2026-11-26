@@ -401,7 +401,9 @@ final class WorkspaceUXUITests: XCTestCase {
         let readingY = readingHeading.frame.midY
         XCTAssertNotEqual(heading, "Update 1", "Save a reading position partway through the transcript.")
         app.navigationBars.buttons["BackButton"].tap()
+        app.navigationBars.buttons["BackButton"].tap()
         openMainChat(in: app, agent: "hermes")
+        app.navigationBars.buttons["BackButton"].tap()
         app.navigationBars.buttons["BackButton"].tap()
         openMainChat(in: app)
         XCTAssertTrue(jump.waitForExistence(timeout: 6), "Returning to the chat lost the reader's place.")
@@ -443,52 +445,34 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
-    func testTheSidebarReachesTheLastAgentAndListsItsChats() {
+    func testTheAgentsGridReachesTheLastAgentAndListsItsChats() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launchEnvironment["RIPTIDE_BUSY_WORKSPACE"] = "1"
         app.launch()
-        let strip = app.scrollViews["sidebar-workspace-tabs"]
-        XCTAssertTrue(strip.waitForExistence(timeout: 8))
-        let inbox = strip.buttons["sidebar-inbox"]
-        func inboxIsVisible() -> Bool {
-            inbox.exists && !inbox.frame.isEmpty && strip.frame.contains(inbox.frame)
-        }
-        XCTAssertTrue(inboxIsVisible())
-        let last = app.buttons["sidebar-agent-ops-12"]
-        for _ in 0..<10 {
-            if last.exists && !last.frame.isEmpty && strip.frame.contains(last.frame) { break }
-            strip.swipeLeft()
-        }
-        guard last.exists && !last.frame.isEmpty && strip.frame.contains(last.frame) else {
-            XCTFail("The last agent never scrolled into view.")
-            return
-        }
+        XCTAssertTrue(app.buttons["sidebar-inbox"].isSelected)
+        let grid = app.showAgentGrid()
+        let last = grid.buttons["sidebar-agent-ops-12"]
+        for _ in 0..<8 where !last.isHittable { grid.swipeUp() }
+        XCTAssertTrue(last.isHittable)
         last.tap()
-        XCTAssertEqual(app.staticTexts["sidebar-heading"].label, "Ops 12")
+        XCTAssertEqual(app.buttons["agent-workspace-heading"].label, "Ops 12")
         let main = app.buttons["sidebar-main-chat"]
         let history = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "sidebar-chat-ops-12-sample-")).firstMatch
         XCTAssertTrue(main.waitForExistence(timeout: 8))
         XCTAssertTrue(history.waitForExistence(timeout: 8))
         XCTAssertLessThan(main.frame.minY, history.frame.minY)
         XCTAssertTrue(app.staticTexts["Side chats"].exists)
-        XCTAssertFalse(inboxIsVisible(), "Inbox should scroll offscreen with the connector tabs.")
-        capture(app, as: "Sidebar agent and side chats")
+        capture(app, as: "Agent with main and side chats")
         main.tap()
         let heading = app.buttons["chats-button"]
         XCTAssertTrue(heading.waitForExistence(timeout: 8))
         XCTAssertEqual(heading.value as? String, "Ops 12")
         app.navigationBars.buttons["BackButton"].tap()
-        XCTAssertTrue(last.waitForExistence(timeout: 8))
-        XCTAssertTrue(last.isSelected)
-        for _ in 0..<10 {
-            if inboxIsVisible() { break }
-            strip.swipeRight()
-        }
-        XCTAssertTrue(inboxIsVisible(), "Swiping back should reveal Inbox again.")
-        inbox.tap()
-        XCTAssertTrue(inbox.isSelected)
-        XCTAssertEqual(app.staticTexts["sidebar-heading"].label, "Inbox")
+        XCTAssertTrue(main.waitForExistence(timeout: 8))
+        app.navigationBars.buttons["BackButton"].tap()
+        XCTAssertTrue(grid.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["sidebar-agents"].isSelected)
     }
 
     @MainActor
@@ -746,7 +730,7 @@ final class WorkspaceUXUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_CODEX_WORKSPACE"] = "/riptide-ux-fixture"
         if dictation { app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE"] = "1" }
         app.launch()
-        app.buttons["sidebar-agent-local-codex"].tap()
+        app.openAgentWorkspace("local-codex")
         return app
     }
 
@@ -776,9 +760,8 @@ final class WorkspaceUXUITests: XCTestCase {
         let back = app.navigationBars.buttons["BackButton"]
         _ = try XCTUnwrap(back.waitForExistence(timeout: 8) ? back : nil, "Codex did not show Back.")
         back.tap()
-        let codex = app.buttons["sidebar-agent-local-codex"]
-        XCTAssertTrue(codex.waitForExistence(timeout: 8))
-        XCTAssertTrue(codex.isSelected)
+        if app.buttons["agent-workspace-heading"].exists { back.tap() }
+        XCTAssertTrue(app.buttons["sidebar-agents"].isSelected)
         let inbox = app.buttons["sidebar-inbox"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 12))
         inbox.tap()
@@ -793,12 +776,12 @@ final class WorkspaceUXUITests: XCTestCase {
         composer.tap()
         composer.typeText("Keep this draft")
 
-        XCTAssertFalse(app.scrollViews["sidebar-workspace-tabs"].exists)
+        XCTAssertFalse(app.scrollViews["agent-grid"].exists)
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@", "Inbox")).firstMatch.exists)
         app.navigationBars.buttons["BackButton"].tap()
-        let openClaw = app.buttons["sidebar-agent-openclaw"]
-        XCTAssertTrue(openClaw.waitForExistence(timeout: 8))
-        XCTAssertTrue(openClaw.isSelected)
+        XCTAssertTrue(app.buttons["agent-workspace-heading"].waitForExistence(timeout: 8))
+        XCTAssertEqual(app.buttons["agent-workspace-heading"].label, "OpenClaw")
+        app.navigationBars.buttons["BackButton"].tap()
         openMainChat(in: app, agent: "hermes")
         XCTAssertTrue(app.buttons["chats-button"].waitForExistence(timeout: 8))
         XCTAssertEqual(app.buttons["chats-button"].value as? String, "Hermes")
@@ -831,9 +814,8 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(app.buttons["approval-reject_once"].waitForExistence(timeout: 8))
 
         app.navigationBars.buttons["BackButton"].tap()
-        let hermes = app.buttons["sidebar-agent-hermes"]
-        XCTAssertTrue(hermes.waitForExistence(timeout: 8))
-        hermes.tap()
+        XCTAssertTrue(app.buttons["agent-workspace-heading"].waitForExistence(timeout: 8))
+        app.navigationBars.buttons["BackButton"].tap()
         app.buttons["sidebar-inbox"].tap()
         let approval = app.buttons["inbox-approval-openclaw"]
         XCTAssertTrue(approval.waitForExistence(timeout: 8))
@@ -879,15 +861,13 @@ final class WorkspaceUXUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launch()
-        XCTAssertTrue(app.buttons["sidebar-agent-openclaw"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["sidebar-agents"].waitForExistence(timeout: 8))
         return app
     }
 
     @MainActor
     private func openMainChat(in app: XCUIApplication, agent: String = "openclaw") {
-        let tab = app.buttons["sidebar-agent-\(agent)"]
-        XCTAssertTrue(tab.waitForExistence(timeout: 8))
-        if !tab.isSelected { tab.tap() }
+        app.openAgentWorkspace(agent)
         let main = app.buttons["sidebar-main-chat"]
         XCTAssertTrue(main.waitForExistence(timeout: 8))
         main.tap()
