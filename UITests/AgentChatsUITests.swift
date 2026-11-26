@@ -34,6 +34,58 @@ final class AgentChatsUITests: XCTestCase {
     }
 
     @MainActor
+    func testPairingCardsShowProgressRetryAndKeepDecisionsInTheChat() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_PAIRING_FIXTURE"] = "1"
+        continueAfterFailure = false
+        app.launch()
+        openMainChat(app, agent: "hermes")
+        send("Connect both accountants.", in: app)
+
+        let connect = app.buttons["connect-hermes-agent"]
+        XCTAssertTrue(connect.waitForExistence(timeout: 8))
+        XCTAssertTrue(connect.isHittable)
+        XCTAssertEqual(connect.label, "Connect agent")
+        let pairingTitle = app.descendants(matching: .any).matching(identifier: "agent-pairing-title").firstMatch
+        XCTAssertTrue(pairingTitle.label.contains("Northstar Studio Accountant"))
+        XCTAssertFalse(app.buttons["live-turn-activity"].exists)
+        capture(app, as: "Agent pairing invitation")
+        let actionWidth = connect.frame.width
+        connect.tap()
+
+        let connecting = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Connecting…"), object: connect)
+        XCTAssertEqual(XCTWaiter.wait(for: [connecting], timeout: 2), .completed)
+        XCTAssertFalse(connect.isEnabled)
+        XCTAssertEqual(connect.frame.width, actionWidth, accuracy: 1)
+        capture(app, as: "Agent pairing in progress")
+
+        let error = app.descendants(matching: .any).matching(identifier: "agent-pairing-error").firstMatch
+        XCTAssertTrue(error.waitForExistence(timeout: 6))
+        XCTAssertEqual(connect.label, "Try again")
+        XCTAssertEqual(connect.frame.width, actionWidth, accuracy: 1)
+        capture(app, as: "Agent pairing can retry")
+        connect.tap()
+
+        let connected = app.descendants(matching: .any).matching(identifier: "connected-agent-receipt").firstMatch
+        XCTAssertTrue(connected.waitForExistence(timeout: 6))
+        XCTAssertTrue(connected.label.contains("Northstar Studio Accountant"))
+        let skip = app.buttons["skip-agent-pairing"]
+        XCTAssertTrue(skip.waitForExistence(timeout: 5))
+        XCTAssertTrue(pairingTitle.label.contains("Brackenfield Trading Accountant"))
+        XCTAssertFalse(app.buttons["live-turn-activity"].exists)
+        capture(app, as: "Next invitation and connected agent")
+        skip.tap()
+
+        let skipped = app.descendants(matching: .any).matching(identifier: "skipped-agent-receipt").firstMatch
+        XCTAssertTrue(skipped.waitForExistence(timeout: 5))
+        XCTAssertTrue(skipped.label.contains("Brackenfield Trading Accountant"))
+        XCTAssertTrue(connected.exists)
+        XCTAssertFalse(connect.exists)
+        capture(app, as: "Pairing decisions in the transcript")
+    }
+
+    @MainActor
     func testRichReplyRendersDiagramCodeAndDiff() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString

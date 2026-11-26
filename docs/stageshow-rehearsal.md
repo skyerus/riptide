@@ -14,6 +14,12 @@ The Dark hero reference informed the graphite surface steps and the current-chat
 
 On both simulator sizes, open Chats from Main Chat, filter for a side chat, clear the query, then switch to the side chat and back. Check the empty catalog, an unmatched search and the create flow. Use `AgentChatsUITests.testChatPickerSearchesAndSwitchesBetweenMainAndSideChat` to capture the resting sheet and the focused search.
 
+## Agent pairing
+
+The AI cards reference informed the in-thread invitation, progress on the primary action, and the compact record of each decision. The invitation puts the agent first and uses the existing graphite surface and green action. The card owns the waiting state while it is visible.
+
+Run `AgentChatsUITests.testPairingCardsShowProgressRetryAndKeepDecisionsInTheChat` on iPhone 17e and iPhone 18 Pro. The fixture walks through the first invitation, connecting, retrying, the second invitation, and both decisions. Inspect the card and both tap targets at each width. The fixture exercises the native chat UI and structured permissions with simulated enrollment.
+
 ## Native checks
 
 Walk through Inbox → an approval → Back, then a connector → Main Chat → a live reply. Inspect the busy Inbox, the agent's main and saved chats, the composer with and without model controls, live progress, and the finished transcript. Check the iPhone 18 Pro and the narrower iPhone 17e at its native width. Fixtures supply all data.

@@ -53,6 +53,10 @@ struct ChatScreen: View {
         }
     }
 
+    private var hasVisiblePairingRequest: Bool {
+        model.selected.permissions.contains { HermesPairingInvitation($0) != nil } && pairingConnector() != nil
+    }
+
     private var resolvingInitialChat: Bool {
         landing && model.selectedID != (initialChatID ?? model.target.mainSessionID)
     }
@@ -212,6 +216,9 @@ struct ChatScreen: View {
             visit()
         }
         .onChange(of: model.selected.working) { showsCompletedToolCalls = false }
+        .onChange(of: hasVisiblePairingRequest) {
+            if hasVisiblePairingRequest, workspace.drafts[chatKey].isEmpty { composerFocused = false }
+        }
         .onChange(of: model.title) { visit() }
         .onChange(of: model.selected.loaded) { visit() }
         .task(id: disconnectedChat) {
@@ -423,6 +430,8 @@ struct ChatScreen: View {
                         )
                     case .tool(let activity):
                         toolRow(activity)
+                    case .pairingReceipt(let name, let connected):
+                        AgentPairingReceipt(name: name, connected: connected)
                     }
                 }
                 ForEach(model.selected.permissions) { request in
@@ -442,7 +451,7 @@ struct ChatScreen: View {
                 if !model.selected.plan.isEmpty {
                     TurnPlanCard(steps: model.selected.plan)
                 }
-                if model.selected.working {
+                if model.selected.working && !hasVisiblePairingRequest {
                     let calls = model.selected.transcript.activeToolCalls
                     let current = calls.last { $0.status == nil || $0.status == "in_progress" || $0.status == "pending" }
                     LiveTurnActivity(
@@ -491,9 +500,18 @@ struct ChatScreen: View {
 
     @ViewBuilder
     private func permissionCard(_ request: PermissionRequest) -> some View {
-        if let invitation = HermesPairingInvitation(request), let store = remoteStore,
-           let remote = voiceRemote, remote.canOpenHermesScreen, let credential = store.bearer(for: remote) {
-            hermesPairingCard(request, invitation: invitation, source: remote, credential: credential, store: store)
+        if let invitation = HermesPairingInvitation(request), let connector = pairingConnector(for: request.id) {
+            AgentPairingCard(
+                name: invitation.displayName,
+                connecting: connectingHermes == request.id,
+                isDisabled: model.selected.stopping || connectingHermes != nil,
+                error: hermesPairingAttempt?.requestID == request.id ? hermesPairingAttempt?.error : nil
+            ) {
+                connectHermes(request, invitation: invitation, connector: connector)
+            } skip: {
+                if hermesPairingAttempt?.requestID == request.id { hermesPairingAttempt = nil }
+                Task { await model.answerPairing(request, connectedName: nil) }
+            }
         } else if let remote = voiceRemote, remote.canOpenHermesScreen,
                   let credential = remoteStore?.bearer(for: remote), browserCompletion(in: request) != nil {
             browserRequestCard(request, remote: remote, credential: credential)
@@ -508,37 +526,26 @@ struct ChatScreen: View {
         var error: String?
     }
 
-    private func hermesPairingCard(_ request: PermissionRequest, invitation: HermesPairingInvitation,
-                                   source: RemoteProfile, credential: String, store: RemoteStore) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Connect Hermes agent", systemImage: "link.badge.plus")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(ChatTheme.attention)
-            Text(invitation.profile)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            if hermesPairingAttempt?.requestID == request.id, let error = hermesPairingAttempt?.error {
-                Text(error).font(.footnote).foregroundStyle(ChatTheme.warning)
-            }
-            Button(connectingHermes == request.id ? "Connecting…" : "Connect agent") {
-                connectHermes(request, invitation: invitation, source: source, credential: credential, store: store)
-            }
-            .buttonStyle(.bordered)
-            .accessibilityIdentifier("connect-hermes-agent")
-            Button("Skip", role: .cancel) {
-                if hermesPairingAttempt?.requestID == request.id { hermesPairingAttempt = nil }
-                Task { await model.answer(request, optionID: "skip") }
-            }
-            .font(.subheadline)
+    private typealias PairingConnector = @MainActor (HermesPairingInvitation, SSHDeviceIdentity) async throws -> String
+
+    private func pairingConnector(for requestID: UUID? = nil) -> PairingConnector? {
+        #if DEBUG
+        if model.target.id == "hermes", AgentPairingFixture.isEnabled {
+            let retrying = hermesPairingAttempt?.requestID == requestID && hermesPairingAttempt?.error != nil
+            return { invitation, _ in try await AgentPairingFixture.connect(invitation, retrying: retrying) }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 14))
-        .disabled(model.selected.stopping || connectingHermes != nil)
+        #endif
+        guard let store = remoteStore, let source = voiceRemote, source.canOpenHermesScreen,
+              let credential = store.bearer(for: source) else { return nil }
+        return { invitation, identity in
+            let remote = try await source.authorizeHermesPairing(invitation, credential: credential, identity: identity)
+            try await store.pair(remote, credential: identity.privateCredential)
+            return remote.name
+        }
     }
 
     private func connectHermes(_ request: PermissionRequest, invitation: HermesPairingInvitation,
-                               source: RemoteProfile, credential: String, store: RemoteStore) {
+                               connector: @escaping PairingConnector) {
         guard connectingHermes == nil, model.selected.permissions.contains(request) else { return }
         let previous = hermesPairingAttempt.flatMap { $0.requestID == request.id ? $0 : nil }
         let attempt = previous ?? HermesPairingAttempt(requestID: request.id)
@@ -547,11 +554,9 @@ struct ChatScreen: View {
         Task {
             defer { connectingHermes = nil }
             do {
-                let remote = try await source.authorizeHermesPairing(invitation, credential: credential,
-                                                                    identity: attempt.identity)
-                try await store.pair(remote, credential: attempt.identity.privateCredential)
+                let name = try await connector(invitation, attempt.identity)
                 hermesPairingAttempt = nil
-                await model.answer(request, optionID: invitation.optionID)
+                await model.answerPairing(request, connectedName: name)
             } catch {
                 hermesPairingAttempt = HermesPairingAttempt(requestID: request.id, identity: attempt.identity,
                                                             error: error.localizedDescription)

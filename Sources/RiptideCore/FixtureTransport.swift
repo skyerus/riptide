@@ -25,11 +25,13 @@ public actor FixtureTransport: ACPTransport {
     private let file: URL?
     private let pace: Duration
     private let historyDelay: Duration
+    private let pairingDemo: Bool
     private let cwd: String
     private let mainSessionID: String
     private var sessions: [SavedSession]
     private var turns: [String: Turn] = [:]
     private var approvals: [JSON: String] = [:]
+    private static let demoProfiles = ["northstar-studio-accountant", "brackenfield-trading-accountant"]
 
     private struct SavedSession: Codable {
         let id: String
@@ -45,15 +47,17 @@ public actor FixtureTransport: ACPTransport {
         let toolID: String
         let showsRichContent: Bool
         let showsLongStream: Bool
+        var pairingIndex = 0
         var work: Task<Void, Never>?
     }
 
     public init(target: AgentTarget, file: URL? = nil, pace: Duration = .milliseconds(280),
-                catalog: [String] = [], historyDelay: Duration = .zero) throws {
+                catalog: [String] = [], historyDelay: Duration = .zero, pairingDemo: Bool = false) throws {
         (incoming, output) = AsyncThrowingStream.makeStream()
         self.file = file
         self.pace = pace
         self.historyDelay = historyDelay
+        self.pairingDemo = pairingDemo
         cwd = target.cwd
         mainSessionID = target.mainSessionID
         if let file, FileManager.default.fileExists(atPath: file.path) {
@@ -83,8 +87,12 @@ public actor FixtureTransport: ACPTransport {
         let sessionID = params["sessionId"]?.string ?? ""
         guard let method = packet["method"]?.string else {
             if let id = packet["id"], let session = approvals.removeValue(forKey: id) {
-                let allowed = packet["result"]?["outcome"]?["optionId"] == "allow-once"
-                continueTurn(in: session, allowed: allowed)
+                if pairingDemo {
+                    continuePairing(in: session)
+                } else {
+                    let allowed = packet["result"]?["outcome"]?["optionId"] == "allow-once"
+                    continueTurn(in: session, allowed: allowed)
+                }
             }
             return
         }
@@ -175,7 +183,8 @@ public actor FixtureTransport: ACPTransport {
                 let toolID = UUID().uuidString
                 try record([
                     "sessionUpdate": "tool_call", "toolCallId": .string(toolID),
-                    "title": "Review context", "status": "pending"
+                    "title": pairingDemo ? "mcp.riptide_pairing.request_agent_pairing" : "Review context",
+                    "status": "pending"
                 ], in: sessionID)
                 turns[sessionID] = Turn(id: id, toolID: toolID,
                     showsRichContent: text.localizedCaseInsensitiveContains("formatting demo"),
@@ -198,7 +207,9 @@ public actor FixtureTransport: ACPTransport {
 
     private func begin(in sessionID: String, id: JSON, needsApproval: Bool) {
         guard let turn = turns[sessionID], turn.id == id else { return }
-        if needsApproval {
+        if pairingDemo {
+            requestPairing(in: sessionID, index: turn.pairingIndex)
+        } else if needsApproval {
             let approvalID = JSON.string("permission-\(UUID().uuidString)")
             approvals[approvalID] = sessionID
             emit(.request("session/request_permission", id: approvalID, params: [
@@ -211,6 +222,30 @@ public actor FixtureTransport: ACPTransport {
             ]))
         } else {
             continueTurn(in: sessionID, allowed: true)
+        }
+    }
+
+    private func requestPairing(in sessionID: String, index: Int) {
+        let approvalID = JSON.string("pairing-\(UUID().uuidString)")
+        approvals[approvalID] = sessionID
+        emit(.request("session/request_permission", id: approvalID, params: [
+            "sessionId": .string(sessionID),
+            "toolCall": ["toolCallId": .string("clarify-\(UUID().uuidString)"), "title": "Connect agent to Riptide?"],
+            "options": .array([
+                ["optionId": "choice-0", "name": .string("Pair Hermes profile: \(Self.demoProfiles[index])"), "kind": "allow_once"],
+                ["optionId": "skip", "name": "Skip", "kind": "reject_once"],
+            ]),
+        ]))
+    }
+
+    private func continuePairing(in sessionID: String) {
+        guard let turn = turns[sessionID] else { return }
+        let next = turn.pairingIndex + 1
+        if next < Self.demoProfiles.count {
+            turns[sessionID]?.pairingIndex = next
+            requestPairing(in: sessionID, index: next)
+        } else {
+            complete(sessionID, id: turn.id)
         }
     }
 
