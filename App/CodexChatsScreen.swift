@@ -130,6 +130,7 @@ struct CodexSavedChatScreen: View {
     private var working: Bool { session?.working == true }
     private var stopping: Bool { session?.stopping == true }
     private var sending: Bool { session?.sending == true }
+    private var canSubmit: Bool { ready && !sending && !stopping && session?.changingFastMode != true }
     private var progress: CodexTurnProgress { session?.progress ?? .init() }
 
     private var chatKey: WorkspaceChatID? {
@@ -276,10 +277,10 @@ struct CodexSavedChatScreen: View {
 
     private var composer: some View {
         let prompt = working ? "Steer this turn" : "Message Codex"
-        let canSubmit = ready && !sending && !stopping
+        let fastMode = session?.fastMode
         let disabled = !canSubmit || editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return DictatingComposer(
-            focused: composerFocused, showsOptions: false, chatID: chatKey?.chat,
+            focused: composerFocused, showsOptions: fastMode != nil, chatID: chatKey?.chat,
             canDictate: canSubmit, draft: editor,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
             dismissKeyboard: { composerFocused = false },
@@ -291,7 +292,27 @@ struct CodexSavedChatScreen: View {
                 .focused($composerFocused)
                 .accessibilityIdentifier("codex-composer")
         } options: {
-            EmptyView()
+            if let fastMode {
+                Button {
+                    Task { await session?.toggleFastMode() }
+                } label: {
+                    Label("Fast", systemImage: fastMode ? "bolt.fill" : "bolt")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(fastMode ? ChatTheme.sidebarAccent : ChatTheme.muted)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(fastMode ? ChatTheme.sidebarAccent.opacity(0.12) : ChatTheme.inset, in: Capsule())
+                        .padding(.leading, 6)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(working || !canSubmit)
+                .accessibilityLabel("Fast mode")
+                .accessibilityValue(fastMode ? "On" : "Off")
+                .accessibilityAddTraits(fastMode ? .isSelected : [])
+                .accessibilityIdentifier("codex-fast-mode")
+            }
         } actions: {
             if working {
                 Button {
@@ -339,7 +360,7 @@ struct CodexSavedChatScreen: View {
     }
 
     private func submitDraft() {
-        guard let session, ready, !sending, !stopping else { return }
+        guard let session, canSubmit else { return }
         let draft = editor
         let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }

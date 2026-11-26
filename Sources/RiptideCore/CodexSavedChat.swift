@@ -193,5 +193,6 @@ public enum CodexChatEvent: Sendable {
     case approval(CodexChatApproval)
     case approvalResolved(UUID)
     case progress(CodexWorkUpdate)
+    case fastModeChanged(Bool?)
     case issue(String)
 }
