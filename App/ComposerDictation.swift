@@ -36,6 +36,7 @@ struct MessageComposer<Options: View, Actions: View>: View {
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     ComposerAttachmentStrip(attachments: $attachments)
+                        .disabled(!editorEnabled)
                     ComposerEditor(text: $draft, focused: $focused, prompt: prompt,
                                    identifier: editorIdentifier, enabled: editorEnabled) { providers in
                         if canAttach { clipboard.append(contentsOf: providers) }

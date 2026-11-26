@@ -28,6 +28,7 @@ struct ChatComposer: View {
     @Binding var editorFocus: Bool
     var acceptsImages = true
     var attachmentByteLimit = ChatAttachment.codexByteLimit
+    var attachmentsAvailable = true
     var settings = ChatComposerSettings()
     var context: ContextUsage? = nil
     var ready = true
@@ -54,7 +55,7 @@ struct ChatComposer: View {
             MessageComposer(
                 focused: $editorFocus, prompt: prompt, editorIdentifier: fieldID, editorEnabled: ready,
                 chatID: chatID, canDictate: canDictate, draft: $draft, attachments: $attachments,
-                acceptsImages: acceptsImages, attachmentByteLimit: attachmentByteLimit, canAttach: ready,
+                acceptsImages: acceptsImages, attachmentByteLimit: attachmentByteLimit, canAttach: ready && attachmentsAvailable,
                 transcribe: transcribe,
                 dismissKeyboard: {
                     editorFocus = false
@@ -145,7 +146,7 @@ struct ChatComposer: View {
     private func submitDraft() { perform(submit) }
 
     private func perform(_ action: () -> Void) {
-        guard canSubmit, ComposerDraft(text: $draft, files: $attachments).hasContent else { return }
+        guard canSubmit, retrying || ComposerDraft(text: $draft, files: $attachments).hasContent else { return }
         editorFocus = false
         modelPickerVisible = false
         action()
@@ -158,7 +159,7 @@ struct ChatComposer: View {
         }
         let send = retrying ? ("Retry send", "arrow.clockwise") : (submission.rawValue, submission.symbol)
         ComposerAction(send.0, symbol: send.1,
-                       disabled: !canSend,
+                       disabled: !canSend && !(retrying && canSubmit),
                        queue: queueDraft, action: submitDraft)
             .accessibilityIdentifier(sendID)
     }

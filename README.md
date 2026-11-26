@@ -79,7 +79,7 @@ On first launch, choose your agent type and connect it to open Inbox. To add ano
 
 ### Chat attachments
 
-Tap **+** in a chat to take a photo, pick from Photos, or browse Files. Use the editor’s Paste action or Command-V to attach copied files and images. Review or remove the attachments in the draft, then send them with optional text. Each message accepts up to four attachments. Attachments can steer an active Codex turn or queue for the next turn. In ACP chats, follow-ups containing attachments queue for the next turn.
+Tap **+** in a chat to take a photo, pick from Photos, or browse Files. Use the editor’s Paste action or Command-V to attach copied files and images. Review or remove the attachments in the draft, then send them with optional text. Each message accepts up to four attachments. Attachments can steer an active Codex turn or queue for the next turn. In ACP chats, follow-ups containing attachments queue for the next turn. Hermes group attachments are staged on the paired host for the group’s agents to read by path.
 
 Codex uses its App Server to stage attachments in the host's Codex home and sends images as vision input. The limit is 8 MB per message. ACP uses the agent's advertised image capability and a 1 MB limit. Update the Riptide SSH launcher or WebSocket bridge on the paired host to send arbitrary files. The bridge stages them in private temporary directories on that host, where the agent can read them by path until the host clears its temporary files. Older ACP connections can still attach small UTF-8 text files.
 
@@ -96,6 +96,14 @@ restrict,command="/usr/bin/python3 /usr/local/libexec/riptide/ssh_acp.py --works
 Use absolute paths for the regular agent account, workspace, and native ACP launcher. The key disallows SSH shell access, terminal allocation, and port forwarding. The launcher limits chat to the paired workspace and refuses client-supplied MCP servers and approval-policy changes. Use a trusted device and the least-privilege agent account available, since prompts reach the real agent with its configured tools. Removing the key on the host revokes access. The private key stays in the device’s Keychain. Voice keeps its separate native endpoint.
 
 Fast mode over Hermes SSH requires a Hermes gateway that advertises the ACP `service_tier` option and the Riptide SSH wrapper from this release. Apply the wrapper to an existing versioned pairing with the [SSH release updater](Host/update_ssh_release.py).
+
+### Hermes group chats over SSH
+
+Open **Groups → +** in Riptide, choose the Hermes connection that serves your bots, name the group, and select two to six bots from that gateway. The Groups tab lists rooms from every paired Hermes connection with group access, including rooms created in Hermes Desktop. Each room names the connection that owns it. Send to the group or use the **@** menu to address individual bots. Each reply shows its author, and **Reply in thread** continues a topic. Hermes stores the shared transcript and runs the turns while Riptide is closed.
+
+Group chats require a running Hermes gateway that advertises a group driver. The picker uses its seatable profiles. If a profile-bound gateway leaves out a bot, configure it in the gateway’s `hosted_rooms.profiles` using the [Hermes Bot Mode guide](https://hermes-agent.nousresearch.com/docs/user-guide/bot-mode). Riptide can open existing gateway-owned rooms with peer members. Creating a room in Riptide uses bots from the selected gateway and supports text messages.
+
+Stage the versioned Riptide host payload and run `Host/update_ssh_release.py` with the existing pairing fingerprint and release arguments plus `--enable-hermes-groups`. The updater reuses the paired Hermes profile and launcher from the screen route and verifies `groups.capabilities` before changing the key. For a pairing without a screen route, install `hermes_groups.py`, `hermes_screen.py`, and `hermes_mobile.py` alongside the updated `ssh_acp.py`, with the `websockets` Python dependency. Add `--hermes-groups /absolute/hermes/profile/home /absolute/path/to/hermes` before `--` in the fixed command. Grant this option to devices trusted to read and operate the group chats accessible to that profile. It uses the existing authenticated SSH pairing and Hermes’s local gateway ticket.
 
 ### One-tap Hermes pairing
 

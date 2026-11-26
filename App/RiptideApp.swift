@@ -19,7 +19,16 @@ struct RiptideApp: App {
         let namespace = environment["RIPTIDE_FIXTURE_NAMESPACE"].flatMap(UUID.init(uuidString:))
         let demos = environment["RIPTIDE_DEMO"] == "1" || (namespace != nil && environment["RIPTIDE_DEMO"] != "0")
         let historyDelay: Duration = environment["RIPTIDE_DELAYED_CHAT_HISTORY"] == "1" ? .seconds(14) : .zero
-        let base = demos ? AgentTarget.demos.map { Self.makeDemo($0, namespace: namespace, historyDelay: historyDelay) } : []
+        let showGroupFixture = demos && namespace != nil && environment["RIPTIDE_HERMES_GROUP_FIXTURE"] == "1"
+        var targets = AgentTarget.demos
+        if showGroupFixture {
+            targets.removeAll { $0.id == "hermes" }
+            targets += [
+                AgentTarget(id: "hermes", name: "Hermes VPS", mainSessionID: "demo-hermes-main", cwd: "/demo"),
+                AgentTarget(id: "hermes-studio", name: "Hermes Studio", mainSessionID: "demo-studio-main", cwd: "/demo")
+            ]
+        }
+        let base = demos ? targets.map { Self.makeDemo($0, namespace: namespace, historyDelay: historyDelay) } : []
         let busy = demos && namespace != nil && environment["RIPTIDE_BUSY_WORKSPACE"] == "1"
         roster = base + (busy ? (1...12).map { index in
             let id = "ops-\(index)"
@@ -36,8 +45,16 @@ struct RiptideApp: App {
         localCodex = nil
         #endif
         remotes = RemoteStore(defaults: preferences)
-        _workspace = State(initialValue: WorkspaceState(roster: roster, localCodex: localCodex,
-                                                        remotes: remotes, defaults: preferences))
+        let state = WorkspaceState(roster: roster, localCodex: localCodex, remotes: remotes, defaults: preferences)
+        #if DEBUG
+        if let namespace, showGroupFixture {
+            for source in ["hermes", "hermes-studio"] {
+                let fixture = HermesGroupsFixture(namespace: namespace, source: source)
+                state.groupFixtures[source] = HermesGroupsClient { try await fixture.exchange($0) }
+            }
+        }
+        #endif
+        _workspace = State(initialValue: state)
     }
 
     var body: some Scene {

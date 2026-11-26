@@ -17,7 +17,10 @@ struct WorkspaceNavigation: View {
         .environment(workspace)
         .environment(alerts)
         .sheet(isPresented: $workspace.showingSwitcher, onDismiss: {
-            if workspace.inboxRequested { workspace.inboxRequested = false; workspace.showSidebar(.inbox) }
+            if let tab = workspace.sidebarRequested {
+                workspace.sidebarRequested = nil
+                workspace.showSidebar(tab)
+            }
             else if workspace.alertsRequested { workspace.alertsRequested = false; workspace.showingAlerts = true }
         }) { WorkspaceSwitcher().environment(workspace) }
         .sheet(isPresented: $workspace.showingAlerts) { WorkspaceAlertSettings().environment(alerts) }
@@ -88,7 +91,14 @@ private struct WorkspaceDestination: View {
 
     @ViewBuilder
     private var destination: some View {
-        if let model = workspace.roster.first(where: { $0.target.id == route.workspace }) {
+        if let id = route.hermesGroup {
+            if let session = workspace.hermesGroupSession(roomID: id, workspaceID: route.workspace) {
+                HermesGroupScreen(workspaceName: workspace.agent(route.workspace)?.name ?? "Hermes", session: session)
+            } else {
+                ContentUnavailableView("Group chat unavailable", systemImage: "lock",
+                                       description: Text("Unlock this device or pair the remote again."))
+            }
+        } else if let model = workspace.roster.first(where: { $0.target.id == route.workspace }) {
             ChatScreen(model: model, initialChatID: route.chat)
         } else if let endpoint = workspace.codexEndpoint(for: route.workspace) {
             if route.startsNewChat {
@@ -149,6 +159,9 @@ struct WorkspaceSwitcherButton: View {
                     Button("Back to \(previous.name)", systemImage: "arrow.uturn.backward") { workspace.open(previous.id) }
                 }
                 Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
+                if !workspace.hermesGroupSources.isEmpty {
+                    Button("Open Group chats", systemImage: "person.2") { workspace.showSidebar(.groups) }
+                }
             }
     }
 }
@@ -217,6 +230,12 @@ struct WorkspaceRail: View {
                     }
                     .padding(.leading, ChatTheme.gutter)
                     .id(WorkspaceTab.inbox)
+                    if !workspace.hermesGroupSources.isEmpty {
+                        tab(.groups, title: "Groups", symbol: "person.2", identifier: "sidebar-group-chats", value: "") {
+                            EmptyView()
+                        }
+                        .id(WorkspaceTab.groups)
+                    }
                     ForEach(workspace.railAgents(selected: selected.agentID)) { agent in
                         tab(.agent(agent.id), title: agent.name, symbol: agent.symbol,
                             identifier: "sidebar-agent-\(agent.id)",
@@ -324,12 +343,21 @@ private struct WorkspaceSwitcher: View {
             List {
                 if query.isEmpty {
                     Button {
-                        workspace.inboxRequested = true
+                        workspace.sidebarRequested = .inbox
                         dismiss()
                     } label: {
                         Label("Inbox", systemImage: "tray")
                     }
                     .accessibilityIdentifier("switcher-inbox")
+                    if !workspace.hermesGroupSources.isEmpty {
+                        Button {
+                            workspace.sidebarRequested = .groups
+                            dismiss()
+                        } label: {
+                            Label("Group chats", systemImage: "person.2")
+                        }
+                        .accessibilityIdentifier("switcher-group-chats")
+                    }
                 }
                 if parsed.isEmpty { liveSection(names: names) }
                 if parsed.isEmpty && !matchingChats.isEmpty { chats(matchingChats, names: names, recent: true) }

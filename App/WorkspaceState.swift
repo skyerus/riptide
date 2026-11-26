@@ -4,6 +4,7 @@ import SwiftUI
 
 enum WorkspaceTab: Hashable {
     case inbox
+    case groups
     case agent(String)
 
     var agentID: String? {
@@ -16,6 +17,7 @@ struct WorkspaceRoute: Hashable {
     let workspace: String
     var chat: String?
     var startsNewChat = false
+    var hermesGroup: String?
 }
 
 struct WorkspaceAgent: Identifiable, Equatable {
@@ -59,12 +61,17 @@ final class WorkspaceState {
     let remotes: RemoteStore
     let drafts = WorkspaceDrafts()
     private let defaults: UserDefaults
+    @ObservationIgnored private var hermesGroupsClients: [String: HermesGroupsClient] = [:]
+    @ObservationIgnored private var hermesGroupSessions: [WorkspaceChatID: HermesGroupSession] = [:]
+    #if DEBUG
+    var groupFixtures: [String: HermesGroupsClient] = [:]
+    #endif
     var path: [WorkspaceRoute] = []
     private(set) var sidebarTab: WorkspaceTab = .inbox
     private(set) var inboxReset = 0
     var showingSwitcher = false
     var showingAlerts = false
-    var inboxRequested = false
+    var sidebarRequested: WorkspaceTab?
     var alertsRequested = false
     private(set) var visibleChat: WorkspaceChatID?
     private(set) var recent: [WorkspaceVisit]
@@ -314,6 +321,44 @@ final class WorkspaceState {
         push(WorkspaceRoute(workspace: workspaceID, chat: chat ?? cachedChat))
     }
 
+    var hermesGroupSources: [WorkspaceAgent] { agents.filter { supportsHermesGroups($0.id) } }
+
+    func supportsHermesGroups(_ workspaceID: String) -> Bool {
+        #if DEBUG
+        if groupFixtures[workspaceID] != nil { return true }
+        #endif
+        return profile(workspaceID)?.canOpenHermesGroups == true
+    }
+
+    func hermesGroupsClient(for workspaceID: String) -> HermesGroupsClient? {
+        #if DEBUG
+        if let groupFixture = groupFixtures[workspaceID] { return groupFixture }
+        #endif
+        guard let profile = profile(workspaceID), let bearer = remotes.bearer(for: profile) else {
+            hermesGroupsClients[workspaceID] = nil
+            return nil
+        }
+        if let client = hermesGroupsClients[workspaceID] { return client }
+        let client = profile.makeHermesGroups(credential: bearer)
+        hermesGroupsClients[workspaceID] = client
+        return client
+    }
+
+    func hermesGroupSession(roomID: String, workspaceID: String) -> HermesGroupSession? {
+        guard let client = hermesGroupsClient(for: workspaceID) else { return nil }
+        let key = WorkspaceChatID(workspace: workspaceID, chat: roomID)
+        if let session = hermesGroupSessions[key] { return session }
+        hermesGroupSessions = hermesGroupSessions.filter { $0.value.sending || $0.value.acting }
+        let session = HermesGroupSession(client: client, roomID: roomID, workspaceID: workspaceID)
+        hermesGroupSessions[key] = session
+        return session
+    }
+
+    func openHermesGroup(_ roomID: String, in workspaceID: String) {
+        guard supportsHermesGroups(workspaceID) else { return }
+        push(WorkspaceRoute(workspace: workspaceID, hermesGroup: roomID))
+    }
+
     func startCodexChat(_ workspaceID: String) {
         guard codexEndpoint(for: workspaceID) != nil else { return }
         push(WorkspaceRoute(workspace: workspaceID, chat: nil, startsNewChat: true))
@@ -407,7 +452,12 @@ final class WorkspaceState {
     }
 
     func forgot(_ workspaceID: String) {
-        if sidebarTab == .agent(workspaceID) { sidebarTab = .inbox }
+        hermesGroupsClients[workspaceID] = nil
+        hermesGroupSessions = hermesGroupSessions.filter { $0.key.workspace != workspaceID }
+        HermesGroupSession.removeDrafts(workspaceID: workspaceID)
+        if sidebarTab == .agent(workspaceID) || (sidebarTab == .groups && hermesGroupSources.isEmpty) {
+            sidebarTab = .inbox
+        }
         for key in codexRecency.filter({ $0.workspace == workspaceID }) {
             codexSessions.removeValue(forKey: key)?.detach()
         }

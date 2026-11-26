@@ -4,7 +4,6 @@ import XCTest
 
 final class WorkspaceUXUITests: XCTestCase {
     @MainActor
-    @MainActor
     func testSharedComposerPastesTextPhotoAndFile() {
         continueAfterFailure = false
         let app = freshApp()
