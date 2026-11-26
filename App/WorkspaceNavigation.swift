@@ -51,7 +51,7 @@ struct WorkspaceNavigation: View {
                 alerts.activate()
             }
         }
-        .onChange(of: workspace.remotes.profiles) {
+        .onChange(of: workspace.remotes.profiles.map(\.id)) {
             if scenePhase == .active { alerts.activate() }
         }
         .task(id: scenePhase) {

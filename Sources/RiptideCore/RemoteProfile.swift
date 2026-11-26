@@ -15,7 +15,7 @@ public enum RemoteKind: String, Codable, CaseIterable, Sendable {
 public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
     public let id: UUID
     public let kind: RemoteKind
-    public let name: String
+    public private(set) var name: String
     public let address: String
     public let workspace: String
     public let mainSessionID: String?
@@ -47,6 +47,18 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
         self.mainSessionID = kind == .codex ? nil : mainSessionID
     }
 
+    public mutating func updateDisplayName(_ proposed: String) {
+        if let name = Self.validDisplayName(proposed) { self.name = name }
+    }
+
+    static func validDisplayName(_ proposed: String) -> String? {
+        guard !proposed.unicodeScalars.contains(where: {
+            [.control, .lineSeparator, .paragraphSeparator].contains($0.properties.generalCategory)
+        }) else { return nil }
+        let name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (1...80).contains(name.unicodeScalars.count) ? name : nil
+    }
+
     public mutating func bindCodexAccount(_ fingerprint: String) {
         guard kind == .codex else { return }
         accountFingerprint = fingerprint
@@ -75,13 +87,16 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
         return (url, host, parts.port ?? 22, username)
     }
 
-    public func makeACPClient(credential: String) -> ACPClient? {
+    public func makeACPClient(credential: String,
+                              onDisplayName: (@MainActor @Sendable (String) -> Void)? = nil) -> ACPClient? {
         guard kind != .codex, mainSessionID != nil else { return nil }
         if sshHostFingerprint != nil {
-            return sshTransport(credential: credential, command: "riptide-acp").map { ACPClient(transport: $0, restrictedSSH: true) }
+            return sshTransport(credential: credential, command: "riptide-acp").map {
+                ACPClient(transport: $0, restrictedSSH: true, onDisplayName: onDisplayName)
+            }
         }
         guard let url = Self.secureURL(address), Self.validBearer(credential) else { return nil }
-        return ACPClient(transport: RemoteWebSocketTransport(url: url, bearer: credential))
+        return ACPClient(transport: RemoteWebSocketTransport(url: url, bearer: credential), onDisplayName: onDisplayName)
     }
 
     public func makeHermesDictation(credential: String) -> CodexDictation? {

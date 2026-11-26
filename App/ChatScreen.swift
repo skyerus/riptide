@@ -28,6 +28,8 @@ struct ChatScreen: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(WorkspaceState.self) private var workspace
 
+    private var agentName: String { workspace.agent(model.target.id)?.name ?? model.target.name }
+
     private var chatKey: WorkspaceChatID { .init(workspace: model.target.id, chat: model.selectedID) }
     private var dictationTranscriber: DictationTranscriber? {
         if let voiceRemote, let bearer = remoteStore?.bearer(for: voiceRemote),
@@ -96,12 +98,12 @@ struct ChatScreen: View {
                 Button {
                     showChats = true
                 } label: {
-                    WorkspaceChatHeading(title: model.title, workspaceName: model.target.name)
+                    WorkspaceChatHeading(title: model.title, workspaceName: agentName)
                 }
                 .buttonStyle(.plain)
                 .workspaceFlickNavigation(model.target.id)
                 .accessibilityLabel(model.title)
-                .accessibilityValue(model.target.name)
+                .accessibilityValue(agentName)
                 .accessibilityHint("Switch or start a chat")
                 .accessibilityIdentifier("chats-button")
             }
@@ -288,7 +290,7 @@ struct ChatScreen: View {
         let canSteer = selected.canStop && attachments.wrappedValue.isEmpty
         let submission: ChatComposer.Submission = canSteer ? .steer : selected.working ? .queue : .send
         let prompt = switch submission {
-        case .send: "Message \(model.target.name)"
+        case .send: "Message \(agentName)"
         case .steer: "Steer this reply"
         case .queue: "Queue a message"
         }
