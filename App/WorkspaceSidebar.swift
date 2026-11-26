@@ -39,12 +39,7 @@ struct WorkspaceSidebar: View {
         case .agents:
             AgentGrid()
         case .groups:
-            if workspace.hermesGroupSources.isEmpty {
-                ContentUnavailableView("Connect a Hermes agent", systemImage: "person.2",
-                                       description: Text("Pair a Hermes agent to start a group chat."))
-            } else {
-                HermesGroupCatalog(sources: workspace.hermesGroupSources, creating: $creatingGroup)
-            }
+            HermesGroupCatalog(sources: workspace.hermesGroupSources, creating: $creatingGroup)
         }
     }
 
