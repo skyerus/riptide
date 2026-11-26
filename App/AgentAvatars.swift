@@ -129,7 +129,8 @@ struct AgentAvatarEditor: View {
     let agent: WorkspaceAgent
     @Environment(WorkspaceState.self) private var workspace
     @Environment(\.dismiss) private var dismiss
-    @State private var selection: PhotosPickerItem?
+    @State private var showingPhotoPicker = false
+    @State private var selection: NSItemProvider?
     @State private var loading = false
     @State private var issue: String?
 
@@ -144,7 +145,9 @@ struct AgentAvatarEditor: View {
                             .multilineTextAlignment(.center)
                     }
                     VStack(spacing: 0) {
-                        PhotosPicker(selection: $selection, matching: .images) {
+                        Button {
+                            showingPhotoPicker = true
+                        } label: {
                             AgentAvatarPhotoAction(title: hasPhoto ? "Change photo" : "Choose photo", symbol: "photo.on.rectangle")
                         }
                         .accessibilityIdentifier("choose-agent-photo")
@@ -187,6 +190,12 @@ struct AgentAvatarEditor: View {
         }
         .interactiveDismissDisabled(loading)
         .presentationDetents([.medium, .large])
+        .sheet(isPresented: $showingPhotoPicker) {
+            AgentPhotoPicker { provider in
+                showingPhotoPicker = false
+                selection = provider
+            }
+        }
         .task(id: selection) {
             guard let selection else { return }
             loading = true
@@ -196,8 +205,14 @@ struct AgentAvatarEditor: View {
                 self.selection = nil
             }
             do {
-                guard let data = try await selection.loadTransferable(type: Data.self) else {
+                guard let type = selection.registeredContentTypes.first(where: { $0.conforms(to: .image) }) else {
                     throw AvatarPhotoError.unreadable
+                }
+                let data: Data = try await withCheckedThrowingContinuation { continuation in
+                    selection.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, error in
+                        if let data { continuation.resume(returning: data) }
+                        else { continuation.resume(throwing: error ?? AvatarPhotoError.unreadable) }
+                    }
                 }
                 try Task.checkCancellation()
                 guard workspace.agent(agent.id) != nil else { return }
@@ -211,6 +226,32 @@ struct AgentAvatarEditor: View {
     }
 
     private var hasPhoto: Bool { workspace.avatars.image(for: agent.id) != nil }
+}
+
+private struct AgentPhotoPicker: UIViewControllerRepresentable {
+    let finish: (NSItemProvider?) -> Void
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var configuration = PHPickerConfiguration()
+        configuration.filter = .images
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: PHPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(finish: finish) }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let finish: (NSItemProvider?) -> Void
+
+        init(finish: @escaping (NSItemProvider?) -> Void) { self.finish = finish }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            finish(results.first?.itemProvider)
+        }
+    }
 }
 
 private struct AgentAvatarPhotoAction: View {
