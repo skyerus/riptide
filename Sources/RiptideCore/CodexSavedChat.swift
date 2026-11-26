@@ -193,5 +193,7 @@ public enum CodexChatEvent: Sendable {
     case approval(CodexChatApproval)
     case approvalResolved(UUID)
     case progress(CodexWorkUpdate)
+    case configOptions([SessionConfigOption])
+    case context(ContextUsage?)
     case issue(String)
 }

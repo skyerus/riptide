@@ -1,13 +1,25 @@
 import RiptideCore
 import SwiftUI
 
+struct ChatComposerSettings {
+    var options: [SessionConfigOption] = []
+    var reportedModelName: String? = nil
+    var configuring = false
+    var working = false
+    var error: String? = nil
+    var select: (String, String) async -> Bool = { _, _ in false }
+
+    var modelName: String? { options.first { $0.category == .model }?.currentName ?? reportedModelName }
+    var hasChoices: Bool { options.contains { !$0.pickerChoices.isEmpty } }
+}
+
 struct ChatModelControls: View {
-    let model: AgentChatModel
+    let settings: ChatComposerSettings
     @Binding var isExpanded: Bool
 
     var body: some View {
-        let summary = ModelSelectionSummary(chat: model.selected)
-        if model.selected.hasConfigChoices {
+        let summary = ModelSelectionSummary(settings: settings)
+        if settings.hasChoices {
             Button {
                 isExpanded.toggle()
             } label: {
@@ -21,7 +33,7 @@ struct ChatModelControls: View {
             .accessibilityLabel("Model and intelligence")
             .accessibilityValue(summary.accessibilityValue)
             .accessibilityIdentifier("model-options")
-        } else if let name = model.selected.modelName {
+        } else if let name = settings.modelName {
             Text(name)
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
@@ -32,15 +44,90 @@ struct ChatModelControls: View {
     }
 }
 
+struct FastModeButton: View {
+    let settings: ChatComposerSettings
+
+    var body: some View {
+        if let option = settings.options.first(where: { $0.fastMode != nil }),
+           let enabled = option.fastMode, let standard = option.standardSpeedID {
+            Button {
+                Task { await settings.select(option.id, enabled ? standard : "fast") }
+            } label: {
+                Label("Fast", systemImage: enabled ? "bolt.fill" : "bolt")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(enabled ? ChatTheme.sidebarAccent : ChatTheme.muted)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(enabled ? ChatTheme.sidebarAccent.opacity(0.12) : ChatTheme.inset, in: Capsule())
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(settings.configuring || settings.working)
+            .accessibilityLabel("Fast mode")
+            .accessibilityValue(enabled ? "On" : "Off")
+            .accessibilityAddTraits(enabled ? .isSelected : [])
+            .accessibilityIdentifier("fast-mode")
+        }
+    }
+}
+
+struct ChatModelPicker: ViewModifier {
+    let settings: ChatComposerSettings
+    let composerHeight: CGFloat
+    let chatID: String?
+    @Binding var isExpanded: Bool
+    @State private var showAdvanced = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let visible = isExpanded && settings.hasChoices
+        content
+            .overlay(alignment: .bottom) {
+                if visible {
+                    ZStack(alignment: .bottom) {
+                        Button { isExpanded = false } label: {
+                            Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Dismiss model controls")
+                        .accessibilityIdentifier("dismiss-model-picker")
+
+                        QuickModelPicker(settings: settings) {
+                            isExpanded = false
+                            showAdvanced = true
+                        }
+                        .padding(.bottom, 4)
+                    }
+                    .padding(.bottom, composerHeight)
+                    .transition(.opacity)
+                    .accessibilityAction(.escape) { isExpanded = false }
+                }
+            }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: visible)
+            .sheet(isPresented: $showAdvanced) {
+                AdvancedModelPicker(settings: settings)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(.regularMaterial)
+            }
+            .onChange(of: chatID) {
+                isExpanded = false
+                showAdvanced = false
+            }
+    }
+}
+
 private struct ModelSelectionSummary {
     let title: String
     let intelligence: String?
     var accessibilityValue: String { [title, intelligence].compactMap { $0 }.joined(separator: ", ") }
 
-    init(chat: AgentChatModel.ChatState) {
-        let effort = chat.configOptions.first { $0.category == .thoughtLevel }?.currentName
-        title = chat.modelName ?? effort ?? "Model options"
-        intelligence = chat.modelName == nil ? nil : effort
+    init(settings: ChatComposerSettings) {
+        let effort = settings.options.first { $0.category == .thoughtLevel }?.currentName
+        title = settings.modelName ?? effort ?? "Model options"
+        intelligence = settings.modelName == nil ? nil : effort
     }
 }
 
@@ -70,13 +157,11 @@ private struct ModelSelectionLabel: View {
 }
 
 struct QuickModelPicker: View {
-    let model: AgentChatModel
-    let sessionID: String
+    let settings: ChatComposerSettings
     let showAdvanced: () -> Void
 
     var body: some View {
-        let options = model.selected.configOptions
-        let summary = ModelSelectionSummary(chat: model.selected)
+        let summary = ModelSelectionSummary(settings: settings)
         VStack(spacing: 5) {
             Button(action: showAdvanced) {
                 ModelSelectionLabel(summary: summary, chevron: "chevron.right")
@@ -89,16 +174,16 @@ struct QuickModelPicker: View {
             .accessibilityValue(summary.accessibilityValue)
             .accessibilityIdentifier("advanced-model-controls")
 
-            if let effort = options.first(where: { $0.category == .thoughtLevel }) {
+            if let effort = settings.options.first(where: { $0.category == .thoughtLevel }) {
                 let choices = effort.pickerChoices
                 if (2...10).contains(choices.count) {
                     IntelligenceSteps(option: effort, choices: choices) { choice in
-                        Task { await model.setConfigOption(effort.id, value: choice.id, sessionID: sessionID) }
+                        Task { await settings.select(effort.id, choice.id) }
                     }
-                    .disabled(model.selected.configuring || model.selected.working)
+                    .disabled(settings.configuring || settings.working)
                 }
             }
-            ModelControlStatus(model: model)
+            ModelControlStatus(settings: settings)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -202,15 +287,14 @@ private struct IntelligenceSteps: View {
 }
 
 struct AdvancedModelPicker: View {
-    let model: AgentChatModel
-    let sessionID: String
+    let settings: ChatComposerSettings
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    ForEach(model.selected.configOptions.filter { !$0.pickerChoices.isEmpty }) { option in
+                    ForEach(settings.options.filter { !$0.pickerChoices.isEmpty }) { option in
                         NavigationLink(value: option.id) {
                             HStack(spacing: 12) {
                                 Text(option.pickerTitle)
@@ -225,7 +309,7 @@ struct AdvancedModelPicker: View {
                         .accessibilityIdentifier("config-picker-\(option.id)")
                     }
                 }
-                ModelControlStatus(model: model)
+                ModelControlStatus(settings: settings)
             }
             .scrollContentBackground(.hidden)
             .navigationTitle("Advanced")
@@ -234,21 +318,20 @@ struct AdvancedModelPicker: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
             .navigationDestination(for: String.self) { optionID in
-                ModelOptionChoices(model: model, sessionID: sessionID, optionID: optionID)
+                ModelOptionChoices(settings: settings, optionID: optionID)
             }
         }
     }
 }
 
 private struct ModelOptionChoices: View {
-    let model: AgentChatModel
-    let sessionID: String
+    let settings: ChatComposerSettings
     let optionID: String
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
 
     var body: some View {
-        if let option = model.selected.configOptions.first(where: { $0.id == optionID }) {
+        if let option = settings.options.first(where: { $0.id == optionID }) {
             if option.category == .model && option.choices.count > 8 {
                 choiceList(option).searchable(text: $search, prompt: "Find a model")
             } else {
@@ -268,7 +351,7 @@ private struct ModelOptionChoices: View {
         var seen = Set<String?>()
         let groupOrder = choices.map(\.group).filter { seen.insert($0).inserted }
         return List {
-            ModelControlStatus(model: model)
+            ModelControlStatus(settings: settings)
             ForEach(groupOrder, id: \.self) { group in
                 Section {
                     ForEach(groups[group] ?? []) { choice in
@@ -290,10 +373,7 @@ private struct ModelOptionChoices: View {
         return Button {
             guard !selected else { dismiss(); return }
             Task {
-                await model.setConfigOption(option.id, value: choice.id, sessionID: sessionID)
-                guard model.selectedID == sessionID,
-                      model.selected.configOptions.contains(where: { $0.id == option.id && $0.currentValue == choice.id }) else { return }
-                dismiss()
+                if await settings.select(option.id, choice.id) { dismiss() }
             }
         } label: {
             HStack {
@@ -305,21 +385,21 @@ private struct ModelOptionChoices: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(model.selected.configuring || model.selected.working)
+        .disabled(settings.configuring || settings.working)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("config-\(option.id)-\(choice.id)")
     }
 }
 
 private struct ModelControlStatus: View {
-    let model: AgentChatModel
+    let settings: ChatComposerSettings
 
     var body: some View {
-        if model.selected.configuring {
+        if settings.configuring {
             ProgressView("Updating…").font(.footnote)
-        } else if let error = model.selected.configError {
+        } else if let error = settings.error {
             Text(error).font(.footnote).foregroundStyle(ChatTheme.warning)
-        } else if model.selected.working {
+        } else if settings.working {
             Text("Changes are available after the reply finishes.")
                 .font(.footnote)
                 .foregroundStyle(ChatTheme.muted)
@@ -328,7 +408,13 @@ private struct ModelControlStatus: View {
 }
 
 private extension SessionConfigOption {
-    var pickerTitle: String { category == .thoughtLevel ? "Intelligence" : name }
+    var pickerTitle: String {
+        switch category {
+        case .thoughtLevel: "Intelligence"
+        case .serviceTier: "Speed"
+        case .model: name
+        }
+    }
 
     var pickerChoices: [Choice] {
         guard category == .thoughtLevel else { return choices }

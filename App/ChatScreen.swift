@@ -8,7 +8,6 @@ struct ChatScreen: View {
     var initialChatID: String? = nil
     @State private var showChats = false
     @State private var showModelPicker = false
-    @State private var showAdvancedModelPicker = false
     @State private var composerHeight: CGFloat = 0
     @State private var landing = true
     @State private var couldNotOpen = false
@@ -39,7 +38,17 @@ struct ChatScreen: View {
     }
 
     private var pickerIsOpen: Bool {
-        showModelPicker && !resolvingInitialChat && model.selected.hasConfigChoices
+        showModelPicker && !resolvingInitialChat && composerSettings.hasChoices
+    }
+
+    private var composerSettings: ChatComposerSettings {
+        let chatID = model.selectedID
+        let chat = model.selected
+        return .init(options: chat.configOptions, reportedModelName: chat.modelName, configuring: chat.configuring,
+                     working: chat.working, error: chat.configError) { id, value in
+            await model.setConfigOption(id, value: value, sessionID: chatID)
+            return model.selectedID == chatID && model.selected.configOptions.contains { $0.id == id && $0.currentValue == value }
+        }
     }
 
     private var resolvingInitialChat: Bool {
@@ -141,19 +150,11 @@ struct ChatScreen: View {
         .sheet(isPresented: $showChats) {
             ChatPicker(model: model, openClaw: voiceRemote?.kind == .openClaw)
         }
-        .sheet(isPresented: $showAdvancedModelPicker) {
-            AdvancedModelPicker(model: model, sessionID: model.selectedID)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(.regularMaterial)
-        }
         .task(id: chatKey) {
             safariApproval.restore(agentID: voiceRemote?.id, chatID: chatKey.chat)
         }
         .onChange(of: model.selectedID) {
             safariApproval.cancelTurn()
-            showModelPicker = false
-            showAdvancedModelPicker = false
         }
         .sheet(isPresented: $pairingVoice) {
             if let voiceRemote, let remoteStore { PairNativeVoiceScreen(remote: voiceRemote, store: remoteStore) }
@@ -254,6 +255,9 @@ struct ChatScreen: View {
 
     private var chat: some View {
         let chatKey = self.chatKey
+        let settings = resolvingInitialChat ? ChatComposerSettings() : composerSettings
+        let selected = model.selected
+        let draft = Binding(get: { workspace.drafts[chatKey] }, set: { workspace.drafts[chatKey] = $0 })
         return ZStack {
             transcript.id(model.selectedID)
                 .opacity(awaitingHistory ? 0 : 1)
@@ -276,52 +280,32 @@ struct ChatScreen: View {
                             .accessibilityIdentifier("safari-chat-status")
                     }
                     ChatComposer(
-                        model: model,
+                        prompt: "Message \(model.target.name)",
                         chatID: chatKey.chat,
-                        draft: Binding(
-                            get: { workspace.drafts[chatKey] },
-                            set: { workspace.drafts[chatKey] = $0 }
-                        ),
+                        draft: draft,
                         modelPickerVisible: $showModelPicker,
                         editorFocus: $composerFocused,
+                        settings: settings,
+                        context: selected.context,
+                        ready: selected.loaded,
+                        canDictate: selected.loaded,
+                        canSubmit: selected.loaded && !selected.configuring && !selected.working,
                         transcribe: dictationTranscriber,
-                        didSend: {
-                            showModelPicker = false
-                            workspace.rememberReadingOffset(nil, for: chatKey)
-                            viewport.restore(nil)
-                        },
-                        submit: sendMessage
-                    )
+                        stopping: selected.stopping,
+                        stop: selected.working ? { Task { await model.stop() } } : nil
+                    ) {
+                        guard model.selectedID == chatKey.chat else { return }
+                        sendMessage(draft.wrappedValue)
+                        draft.wrappedValue = ""
+                        workspace.rememberReadingOffset(nil, for: chatKey)
+                        viewport.restore(nil)
+                    }
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
             }
         }
-        .overlay(alignment: .bottom) {
-            if pickerIsOpen {
-                ZStack(alignment: .bottom) {
-                    Button {
-                        showModelPicker = false
-                    } label: {
-                        Color.clear
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Dismiss model controls")
-                    .accessibilityIdentifier("dismiss-model-picker")
-
-                    QuickModelPicker(model: model, sessionID: model.selectedID) {
-                        showModelPicker = false
-                        showAdvancedModelPicker = true
-                    }
-                    .padding(.bottom, 4)
-                }
-                .padding(.bottom, composerHeight)
-                .transition(.opacity)
-                .accessibilityAction(.escape) { showModelPicker = false }
-            }
-        }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: pickerIsOpen)
+        .modifier(ChatModelPicker(settings: settings, composerHeight: composerHeight,
+                                  chatID: chatKey.chat, isExpanded: $showModelPicker))
     }
 
     private func visit() {

@@ -2,49 +2,60 @@ import RiptideCore
 import SwiftUI
 
 struct ChatComposer: View {
-    let model: AgentChatModel
-    let chatID: String
+    let prompt: String
+    let chatID: String?
+    var fieldID = "chat-composer"
     @Binding var draft: String
     @Binding var modelPickerVisible: Bool
     var editorFocus: FocusState<Bool>.Binding
+    var settings = ChatComposerSettings()
+    var context: ContextUsage? = nil
+    var ready = true
+    let canDictate: Bool
+    let canSubmit: Bool
     let transcribe: DictationTranscriber?
-    let didSend: () -> Void
-    let submit: (String) -> Void
+    var steering = false
+    var stopping = false
+    var stop: (() -> Void)? = nil
+    let submit: () -> Void
 
     @State private var showContext = false
 
     var body: some View {
-        let prompt = "Message \(model.target.name)"
-        DictatingComposer(
-            focused: editorFocus.wrappedValue,
-            showsOptions: model.selected.context != nil || model.selected.hasConfigChoices
-                || model.selected.modelName != nil,
-            chatID: chatID,
-            canDictate: model.selected.loaded,
-            draft: $draft,
-            transcribe: transcribe,
-            dismissKeyboard: {
-                editorFocus.wrappedValue = false
-                modelPickerVisible = false
-                showContext = false
-            },
-            canSubmit: canSubmit,
-            submitDraft: submitDraft
-        ) {
-            TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
-                .lineLimit(1...6)
-                .focused(editorFocus)
-                .disabled(!model.selected.loaded)
-                .accessibilityIdentifier("chat-composer")
-        } options: {
-            if let usage = model.selected.context {
-                contextButton(usage)
+        VStack(spacing: 0) {
+            if !modelPickerVisible, let error = settings.error {
+                Text(error).font(.footnote).foregroundStyle(ChatTheme.warning)
+                    .padding(.horizontal, ChatTheme.gutter)
             }
-            ChatModelControls(model: model, isExpanded: $modelPickerVisible)
-        } actions: {
-            actionButton
+            DictatingComposer(
+                focused: editorFocus.wrappedValue,
+                showsOptions: context != nil || settings.hasChoices || settings.modelName != nil,
+                chatID: chatID,
+                canDictate: canDictate,
+                draft: $draft,
+                transcribe: transcribe,
+                dismissKeyboard: {
+                    editorFocus.wrappedValue = false
+                    modelPickerVisible = false
+                    showContext = false
+                },
+                canSubmit: canSubmit,
+                submitDraft: submitDraft
+            ) {
+                TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
+                    .lineLimit(1...6)
+                    .focused(editorFocus)
+                    .disabled(!ready)
+                    .accessibilityIdentifier(fieldID)
+            } options: {
+                if let context { contextButton(context) }
+                ChatModelControls(settings: settings, isExpanded: $modelPickerVisible)
+                FastModeButton(settings: settings)
+            } actions: {
+                actions
+            }
         }
-        .onChange(of: model.selectedID) {
+        .onChange(of: chatID) {
             showContext = false
             editorFocus.wrappedValue = false
         }
@@ -73,7 +84,7 @@ struct ChatComposer: View {
         .accessibilityValue(usage.fraction.formatted(.percent.precision(.fractionLength(0))) + " used")
         .accessibilityIdentifier("context-usage")
         .popover(isPresented: $showContext, arrowEdge: .bottom) {
-            if let current = model.selected.context {
+            if let current = context {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Context window").font(.headline)
                     Text("\(current.used.formatted()) of \(current.capacity.formatted()) tokens used")
@@ -87,32 +98,24 @@ struct ChatComposer: View {
         }
     }
 
-    private var canSubmit: Bool {
-        model.selectedID == chatID && model.selected.loaded &&
-            !model.selected.configuring && !model.selected.working
-    }
-
     private func submitDraft() {
         guard canSubmit, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        submit(draft)
-        draft = ""
         editorFocus.wrappedValue = false
-        didSend()
+        modelPickerVisible = false
+        submit()
     }
 
-    private var actionButton: some View {
-        let working = model.selected.working
-        let disabled = working ? model.selected.stopping : !canSubmit
-            || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return ComposerAction(working ? "Stop reply" : "Send", symbol: working ? "stop.fill" : "arrow.up",
-                              disabled: disabled) {
-            if working {
-                Task { await model.stop() }
-            } else {
-                submitDraft()
-            }
+    @ViewBuilder private var actions: some View {
+        if let stop {
+            ComposerAction(steering ? "Stop turn" : "Stop reply", symbol: "stop.fill", disabled: stopping, action: stop)
+                .accessibilityIdentifier(steering ? "stop-codex-turn" : "stop-reply")
         }
-        .accessibilityIdentifier(working ? "stop-reply" : "send-message")
+        if steering || stop == nil {
+            ComposerAction(steering ? "Steer" : "Send", symbol: "arrow.up",
+                           disabled: !canSubmit || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                           action: submitDraft)
+                .accessibilityIdentifier(steering ? "codex-steer-send" : "send-message")
+        }
     }
 }
 

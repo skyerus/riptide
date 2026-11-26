@@ -50,6 +50,9 @@ def admitted(packet, workspace, pending):
     if method != "session/new" and not isinstance(params.get("sessionId"), str):
         return False
     if method == "session/set_config_option":
+        if params.get("configId") == "service_tier":
+            return (isinstance(params.get("value"), str) and
+                    params["value"] in ("normal", "fast", "auto", "cold", "ultrafast"))
         return params.get("configId") in ("model", "effort", "reasoning_effort") and isinstance(params.get("value"), str)
     if method == "session/prompt":
         blocks = params.get("prompt")

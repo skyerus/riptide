@@ -115,26 +115,13 @@ struct CodexLiveScreen: View {
     }
 
     private var composer: some View {
-        let prompt = "Steer this turn"
-        let disabled = steering || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return DictatingComposer(
-            focused: editorFocused, showsOptions: false, chatID: turn?.turnID,
-            canDictate: active && !steering, draft: $draft,
+        ChatComposer(
+            prompt: "Steer this turn", chatID: turn?.turnID, fieldID: "codex-steer-input", draft: $draft,
+            modelPickerVisible: .constant(false), editorFocus: $editorFocused,
+            canDictate: active && !steering, canSubmit: active && !steering,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
-            dismissKeyboard: { editorFocused = false },
-            canSubmit: active && !steering,
-            submitDraft: submitDraft
-        ) {
-            TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
-                .lineLimit(1...6)
-                .focused($editorFocused)
-                .accessibilityIdentifier("codex-steer-input")
-        } options: {
-            EmptyView()
-        } actions: {
-            ComposerAction("Steer", symbol: "arrow.up", disabled: disabled, action: submitDraft)
-            .accessibilityIdentifier("codex-steer-send")
-        }
+            steering: true, submit: submitDraft
+        )
     }
 
     private func watch() async {

@@ -17,6 +17,10 @@ final class CodexWorkspaceSession {
     private(set) var ready = false
     private(set) var stopping = false
     private(set) var sending = false
+    private(set) var configOptions: [SessionConfigOption] = []
+    private(set) var context: ContextUsage?
+    private(set) var configuring = false
+    private(set) var configError: String?
     private(set) var issue: String?
     private(set) var hasOlderTurns = false
     private(set) var diff: String?
@@ -57,6 +61,8 @@ final class CodexWorkspaceSession {
                     self?.setChat(created, peer: peer)
                 }
                 self?.connected(peer)
+                let discovery = Task { await peer.discoverSavedChatConfiguration() }
+                defer { discovery.cancel() }
                 for try await event in peer.chatEvents {
                     guard let self, !Task.isCancelled, self.client === peer else { break }
                     self.apply(event)
@@ -78,6 +84,7 @@ final class CodexWorkspaceSession {
         activeTurnID = nil
         stopping = false
         sending = false
+        clearConfiguration()
         approvals = []
         responding = []
         publishAttention()
@@ -85,7 +92,7 @@ final class CodexWorkspaceSession {
     }
 
     func send(_ text: String) async -> Bool {
-        guard let client, ready, !sending, !stopping, !text.isEmpty else { return false }
+        guard let client, ready, !sending, !stopping, !configuring, !text.isEmpty else { return false }
         sending = true
         issue = nil
         defer { sending = false }
@@ -96,6 +103,29 @@ final class CodexWorkspaceSession {
             issue = error.localizedDescription
             return false
         }
+    }
+
+    func setConfigOption(_ id: String, value: String) async -> Bool {
+        guard let client, ready, !working, !sending, !configuring else { return false }
+        configuring = true
+        configError = nil
+        defer { if self.client === client { configuring = false } }
+        do {
+            let options = try await client.setSavedChatConfigOption(id, value: value)
+            guard self.client === client else { return false }
+            configOptions = options
+            return options.contains { $0.id == id && $0.currentValue == value }
+        } catch {
+            if self.client === client { configError = error.localizedDescription }
+            return false
+        }
+    }
+
+    private func clearConfiguration() {
+        configOptions = []
+        context = nil
+        configuring = false
+        configError = nil
     }
 
     func answer(_ approval: CodexChatApproval, allow: Bool) {
@@ -143,6 +173,7 @@ final class CodexWorkspaceSession {
         ready = false
         activeTurnID = nil
         stopping = false
+        clearConfiguration()
         approvals = []
         responding = []
         issue = message
@@ -188,6 +219,10 @@ final class CodexWorkspaceSession {
             publishAttention()
         case .progress(let update):
             if let activeTurnID { turns[turnIndex(for: activeTurnID)].apply(update) }
+        case .configOptions(let options):
+            configOptions = options
+        case .context(let usage):
+            context = usage
         case .issue(let message):
             issue = message
         case .live(let update):

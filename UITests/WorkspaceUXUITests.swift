@@ -2,6 +2,61 @@ import XCTest
 
 final class WorkspaceUXUITests: XCTestCase {
     @MainActor
+    func testCodexComposerChangesNativeSpeedModelAndIntelligence() throws {
+        continueAfterFailure = false
+        let (app, _) = try openCodexFixture()
+        let fast = app.buttons["fast-mode"]
+        let model = app.buttons["model-options"]
+        XCTAssertTrue(fast.waitForExistence(timeout: 8))
+        XCTAssertEqual(model.value as? String, "6.2 Sol, Extra High")
+        XCTAssertEqual(fast.value as? String, "Off")
+        capture(app, as: "Codex Fast mode off")
+
+        fast.tap()
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "On"), object: fast)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed)
+        capture(app, as: "Codex Fast mode on")
+
+        fast.tap()
+        let disabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Off"), object: fast)
+        XCTAssertEqual(XCTWaiter.wait(for: [disabled], timeout: 5), .completed)
+
+        model.tap()
+        let effort = app.descendants(matching: .any).matching(identifier: "intelligence-steps").firstMatch
+        XCTAssertTrue(effort.waitForExistence(timeout: 5))
+        capture(app, as: "Codex quick intelligence picker")
+        app.buttons["advanced-model-controls"].tap()
+        app.buttons["config-picker-model"].tap()
+        let astra = app.buttons["config-model-gpt-6.2-astra"]
+        XCTAssertTrue(astra.waitForExistence(timeout: 5))
+        capture(app, as: "Codex model list")
+        astra.tap()
+        app.buttons["Done"].tap()
+        let updated = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "6.2 Astra, Medium"), object: model)
+        XCTAssertEqual(XCTWaiter.wait(for: [updated], timeout: 5), .completed)
+        XCTAssertTrue(fast.waitForNonExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testHermesComposerChangesFastMode() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launch()
+        openMainChat(in: app, agent: "hermes")
+        let fast = app.buttons["fast-mode"]
+        XCTAssertTrue(fast.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["model-options"].exists)
+        XCTAssertEqual(fast.value as? String, "Off")
+        for value in ["On", "Off"] {
+            fast.tap()
+            let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: fast)
+            XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed)
+            if value == "On" { capture(app, as: "Hermes Fast mode on") }
+        }
+    }
+
+    @MainActor
     func testHermesDictationCancelAndStopPreserveAnEditableDraft() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString

@@ -3,6 +3,77 @@ import Testing
 @testable import RiptideCore
 
 struct ACPCapabilityTests {
+    @Test func codexComposerUsesNativeThreadSettingsAndModelCapabilities() async throws {
+        let thread: JSON = ["id": "selected", "cwd": "/disposable"]
+        let transport = ScriptedTransport { request in
+            let method = request["method"]?.string
+            if method == "initialized" { return [] }
+            let id = try #require(request["id"])
+            let params = request["params"]
+            switch method {
+            case "initialize":
+                #expect(params?["capabilities"]?["experimentalApi"] == .boolean(true))
+                return [.reply(id, result: [:])]
+            case "thread/read":
+                return [.reply(id, result: ["thread": thread])]
+            case "thread/resume":
+                return [.reply(id, result: ["thread": thread, "model": "selected-model", "modelProvider": "openai",
+                                            "serviceTier": "default", "reasoningEffort": "medium"])]
+            case "thread/turns/list":
+                return [.reply(id, result: ["data": .array([])])]
+            case "model/list":
+                #expect(params?["modelProvider"] == "openai")
+                return [.reply(id, result: ["data": .array([
+                    ["model": "selected-model", "defaultServiceTier": "priority", "supportedReasoningEfforts": .array([
+                        ["reasoningEffort": "medium"], ["reasoningEffort": "high"]
+                    ]), "serviceTiers": .array([["id": "ultrafast", "name": "Ultrafast"], ["id": "priority", "name": "Fast"]])],
+                    ["model": "other-model", "defaultReasoningEffort": "low", "supportedReasoningEfforts": .array([
+                        ["reasoningEffort": "low"]
+                    ])]
+                ])])]
+            case "thread/settings/update":
+                if let tier = params?["serviceTier"]?.string {
+                    #expect(params == ["threadId": "selected", "serviceTier": .string(tier)])
+                    #expect(["priority", "default"].contains(tier))
+                    return [.notification("thread/settings/updated", params: [
+                        "threadId": "selected", "threadSettings": ["model": "selected-model", "modelProvider": "openai",
+                                                                   "serviceTier": .string(tier), "effort": "medium"]
+                    ]), .reply(id, result: [:])]
+                }
+                if params?["model"] != nil {
+                    #expect(params == ["threadId": "selected", "model": "other-model", "effort": "low"])
+                } else {
+                    #expect(params == ["threadId": "selected", "effort": "high"])
+                }
+                return [.reply(id, result: [:])]
+            default:
+                Issue.record("Unexpected Codex request: \(method ?? "missing")")
+                return [.failure(id, code: -32601, message: "Unexpected request")]
+            }
+        }
+        let client = CodexLiveClient(transport: transport, workspace: "/disposable")
+        _ = try await client.openSavedChat("selected")
+        await client.discoverSavedChatConfiguration()
+        var events = client.chatEvents.makeAsyncIterator()
+        _ = try await events.next()
+        guard case .configOptions(let initial) = try await events.next() else {
+            Issue.record("Expected the thread's model, intelligence, and speed settings")
+            return
+        }
+        #expect(initial.first { $0.category == .serviceTier }?.fastMode == false)
+        let fast = try await client.setSavedChatConfigOption("service_tier", value: "fast")
+        #expect(fast.first { $0.category == .serviceTier }?.fastMode == true)
+        let normal = try await client.setSavedChatConfigOption("service_tier", value: "default")
+        #expect(normal.first { $0.category == .serviceTier }?.fastMode == false)
+        let high = try await client.setSavedChatConfigOption("effort", value: "high")
+        #expect(high.first { $0.category == .thoughtLevel }?.currentValue == "high")
+        let changed = try await client.setSavedChatConfigOption("model", value: "other-model")
+        #expect(changed.first { $0.category == .model }?.currentValue == "other-model")
+        #expect(changed.first { $0.category == .thoughtLevel }?.currentValue == "low")
+        #expect(changed.allSatisfy { $0.category != .serviceTier })
+        await client.close()
+    }
+
     @Test func codexInputAndStopAreScopedToTheCurrentRequestAndTurn() async throws {
         let thread: JSON = ["id": "selected", "cwd": "/disposable"]
         let transport = ScriptedTransport { request in

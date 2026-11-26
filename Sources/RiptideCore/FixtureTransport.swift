@@ -37,6 +37,7 @@ public actor FixtureTransport: ACPTransport {
         var updates: [JSON]
         var model: String?
         var effort: String?
+        var serviceTier: String?
     }
 
     private struct Turn {
@@ -131,6 +132,8 @@ public actor FixtureTransport: ACPTransport {
                 if option == "model" {
                     sessions[index].model = value
                     if value == "atlas-mini", previous.effort == "high" { sessions[index].effort = "medium" }
+                } else if option == "service_tier" {
+                    sessions[index].serviceTier = value
                 } else {
                     sessions[index].effort = value
                 }
@@ -327,12 +330,19 @@ public actor FixtureTransport: ACPTransport {
         let effortValues = hermes ? ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
             : model == "atlas" ? ["low", "medium", "high"] : ["low", "medium"]
         let efforts: [JSON] = effortValues.map { ["value": .string($0), "name": .string($0)] }
-        return .array([
+        var options: [JSON] = [
             ["id": "model", "name": "Model", "category": "model", "type": "select",
              "currentValue": .string(model), "options": .array(models)],
             ["id": "effort", "name": "Reasoning effort", "category": "thought_level", "type": "select",
              "currentValue": .string(session.effort ?? (hermes ? "xhigh" : "medium")), "options": .array(efforts)]
-        ])
+        ]
+        if hermes {
+            options.append(["id": "service_tier", "name": "Service tier", "category": "other", "type": "select",
+                            "currentValue": .string(session.serviceTier ?? "normal"), "options": .array([
+                                ["value": "normal", "name": "Normal"], ["value": "fast", "name": "Fast"]
+                            ])])
+        }
+        return .array(options)
     }
 
     private func reportUsage(for session: SavedSession) {
