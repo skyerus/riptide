@@ -54,7 +54,7 @@ private struct FormattedMarkdown: View, Equatable {
     var body: some View {
         let blocks = Array(Document(parsing: source).children)
         let footer = streaming ? nil : ChatSourceFooter(blocks: blocks)
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: ChatSourceSpacing.footer) {
             MarkdownBlocks(
                 blocks: Array(blocks.dropLast(footer?.blockCount ?? 0)),
                 sourceLines: source.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline),
@@ -107,7 +107,7 @@ private struct MarkdownBlocks: View {
     let footer: ChatSourceFooter?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: ChatSourceSpacing.paragraph) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 if let table = block as? Markdown.Table {
                     tableView(table)

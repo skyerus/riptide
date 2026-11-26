@@ -1,6 +1,13 @@
 import Markdown
 import SwiftUI
 
+enum ChatSourceSpacing {
+    // Rounded steps of the golden ratio, from related text to the next group.
+    static let rowPadding: CGFloat = 5
+    static let paragraph: CGFloat = 8
+    static let footer: CGFloat = 13
+}
+
 struct ChatSource: Equatable {
     let title: String
     let url: URL
@@ -77,25 +84,32 @@ struct ChatSourceFooter {
         var rendered = SwiftUI.Text(verbatim: "")
         var cursor = text.startIndex
         for group in groups {
-            let destinations = sources(numbered: group.numbers)
             let ids = group.numbers.map(String.init).joined(separator: ",")
-            guard let first = destinations.first,
-                  let url = URL(string: "riptide-citation://sources/\(ids)"),
-                  let lower = AttributedString.Index(group.range.lowerBound, within: text),
+            var start = group.range.lowerBound
+            while start > plain.startIndex {
+                let previous = plain.index(before: start)
+                guard plain[previous] == " " || plain[previous] == "\t" else { break }
+                start = previous
+            }
+            guard let url = URL(string: "riptide-citation://sources/\(ids)"),
+                  let lower = AttributedString.Index(start, within: text),
                   let upper = AttributedString.Index(group.range.upperBound, within: text) else { continue }
             let prose = SwiftUI.Text(AttributedString(text[cursor..<lower]))
-            rendered = SwiftUI.Text("\(rendered)\(prose)")
-            if group.range.lowerBound > plain.startIndex, !plain[plain.index(before: group.range.lowerBound)].isWhitespace {
-                rendered = SwiftUI.Text("\(rendered) ")
+            let visible = group.numbers.prefix(2).map(String.init).joined(separator: ",\u{202F}")
+            let remaining = group.numbers.count - min(group.numbers.count, 2)
+            let label = remaining == 0 ? visible : "\(visible)\u{202F}+\(remaining)"
+            let gap = if start > plain.startIndex, !plain[plain.index(before: start)].isWhitespace {
+                "\u{00A0}"
+            } else {
+                ""
             }
-            let remaining = destinations.count - 1
-            let label = remaining == 0 ? first.domain : "\(first.domain)\u{202F}+\(remaining)"
-            var citation = AttributedString("\u{00A0}\(label)\u{00A0}")
+            var citation = AttributedString("\u{00A0}\u{202F}\(label)\u{202F}\u{00A0}")
             citation.link = url
             citation.font = .caption.weight(.medium)
             citation.foregroundColor = .primary
             let badge = SwiftUI.Text(citation).customAttribute(ChatCitationBadge())
-            rendered = SwiftUI.Text("\(rendered)\(badge)")
+            let space = SwiftUI.Text(verbatim: gap)
+            rendered = SwiftUI.Text("\(rendered)\(prose)\(space)\(badge)")
             cursor = upper
         }
         let tail = SwiftUI.Text(AttributedString(text[cursor...]))
@@ -173,6 +187,7 @@ struct ChatSourcesSheet: View {
     let sources: [ChatSource]
     let open: (URL) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicType
 
     var body: some View {
         NavigationStack {
@@ -180,7 +195,7 @@ struct ChatSourcesSheet: View {
                 Button {
                     open(source.url)
                 } label: {
-                    HStack(spacing: 12) {
+                    HStack(spacing: ChatSourceSpacing.footer) {
                         Image(systemName: "globe")
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
@@ -191,19 +206,20 @@ struct ChatSourcesSheet: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
-                        Spacer(minLength: 8)
+                        Spacer(minLength: ChatSourceSpacing.paragraph)
                         Image(systemName: "arrow.up.right")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
                     }
                     .foregroundStyle(.primary)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, ChatSourceSpacing.rowPadding)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("chat-source")
             }
+            .contentMargins(.top, ChatSourceSpacing.footer, for: .scrollContent)
             .navigationTitle("Sources")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -213,6 +229,7 @@ struct ChatSourcesSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        // The compact sheet uses the smaller section of a golden-ratio split.
+        .presentationDetents(dynamicType.isAccessibilitySize ? [.large] : [.fraction(0.382), .large])
     }
 }
