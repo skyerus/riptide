@@ -55,6 +55,27 @@ def verify(argv):
         state = json.loads(run("riptide-safari", '{"operation":"state","body":{}}\n'))
         require(state.get("status") == 200, "The existing Safari SSH route did not respond.")
     require(run("riptide-hermes-screen", "") == "", "The Hermes screen command did not close cleanly.")
+    if "--pairing-config" in argv:
+        prefix = argv[:argv.index("--")]
+        wrapper = next(Path(arg) for arg in prefix if Path(arg).name == "ssh_acp.py")
+        pairing = prefix[prefix.index("--pairing-config") + 1]
+        frames = (
+            {"id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "riptide-release-verifier", "version": "1"},
+            }},
+            {"method": "notifications/initialized"},
+            {"id": 2, "method": "tools/call", "params": {"name": "list_pairable_agents", "arguments": {}}},
+        )
+        result = subprocess.run(
+            [prefix[0], "-BE", str(wrapper.with_name("agent_pairing_mcp.py")), "--config", pairing],
+            input="".join(json.dumps({"jsonrpc": "2.0", **frame}) + "\n" for frame in frames),
+            text=True, capture_output=True, timeout=8,
+        )
+        require(result.returncode == 0, "The staged pairing connector could not start.")
+        responses = [json.loads(line) for line in result.stdout.splitlines()]
+        reply = next((frame.get("result", {}) for frame in responses if frame.get("id") == 2), {})
+        require(reply.get("isError") is False, "The staged pairing connector could not read its manifest.")
     if "--hermes-groups" in argv:
         probe = {"jsonrpc": "2.0", "id": "verify-groups", "method": "groups.capabilities", "params": {}}
         groups = json.loads(run("riptide-hermes-groups", json.dumps(probe) + "\n"))

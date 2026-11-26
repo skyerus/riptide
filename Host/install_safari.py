@@ -24,7 +24,7 @@ from safari_bridge import RelayError, browser_call
 HOST = Path(__file__).resolve().parent
 PAYLOAD = ("ssh_acp.py", "hermes_screen.py", "hermes_groups.py", "hermes_mobile.py", "codex_dictation.py",
            "safari_bridge.py", "safari_mcp.py", "safari_codex.py", "attention_relay.py", "hermes_attention.py",
-           "hermes_pairing.py", "agent_pairing_mcp.py")
+           "hermes_pairing.py", "agent_pairing_mcp.py", "install_safari.py")
 REQUIREMENTS = ("safari-installer-requirements.txt", "safari-requirements.txt")
 MARKER = "# Managed by the Riptide Safari installer"
 PYTHON_ENV = "RIPTIDE_SAFARI_CODEX_PYTHON"
