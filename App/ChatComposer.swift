@@ -2,6 +2,14 @@ import RiptideCore
 import SwiftUI
 
 struct ChatComposer: View {
+    enum Submission: String {
+        case send = "Send"
+        case steer = "Steer"
+        case queue = "Queue"
+
+        var symbol: String { self == .queue ? "text.append" : "arrow.up" }
+    }
+
     let prompt: String
     let chatID: String?
     var fieldID = "chat-composer"
@@ -17,7 +25,7 @@ struct ChatComposer: View {
     let canDictate: Bool
     let canSubmit: Bool
     let transcribe: DictationTranscriber?
-    var steering = false
+    var submission = Submission.send
     var stopping = false
     var stop: (() -> Void)? = nil
     var enqueue: (() -> Void)? = nil
@@ -128,7 +136,7 @@ struct ChatComposer: View {
             ComposerAction(stopTitle, symbol: "stop.fill", disabled: stopping, action: stop)
                 .accessibilityIdentifier(stopID)
         }
-        ComposerAction(steering ? "Steer" : "Send", symbol: "arrow.up",
+        ComposerAction(submission.rawValue, symbol: submission.symbol,
                        disabled: !canSubmit || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        queue: queueDraft, action: submitDraft)
             .accessibilityIdentifier(sendID)

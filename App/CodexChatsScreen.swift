@@ -305,7 +305,7 @@ struct CodexSavedChatScreen: View {
             modelPickerVisible: $showModelPicker, editorFocus: $composerFocused,
             settings: composerSettings, context: session?.context, canDictate: canSubmit, canSubmit: canSubmit,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
-            steering: working, stopping: stopping,
+            submission: working ? .steer : .send, stopping: stopping,
             stop: working ? { Task { await session?.interrupt() } } : nil,
             enqueue: working ? { submitDraft(queue: true) } : nil,
             submit: { submitDraft(queue: false) }

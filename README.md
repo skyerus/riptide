@@ -115,6 +115,7 @@ Use the precise directory and ID returned by `hermes -p bookkeeper acp`'s `sessi
 
 Install `Host/hermes-pairing/SKILL.md` under the source profile's `skills/riptide-hermes-pairing/` and enable native `clarify` there. Then ask that agent to connect the configured profile and tap **Connect agent** in chat.
 
+For a gateway-managed Hermes chat, [the reconnect status patch](Host/compat/hermes-acp-turn-status.patch) lets Riptide recover the **Working** indicator from the same chat when SSH reconnects. Apply the patch from the Riptide release to the Hermes source at revision `8fc0374447313e276f6b9a2764bfc750190c966a`. Run `git apply --check /path/to/riptide/Host/compat/hermes-acp-turn-status.patch` before applying it with `git apply`. The next SSH connection starts a fresh ACP process and picks up the patch. Use `git apply -R` with the same patch to roll back. The patch can be applied alongside the Hermes Safari and ACP steering compatibility patches.
 
 ### Hermes browser handoff over SSH
 

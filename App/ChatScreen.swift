@@ -260,7 +260,7 @@ struct ChatScreen: View {
               !selected.stopping, !selected.steering, !text.isEmpty else { return }
         workspace.rememberReadingOffset(nil, for: chat)
         viewport.restore(nil)
-        if queue {
+        if queue || (selected.working && !selected.canStop) {
             if model.enqueue(text, in: chat.chat) { draft.wrappedValue = "" }
         } else if selected.working {
             Task {
@@ -278,6 +278,12 @@ struct ChatScreen: View {
         let chatKey = self.chatKey
         let settings = resolvingInitialChat ? ChatComposerSettings() : composerSettings
         let selected = model.selected
+        let submission: ChatComposer.Submission = selected.canStop ? .steer : selected.working ? .queue : .send
+        let prompt = switch submission {
+        case .send: "Message \(model.target.name)"
+        case .steer: "Steer this reply"
+        case .queue: "Queue a message"
+        }
         let draft = Binding(get: { workspace.drafts[chatKey] }, set: { workspace.drafts[chatKey] = $0 })
         return ZStack {
             transcript.id(model.selectedID)
@@ -313,7 +319,7 @@ struct ChatScreen: View {
                             .accessibilityIdentifier("safari-chat-status")
                     }
                     ChatComposer(
-                        prompt: selected.working ? "Steer this reply" : "Message \(model.target.name)",
+                        prompt: prompt,
                         chatID: chatKey.chat,
                         draft: draft,
                         modelPickerVisible: $showModelPicker,
@@ -325,11 +331,11 @@ struct ChatScreen: View {
                         canSubmit: selected.loaded && !selected.loading && !selected.configuring
                             && !selected.stopping && !selected.steering,
                         transcribe: dictationTranscriber,
-                        steering: selected.working, stopping: selected.stopping,
-                        stop: selected.working ? { Task { await model.stop() } } : nil,
-                        enqueue: selected.working ? { submitDraft(draft, in: chatKey, queue: true) } : nil
+                        submission: submission, stopping: selected.stopping,
+                        stop: selected.canStop ? { Task { await model.stop() } } : nil,
+                        enqueue: selected.canStop ? { submitDraft(draft, in: chatKey, queue: true) } : nil
                     ) {
-                        submitDraft(draft, in: chatKey, queue: false)
+                        submitDraft(draft, in: chatKey, queue: submission == .queue)
                     }
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }

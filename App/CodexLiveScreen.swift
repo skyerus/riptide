@@ -144,7 +144,7 @@ struct CodexLiveScreen: View {
             modelPickerVisible: .constant(false), editorFocus: $editorFocused, context: session.context ?? context,
             canDictate: canSubmit, canSubmit: canSubmit,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
-            steering: session.working,
+            submission: session.working ? .steer : .send,
             enqueue: session.working ? { submitDraft(queue: true) } : nil,
             submit: { submitDraft(queue: false) }
         )
