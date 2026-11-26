@@ -143,10 +143,16 @@ struct AgentAvatarEditor: View {
                         .multilineTextAlignment(.center)
                     PhotosPicker(selection: $selection, matching: .images) {
                         Label(hasPhoto ? "Change photo" : "Choose photo", systemImage: "photo.on.rectangle")
-                            .frame(maxWidth: .infinity)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(ChatTheme.background)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .background(ChatTheme.ink, in: Capsule())
+                            .contentShape(Capsule())
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
+                    .buttonStyle(.plain)
+                    .opacity(loading ? 0.55 : 1)
                     .disabled(loading)
                     .accessibilityIdentifier("choose-agent-photo")
                     if hasPhoto {
