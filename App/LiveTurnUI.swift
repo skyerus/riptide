@@ -149,17 +149,14 @@ private struct TranscriptViewportModifier: ViewModifier {
     }
 
     private nonisolated static func isAtLatest(_ geometry: ScrollGeometry) -> Bool {
-        let bottom = max(-geometry.contentInsets.top, bottomOffset(geometry))
+        let offset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
         // Allow rounding at the bottom while preserving even a short scroll into history.
-        return geometry.contentOffset.y >= bottom - 1
+        return offset >= liveOffset(geometry) - 1
     }
 
     private nonisolated static func liveOffset(_ geometry: ScrollGeometry) -> CGFloat {
-        max(0, bottomOffset(geometry))
-    }
-
-    private nonisolated static func bottomOffset(_ geometry: ScrollGeometry) -> CGFloat {
-        geometry.contentSize.height - geometry.containerSize.height + geometry.contentInsets.bottom
+        // The container already excludes the space reserved by the scroll insets.
+        max(0, geometry.contentSize.height - geometry.containerSize.height)
     }
 }
 
