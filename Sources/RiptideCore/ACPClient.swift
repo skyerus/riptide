@@ -70,6 +70,7 @@ public enum ACPEvent: Sendable, Equatable {
 public enum ACPError: LocalizedError, Equatable {
     case disconnected, malformedResponse, protocolVersion, historyUnavailable, sessionListUnavailable
     case permissionExpired
+    case methodUnavailable(String)
     case rejected(String)
 
     public var errorDescription: String? {
@@ -80,6 +81,7 @@ public enum ACPError: LocalizedError, Equatable {
         case .historyUnavailable: "This agent cannot reopen saved conversations over ACP."
         case .sessionListUnavailable: "This agent cannot list saved conversations over ACP."
         case .permissionExpired: "This approval is no longer active."
+        case .methodUnavailable(let message): message
         case .rejected(let message): message
         }
     }
@@ -201,6 +203,24 @@ public actor ACPClient {
         let result = try await runPrompt(text, sessionID: sessionID, collectReply: true)
         guard result.reason == "end_turn" else { return "" }
         return result.reply
+    }
+
+    /// False means the host confirmed that the turn ended before it accepted the follow-up.
+    public func steer(_ text: String, sessionID: String) async throws -> Bool {
+        guard activePrompts.contains(sessionID) else { return false }
+        let result: JSON
+        do {
+            result = try await call("_riptide/session/steer", [
+                "sessionId": .string(sessionID), "text": .string(text)
+            ])
+        } catch ACPError.methodUnavailable {
+            throw ACPError.rejected("This host can’t steer an active reply. Hold Send to queue the message instead.")
+        }
+        switch result["status"]?.string {
+        case "steered": return true
+        case "idle": return false
+        default: throw ACPError.malformedResponse
+        }
     }
 
     private func runPrompt(_ text: String, sessionID: String, collectReply: Bool) async throws -> (reason: String, reply: String) {
@@ -339,7 +359,10 @@ public actor ACPClient {
                 else { emit.yield(event) }
             }
         } else if let id = message["id"], let request = pending.removeValue(forKey: id) {
-            if let error = message["error"]?["message"]?.string { request.resume(throwing: ACPError.rejected(error)) }
+            if let error = message["error"]?["message"]?.string {
+                let unavailable = message["error"]?["code"] == .integer(-32601)
+                request.resume(throwing: unavailable ? ACPError.methodUnavailable(error) : ACPError.rejected(error))
+            }
             else if let result = message["result"] { request.resume(returning: result) }
             else { request.resume(throwing: ACPError.malformedResponse) }
         }

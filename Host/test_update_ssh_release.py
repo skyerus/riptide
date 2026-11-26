@@ -46,3 +46,26 @@ class SSHReleaseTests(unittest.TestCase):
         self.assertEqual(keys.stat().st_mode & 0o777, 0o600)
         for name in PAYLOAD:
             self.assertEqual((new.parent / name).read_bytes(), (HOST / name).read_bytes())
+
+    def test_versioned_update_can_enable_pairing_for_only_the_selected_key(self):
+        home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        phone = home / "phone"
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(phone)], check=True)
+        public_key = phone.with_suffix(".pub").read_text().strip()
+        fingerprint = subprocess.check_output(["ssh-keygen", "-lf", str(phone.with_suffix(".pub"))],
+                                              text=True).split()[1]
+        releases = home / "releases"
+        releases.mkdir()
+        old = releases / ("a" * 40) / "Host" / "ssh_acp.py"
+        argv = [sys.executable, str(old), "--workspace", "/work", "--hermes-screen",
+                "/profile", "/bin/hermes", "--", "/bin/agent"]
+        keys = home / "authorized_keys"
+        keys.write_text(f'restrict,command="{shlex.join(argv)}" {public_key}\n# do not change\n')
+        config = home / "pairing.json"
+        config.write_text('{"targets": {}}')
+        with patch("update_ssh_release.verify") as verify, redirect_stdout(io.StringIO()):
+            update(keys, fingerprint, releases, "a" * 40, "b" * 40, pairing_config=config)
+        command = verify.call_args.args[0]
+        self.assertEqual(command[command.index("--pairing-config") + 1], str(config))
+        self.assertLess(command.index("--pairing-config"), command.index("--"))
+        self.assertTrue(keys.read_text().endswith("# do not change\n"))

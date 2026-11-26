@@ -28,6 +28,7 @@ The composer’s model picker and context ring show session-specific settings an
 - **Inbox** and the connector tabs scroll together in the sidebar. Back returns to the tab you opened from. In a chat, **Switch** (or **⌘K**) finds live, recent and saved chats across workspaces. Search reads a bounded catalog, not message text. Drafts stay in memory when switching; they aren’t written to the host.
 - **Inbox** separates approvals and input from missed replies and chats marked **Save to Inbox**. A chat appears once under its highest-priority item; its saved follow-up stays saved after an approval clears. Tap an item to open that exact chat. In a busy Inbox, search by workspace, chat title, or attention reason. Here, a connector is a paired Codex or ACP workspace, not an automatically integrated Slack or email account. The private relay can also supply attention events.
 - Follow streamed text, plans, tool activity, and approval state without leaving the chat. Codex shows App Server commentary, command output, tool updates, changes, and supported structured questions. The transcript follows incoming text, pauses while you hold it, and stays in place if you scroll back. Switch workspaces without losing your place, or tap **Latest** to return to the live edge.
+- Tap Send during a reply to steer it. If the reply has finished, the message starts a new turn. Touch and hold Send and choose **Queue** to wait for the current reply. Tap the queue count to review or remove a follow-up. The queue stays in the running app and pauses on Stop or disconnect. Hermes and OpenClaw hosts need the [ACP steering adapter](Host/compat/acp-steering.md) for live steering.
 - Riptide retains opened Codex chat connections while you switch, so the same turn can keep streaming and ask for approval. It retires older idle connections, not active turns or unanswered requests. Codex attention also uses account-scoped App Server status and verifies completed replies before adding them. ACP approvals are shown only when Riptide observes the owning connection. A host can publish its own attention events; ACP does not itself guarantee a cross-session or background event feed.
 
 ## Desktop-aware notifications
@@ -87,6 +88,30 @@ restrict,command="/usr/bin/python3 /usr/local/libexec/riptide/ssh_acp.py --works
 ```
 
 Use absolute paths for the regular agent account, workspace, and native ACP launcher. The key disallows SSH shell access, terminal allocation, and port forwarding. The launcher limits chat to the paired workspace and refuses client-supplied MCP servers and approval-policy changes. Use a trusted device and the least-privilege agent account available, since prompts reach the real agent with its configured tools. Removing the key on the host revokes access. The private key stays in the device’s Keychain. Voice keeps its separate native endpoint.
+
+### One-tap Hermes pairing
+
+An existing trusted Hermes-over-SSH pairing can offer a **Connect agent** button in chat for another Hermes profile on that host. Riptide creates a fresh key on-device only after the tap, sends just the public key over the current pinned SSH connection, checks the new connection, and saves it as a separate remote. It doesn't re-use the existing device key or let the invitation change the SSH host.
+
+To enable it, deploy the versioned Host payload and give the **existing pairing's** fixed `ssh_acp.py` command an additional `--pairing-config /absolute/path/to/hermes-pairing.json` before its `--` separator. For a versioned installation, pass that same option to `Host/update_ssh_release.py` when switching the existing pairing to this release. Keep its existing workspace, SSH restrictions and agent command. Only grant this option to devices allowed to connect the profiles in the list. Keep the config owner-controlled and do not add the option to the new child pairings. Example:
+
+```json
+{
+  "authorizedKeys": "/home/agent/.ssh/authorized_keys",
+  "hermes": "/home/agent/.local/bin/hermes",
+  "targets": {
+    "bookkeeper": {
+      "name": "Bookkeeper",
+      "workspace": "/srv/bookkeeper",
+      "mainSessionID": "an-existing-hermes-acp-chat-id"
+    }
+  }
+}
+```
+
+Use the precise directory and ID returned by `hermes -p bookkeeper acp`'s `session/list`; creating a plain CLI chat does not make it visible to that catalog. The host verifies the configured chat before registering any key. The new key is restricted to `hermes -p <profile> acp` in the configured workspace. Existing keys are preserved. As with manual pairing, remove the generated restricted entry from `authorized_keys` to revoke a device's host access.
+
+Install `Host/hermes-pairing/SKILL.md` under the source profile's `skills/riptide-hermes-pairing/` and enable native `clarify` there. Then ask that agent to connect the configured profile and tap **Connect agent** in chat.
 
 ### Hermes browser handoff over SSH
 

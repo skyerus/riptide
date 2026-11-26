@@ -19,6 +19,8 @@ struct ChatScreen: View {
     @State private var voiceError: String?
     @State private var browserHandoff: BrowserHandoff?
     @State private var focusAfterHandback: String?
+    @State private var connectingHermes: UUID?
+    @State private var hermesPairingAttempt: HermesPairingAttempt?
     @FocusState private var composerFocused: Bool
     @State private var safariApproval = SafariChatApproval()
     @Environment(\.openURL) private var openURL
@@ -238,10 +240,10 @@ struct ChatScreen: View {
         }
     }
 
-    private func sendMessage(_ text: String) {
-        guard safariApproval.pending != nil, let agent = safariAgent else { model.submit(text); return }
+    private func sendMessage(_ text: String) -> Bool {
+        guard safariApproval.pending != nil, let agent = safariAgent else { return model.submit(text) }
         let chatID = model.selectedID
-        model.submit(text) {
+        return model.submit(text) {
             await safariApproval.prepareTurn(agent: agent, chatID: chatID, stillInChat: {
                 model.selectedID == chatID && !model.selected.stopping
             }, turnWorking: {
@@ -265,6 +267,18 @@ struct ChatScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !resolvingInitialChat {
                 VStack(spacing: 0) {
+                    ComposerQueue(messages: model.selected.queuedMessages, sendingID: nil,
+                                  paused: model.selected.queuePaused, canResume: model.selected.loaded,
+                                  remove: { model.removeQueuedMessage($0, in: chatKey.chat) },
+                                  resume: { model.resumeQueue(in: chatKey.chat) })
+                    if let error = model.selected.steeringError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 4)
+                            .accessibilityIdentifier("chat-steering-status")
+                    }
                     if let error = safariApproval.errorMessage {
                         Text(error)
                             .font(.footnote)
@@ -455,11 +469,71 @@ struct ChatScreen: View {
 
     @ViewBuilder
     private func permissionCard(_ request: PermissionRequest) -> some View {
-        if let remote = voiceRemote, remote.canOpenHermesScreen,
-           let credential = remoteStore?.bearer(for: remote), browserCompletion(in: request) != nil {
+        if let invitation = HermesPairingInvitation(request), let store = remoteStore,
+           let remote = voiceRemote, remote.canOpenHermesScreen, let credential = store.bearer(for: remote) {
+            hermesPairingCard(request, invitation: invitation, source: remote, credential: credential, store: store)
+        } else if let remote = voiceRemote, remote.canOpenHermesScreen,
+                  let credential = remoteStore?.bearer(for: remote), browserCompletion(in: request) != nil {
             browserRequestCard(request, remote: remote, credential: credential)
         } else {
             approvalCard(request)
+        }
+    }
+
+    private struct HermesPairingAttempt {
+        let requestID: UUID
+        var identity = SSHDeviceIdentity()
+        var error: String?
+    }
+
+    private func hermesPairingCard(_ request: PermissionRequest, invitation: HermesPairingInvitation,
+                                   source: RemoteProfile, credential: String, store: RemoteStore) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Connect Hermes agent", systemImage: "link.badge.plus")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ChatTheme.attention)
+            Text(invitation.profile)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if hermesPairingAttempt?.requestID == request.id, let error = hermesPairingAttempt?.error {
+                Text(error).font(.footnote).foregroundStyle(ChatTheme.warning)
+            }
+            Button(connectingHermes == request.id ? "Connecting…" : "Connect agent") {
+                connectHermes(request, invitation: invitation, source: source, credential: credential, store: store)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("connect-hermes-agent")
+            Button("Skip", role: .cancel) {
+                if hermesPairingAttempt?.requestID == request.id { hermesPairingAttempt = nil }
+                Task { await model.answer(request, optionID: "skip") }
+            }
+            .font(.subheadline)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+        .disabled(model.selected.stopping || connectingHermes != nil)
+    }
+
+    private func connectHermes(_ request: PermissionRequest, invitation: HermesPairingInvitation,
+                               source: RemoteProfile, credential: String, store: RemoteStore) {
+        guard connectingHermes == nil, model.selected.permissions.contains(request) else { return }
+        let previous = hermesPairingAttempt.flatMap { $0.requestID == request.id ? $0 : nil }
+        let attempt = previous ?? HermesPairingAttempt(requestID: request.id)
+        hermesPairingAttempt = HermesPairingAttempt(requestID: request.id, identity: attempt.identity)
+        connectingHermes = request.id
+        Task {
+            defer { connectingHermes = nil }
+            do {
+                let remote = try await source.authorizeHermesPairing(invitation, credential: credential,
+                                                                    identity: attempt.identity)
+                try await store.pair(remote, credential: attempt.identity.privateCredential)
+                hermesPairingAttempt = nil
+                await model.answer(request, optionID: invitation.optionID)
+            } catch {
+                hermesPairingAttempt = HermesPairingAttempt(requestID: request.id, identity: attempt.identity,
+                                                            error: error.localizedDescription)
+            }
         }
     }
 

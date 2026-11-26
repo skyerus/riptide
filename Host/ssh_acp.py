@@ -12,6 +12,7 @@ REQUESTS = {
     "session/new": {"cwd", "mcpServers"},
     "session/load": {"sessionId", "cwd", "mcpServers"},
     "session/prompt": {"sessionId", "prompt"},
+    "_riptide/session/steer": {"sessionId", "text"},
     "session/cancel": {"sessionId"},
     "session/set_config_option": {"sessionId", "configId", "value"},
 }
@@ -51,6 +52,9 @@ def admitted(packet, workspace, pending):
         return False
     if method == "session/set_config_option":
         return params.get("configId") in ("model", "effort", "reasoning_effort") and isinstance(params.get("value"), str)
+    if method == "_riptide/session/steer":
+        text = params.get("text")
+        return isinstance(text, str) and bool(text.strip()) and len(text) <= 65_536
     if method == "session/prompt":
         blocks = params.get("prompt")
         return isinstance(blocks, list) and bool(blocks) and all(
@@ -176,12 +180,19 @@ if __name__ == "__main__":
     parser.add_argument("--safari", nargs=2, metavar=("BROWSER_SOCKET", "DEVICE_ID"))
     parser.add_argument("--safari-mcp-python", metavar="PYTHON")
     parser.add_argument("--attention-socket", type=Path)
+    parser.add_argument("--pairing-config", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     requested = os.environ.get("SSH_ORIGINAL_COMMAND")
     if args.attention_socket and not args.attention_socket.is_absolute():
         parser.error("An absolute notification relay socket path is required.")
+    if requested == "riptide-pair-hermes":
+        if args.pairing_config is None:
+            print(json.dumps({"error": "This SSH pairing cannot connect additional Hermes profiles."}))
+            sys.exit(1)
+        from hermes_pairing import serve as serve_pairing
+        sys.exit(serve_pairing(args.pairing_config, Path(__file__).resolve()))
     if requested == "riptide-attention":
         if args.attention_socket is None:
             print('{"ok":false}')
