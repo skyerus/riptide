@@ -47,7 +47,7 @@ final class AgentGridUITests: XCTestCase {
         let photo = app.images.matching(NSPredicate(format: "label BEGINSWITH %@", "Photo,")).firstMatch
         choose.tap()
         if hasSeededPhoto { XCTAssertTrue(photo.waitForExistence(timeout: 12), app.debugDescription) }
-        let close = app.buttons.matching(NSPredicate(format: "label IN %@", ["Close", "Cancel"])).firstMatch
+        let close = app.buttons["Cancel"]
         XCTAssertTrue(close.waitForExistence(timeout: 10), app.debugDescription)
         capture(app, "agents-system-photo-picker")
         close.tap()
