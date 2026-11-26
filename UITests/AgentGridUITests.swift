@@ -29,7 +29,7 @@ final class AgentGridUITests: XCTestCase {
         XCTAssertEqual(app.buttons["agent-workspace-heading"].label, "Hermes VPS")
         XCTAssertFalse(agentsTab.exists)
         capture(app, "agents-workspace")
-        app.navigationBars.buttons["BackButton"].tap()
+        app.buttons["BackButton"].tap()
         XCTAssertTrue(vps.waitForExistence(timeout: 8))
 
         func openPhotoEditor() {
