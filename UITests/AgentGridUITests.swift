@@ -29,7 +29,7 @@ final class AgentGridUITests: XCTestCase {
         XCTAssertEqual(app.buttons["agent-workspace-heading"].label, "Hermes VPS")
         XCTAssertFalse(agentsTab.exists)
         capture(app, "agents-workspace")
-        app.navigationBars.buttons["BackButton"].tap()
+        app.buttons["BackButton"].tap()
         XCTAssertTrue(vps.waitForExistence(timeout: 8))
 
         func openPhotoEditor() {
@@ -42,9 +42,22 @@ final class AgentGridUITests: XCTestCase {
 
         openPhotoEditor()
         capture(app, "agents-photo-editor")
-        guard ProcessInfo.processInfo.environment["RIPTIDE_AVATAR_PHOTO_SEEDED"] == "1" else { return }
-        app.buttons["choose-agent-photo"].tap()
+        let choose = app.buttons["choose-agent-photo"]
+        let hasSeededPhoto = ProcessInfo.processInfo.environment["RIPTIDE_AVATAR_PHOTO_SEEDED"] == "1"
         let photo = app.images.matching(NSPredicate(format: "label BEGINSWITH %@", "Photo,")).firstMatch
+        choose.tap()
+        if hasSeededPhoto { XCTAssertTrue(photo.waitForExistence(timeout: 12), app.debugDescription) }
+        let close = app.buttons["Cancel"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10), app.debugDescription)
+        capture(app, "agents-system-photo-picker")
+        close.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(choose.isHittable)
+        XCTAssertEqual(choose.label, "Choose photo")
+        capture(app, "agents-photo-picker-dismissed")
+
+        guard hasSeededPhoto else { return }
+        choose.tap()
         XCTAssertTrue(photo.waitForExistence(timeout: 12), app.debugDescription)
         photo.tap()
         let reset = app.buttons["reset-agent-photo"]
