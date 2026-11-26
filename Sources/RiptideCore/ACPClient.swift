@@ -343,7 +343,7 @@ public actor ACPClient {
                         }, toolCallID: tool["toolCallId"]?.string
                     )
                     permissions[request.id] = (id, request)
-                    deliver(.permission(request))
+                    emit.yield(.permission(request))
                 } else {
                     try? await send(.failure(id, code: -32601, message: "Unsupported client request"))
                 }
@@ -356,7 +356,8 @@ public actor ACPClient {
                 if case .message(_, _, .assistant, let text) = event, let soFar = voiceReplies[sessionID] {
                     voiceReplies[sessionID] = String((soFar + text).suffix(4_800))
                 }
-                deliver(event)
+                if replaying[sessionID] != nil { replaying[sessionID]?.append(event) }
+                else { emit.yield(event) }
             }
         } else if let id = message["id"], let request = pending.removeValue(forKey: id) {
             if let error = message["error"]?["message"]?.string {
@@ -366,11 +367,6 @@ public actor ACPClient {
             else if let result = message["result"] { request.resume(returning: result) }
             else { request.resume(throwing: ACPError.malformedResponse) }
         }
-    }
-
-    private func deliver(_ event: ACPEvent) {
-        if replaying[event.sessionID] != nil { replaying[event.sessionID]?.append(event) }
-        else { emit.yield(event) }
     }
 
     private static func event(_ update: JSON, sessionID: String) -> ACPEvent? {
@@ -417,7 +413,7 @@ public actor ACPClient {
 
     private func closePermission(_ id: UUID, sessionID: String) {
         permissions.removeValue(forKey: id)
-        deliver(.permissionClosed(sessionID: sessionID, id: id))
+        emit.yield(.permissionClosed(sessionID: sessionID, id: id))
     }
 
     private func disconnect() {
