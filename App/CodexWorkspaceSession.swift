@@ -17,6 +17,10 @@ final class CodexWorkspaceSession {
     private(set) var ready = false
     private(set) var stopping = false
     private(set) var sending = false
+    private(set) var configOptions: [SessionConfigOption] = []
+    private(set) var context: ContextUsage?
+    private(set) var configuring = false
+    private(set) var configError: String?
     private(set) var queuedMessages: [QueuedChatMessage] = []
     private(set) var sendingQueuedID: UUID?
     private(set) var queuePaused = false
@@ -64,6 +68,8 @@ final class CodexWorkspaceSession {
                     self?.setChat(created, peer: peer)
                 }
                 self?.connected(peer)
+                let discovery = Task { await peer.discoverSavedChatConfiguration() }
+                defer { discovery.cancel() }
                 for try await event in peer.chatEvents {
                     guard let self, !Task.isCancelled, self.client === peer else { break }
                     self.apply(event)
@@ -85,6 +91,7 @@ final class CodexWorkspaceSession {
         activeTurnID = nil
         stopping = false
         sending = false
+        clearConfiguration()
         sendingQueuedID = nil
         queuePaused = !queuedMessages.isEmpty
         approvals = []
@@ -111,7 +118,7 @@ final class CodexWorkspaceSession {
     }
 
     private func drainQueue() {
-        guard ready, !working, !sending, !stopping, !queuePaused, !queuedMessages.isEmpty else { return }
+        guard ready, !working, !sending, !stopping, !configuring, !queuePaused, !queuedMessages.isEmpty else { return }
         Task {
             guard !working, !queuePaused, let message = queuedMessages.first else { return }
             await send(message.text, queuedID: message.id)
@@ -120,7 +127,7 @@ final class CodexWorkspaceSession {
 
     @discardableResult
     func send(_ text: String, queuedID: UUID? = nil) async -> CodexMessageDelivery? {
-        guard let client, ready, !sending, !stopping, !text.isEmpty else { return nil }
+        guard let client, ready, !sending, !stopping, !configuring, !text.isEmpty else { return nil }
         sending = true
         sendingQueuedID = queuedID
         sendIssue = nil
@@ -147,6 +154,34 @@ final class CodexWorkspaceSession {
             sendIssue = error.localizedDescription
             return nil
         }
+    }
+
+    func setConfigOption(_ id: String, value: String) async -> Bool {
+        guard let client, ready, !working, !sending, !configuring else { return false }
+        configuring = true
+        configError = nil
+        defer {
+            if self.client === client {
+                configuring = false
+                drainQueue()
+            }
+        }
+        do {
+            let options = try await client.setSavedChatConfigOption(id, value: value)
+            guard self.client === client else { return false }
+            configOptions = options
+            return options.contains { $0.id == id && $0.currentValue == value }
+        } catch {
+            if self.client === client { configError = error.localizedDescription }
+            return false
+        }
+    }
+
+    private func clearConfiguration() {
+        configOptions = []
+        context = nil
+        configuring = false
+        configError = nil
     }
 
     func answer(_ approval: CodexChatApproval, allow: Bool) {
@@ -194,6 +229,7 @@ final class CodexWorkspaceSession {
         ready = false
         activeTurnID = nil
         stopping = false
+        clearConfiguration()
         sending = false
         sendingQueuedID = nil
         queuePaused = !queuedMessages.isEmpty
@@ -242,6 +278,10 @@ final class CodexWorkspaceSession {
             publishAttention()
         case .progress(let update):
             if let activeTurnID { turns[turnIndex(for: activeTurnID)].apply(update) }
+        case .configOptions(let options):
+            configOptions = options
+        case .context(let usage):
+            context = usage
         case .issue(let message):
             issue = message
         case .live(let update):
@@ -268,6 +308,8 @@ final class CodexWorkspaceSession {
                 drainQueue()
             case .diff(_, let patch):
                 diff = patch.isEmpty ? nil : patch
+            case .context(_, let usage):
+                context = usage
             case .output:
                 break
             }
