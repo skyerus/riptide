@@ -170,6 +170,8 @@ python3 -B Host/update_ssh_release.py --fingerprint 'SHA256:…' \
   --hermes-browser-mcp /absolute/hermes/venv/bin/python /absolute/path/to/hermes-source
 ```
 
+For a paired profile without a Bot Screen route, pass `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` in the same update. The profile home must match the Hermes profile used by that pairing.
+
 Install `Host/hermes-browser-handoff/SKILL.md` under the profile’s `skills/riptide-browser-handoff/` and reopen the paired chat. Codex App Server uses Chrome through Hermes’s Linux computer-use driver. Its browser tool is scoped to the paired profile and follows the Bot Screen control lease.
 
 In Riptide, choose **Chat actions → Open Hermes browser** or open the browser from the agent’s handoff card. Tap **Take over** to sign in directly in Chrome. Riptide fits the desktop to the phone and provides a keyboard and Password AutoFill. Tap **Hand back** to restore agent control and resume the chat. If the connection drops, reopen the browser and take over again. The adapter streams the existing desktop over the paired SSH connection using [noVNC 1.7.0](https://github.com/novnc/noVNC/tree/v1.7.0).

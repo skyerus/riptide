@@ -132,7 +132,7 @@ def verify(argv):
 
 
 def update(keys, fingerprint, releases, previous, revision, attention_socket=None, pairing_config=None,
-           enable_hermes_groups=False, agent_profile_state=None, browser_mcp=None, previous_releases=None):
+           enable_hermes_groups=False, agent_profile_state=None, browser_mcp=None, previous_releases=None, hermes_screen=None):
     directory = releases.lstat()
     require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid() and not directory.st_mode & 0o022,
             "Use an existing release directory controlled by the deployment account.")
@@ -169,6 +169,16 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
                 prefix[prefix.index("--agent-profile-state") + 1] = str(agent_profile_state)
             else:
                 prefix.extend(["--agent-profile-state", str(agent_profile_state)])
+        if hermes_screen is not None:
+            home, hermes = hermes_screen
+            require(home.is_absolute() and home.is_dir() and hermes.is_absolute() and os.access(hermes, os.X_OK),
+                    "Use the paired profile’s absolute Hermes home and executable.")
+            screen = [str(home.resolve()), str(hermes)]
+            if "--hermes-screen" in prefix:
+                option = prefix.index("--hermes-screen")
+                require(prefix[option + 1:option + 3] == screen, "The pairing already uses another Hermes screen.")
+            else:
+                prefix.extend(["--hermes-screen", *screen])
         if enable_hermes_groups and "--hermes-groups" not in prefix:
             require("--hermes-screen" in prefix, "The paired key has no Hermes screen profile for groups.")
             screen = prefix.index("--hermes-screen")
@@ -204,6 +214,8 @@ def main():
     parser.add_argument("--pairing-config", type=Path)
     parser.add_argument("--agent-profile-state", type=Path,
                         help="Absolute per-agent display name file inside a private directory.")
+    parser.add_argument("--hermes-screen", type=Path, nargs=2, metavar=("PROFILE_HOME", "HERMES"),
+                        help="Add Bot Screen for this trusted pairing’s own Hermes profile.")
     parser.add_argument("--hermes-browser-mcp", type=Path, nargs=2, metavar=("PYTHON", "HERMES_SOURCE"),
                         help="Give Codex access to this pairing's existing Hermes Bot Screen Chrome.")
     parser.add_argument("--enable-hermes-groups", action="store_true",
@@ -216,7 +228,7 @@ def main():
     try:
         update(args.authorized_keys, args.fingerprint, args.releases_dir, args.previous, args.revision,
                args.attention_socket, args.pairing_config, args.enable_hermes_groups, args.agent_profile_state,
-               args.hermes_browser_mcp, args.previous_releases_dir)
+               args.hermes_browser_mcp, args.previous_releases_dir, args.hermes_screen)
     except subprocess.TimeoutExpired:
         parser.exit(1, "The staged SSH command timed out during verification.\n")
     except (OSError, ValueError) as error:
