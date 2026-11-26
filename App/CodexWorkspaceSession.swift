@@ -20,7 +20,6 @@ final class CodexWorkspaceSession {
     private(set) var issue: String?
     private(set) var hasOlderTurns = false
     private(set) var diff: String?
-    private var assistantReplied = false
     private var unscopedTurnID: String?
 
     var locator: WorkspaceChatID? { chat.map { .init(workspace: workspaceID, chat: $0.id) } }
@@ -123,8 +122,6 @@ final class CodexWorkspaceSession {
         activeTurnID = snapshot.activeTurnID
         unscopedTurnID = nil
         hasOlderTurns = snapshot.hasOlderTurns
-        assistantReplied = snapshot.messages.contains { $0.streaming && $0.role == .assistant &&
-            $0.phase != .commentary && !$0.text.isEmpty }
     }
 
     private func setChat(_ summary: CodexChatSummary, peer: CodexLiveClient) {
@@ -175,11 +172,9 @@ final class CodexWorkspaceSession {
         switch event {
         case .message(let message, let turnID):
             turns[turnIndex(for: turnID)].upsert(message)
-            if message.role == .assistant, message.phase != .commentary, !message.text.isEmpty { assistantReplied = true }
         case .turnStarted(let id):
             guard activeTurnID != id else { return }
             activeTurnID = id
-            assistantReplied = false
             stopping = false
             diff = nil
             issue = nil
@@ -198,19 +193,20 @@ final class CodexWorkspaceSession {
         case .live(let update):
             switch update {
             case .assistantDelta(let turn, let item, let text):
-                if turns[turnIndex(for: turn)].appendReply(text, id: item) { assistantReplied = true }
+                turns[turnIndex(for: turn)].appendReply(text, id: item)
             case .assistantCompleted(let turn, let item, let text):
                 turns[turnIndex(for: turn)].upsert(.init(id: item, role: .assistant, text: text, streaming: false))
-                if !text.isEmpty { assistantReplied = true }
             case .completed(let turn, let status):
                 activeTurnID = nil
                 publishAttention()
                 stopping = false
                 if status == "completed" { issue = nil }
                 if status == "interrupted" { issue = "Turn stopped." }
-                if let index = turns.lastIndex(where: { $0.id == turn }) { turns[index].finishStreaming() }
-                if status == "completed", assistantReplied, let locator, let chat {
-                    workspace?.receivedCodexReply(locator, title: chat.title)
+                if let index = turns.lastIndex(where: { $0.id == turn }) {
+                    turns[index].finishStreaming()
+                    if status == "completed", let reply = turns[index].replyText, let locator, let chat {
+                        workspace?.receivedCodexReply(locator, title: chat.title, reply: reply)
+                    }
                 }
                 workspace?.pruneCodexSessions()
             case .diff(_, let patch):

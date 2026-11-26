@@ -216,11 +216,11 @@ final class WorkspaceState {
         return ordered.map { WorkspaceVisit(id: $0, title: displayName(for: $0)) }
     }
 
-    var acpCompletions: [WorkspaceChatID: Date] {
-        var result: [WorkspaceChatID: Date] = [:]
+    var acpCompletions: [WorkspaceChatID: AgentChatModel.CompletedReply] {
+        var result: [WorkspaceChatID: AgentChatModel.CompletedReply] = [:]
         for model in models {
-            for (chat, date) in model.completedReplies {
-                result[.init(workspace: model.target.id, chat: chat)] = date
+            for (chat, reply) in model.completedReplies {
+                result[.init(workspace: model.target.id, chat: chat)] = reply
             }
         }
         return result
@@ -516,16 +516,16 @@ final class WorkspaceState {
         }
     }
 
-    func receivedCodexReply(_ chat: WorkspaceChatID, title: String) {
-        if let entry = codexCompleted(chat, title: title) { notifyAttention?(entry) }
+    func receivedCodexReply(_ chat: WorkspaceChatID, title: String, reply: String) {
+        if let entry = codexCompleted(chat, title: title, reply: reply) { notifyAttention?(entry) }
     }
 
-    func handleACPCompletions(_ completions: [WorkspaceChatID: Date]) -> [WorkspaceAttention] {
+    func handleACPCompletions(_ completions: [WorkspaceChatID: AgentChatModel.CompletedReply]) -> [WorkspaceAttention] {
         var changed: [WorkspaceAttention] = []
-        for (chat, date) in completions where seenACPCompletions[chat] != date {
-            seenACPCompletions[chat] = date
+        for (chat, reply) in completions where seenACPCompletions[chat] != reply.date {
+            seenACPCompletions[chat] = reply.date
             if let model = models.first(where: { $0.target.id == chat.workspace }),
-               let entry = recordReply(chat, title: model.title(for: chat.chat), date: date) {
+               let entry = recordReply(chat, title: model.title(for: chat.chat), date: reply.date, reply: reply.preview) {
                 changed.append(entry)
             }
         }
@@ -539,12 +539,13 @@ final class WorkspaceState {
         return inbox.filter { added.contains($0.id) }
     }
 
-    func codexCompleted(_ chat: WorkspaceChatID, title: String) -> WorkspaceAttention? {
+    private func codexCompleted(_ chat: WorkspaceChatID, title: String, reply: String) -> WorkspaceAttention? {
         reportedCodexCompletion[chat] = .now
-        return recordReply(chat, title: title, date: .now)
+        return recordReply(chat, title: title, date: .now, reply: reply)
     }
 
-    func updateCodexChats(_ chats: [CodexChatSummary], workspaceID: String, verifiedReplies: Set<String> = []) -> [WorkspaceAttention] {
+    func updateCodexChats(_ chats: [CodexChatSummary], workspaceID: String,
+                          verifiedReplies: [String: String] = [:]) -> [WorkspaceAttention] {
         guard agent(workspaceID) != nil else { return [] }
         let previous = Dictionary(uniqueKeysWithValues: (codexChats[workspaceID] ?? []).map { ($0.id, $0.status) })
         codexChats[workspaceID] = chats
@@ -555,11 +556,12 @@ final class WorkspaceState {
             }
         }
         var completed: [WorkspaceAttention] = []
-        for chat in chats where chat.status == .idle && verifiedReplies.contains(chat.id) {
-            guard let was = previous[chat.id], was == .active || was == .approval || was == .input else { continue }
+        for chat in chats where chat.status == .idle {
+            guard let reply = verifiedReplies[chat.id],
+                  let was = previous[chat.id], was == .active || was == .approval || was == .input else { continue }
             let key = WorkspaceChatID(workspace: workspaceID, chat: chat.id)
             if let last = reportedCodexCompletion[key], Date().timeIntervalSince(last) < 30 { continue }
-            if let entry = codexCompleted(key, title: chat.title) { completed.append(entry) }
+            if let entry = codexCompleted(key, title: chat.title, reply: reply) { completed.append(entry) }
         }
         return completed
     }
@@ -572,18 +574,18 @@ final class WorkspaceState {
         }
         var found: [WorkspaceAttention] = []
         let previous = codexChats
-        await withTaskGroup(of: (String, [CodexChatSummary]?, Set<String>).self) { group in
+        await withTaskGroup(of: (String, [CodexChatSummary]?, [String: String]).self) { group in
             for (id, endpoint) in endpoints {
                 group.addTask {
                     let client = endpoint.makeClient()
                     let result = try? await client.listSavedChats(maximumPages: 1)
-                    var verified = Set<String>()
+                    var verified: [String: String] = [:]
                     if let result {
                         let busy = Set((previous[id] ?? []).filter {
                             $0.status == .active || $0.status == .approval || $0.status == .input
                         }.map(\.id))
                         for chat in result.lazy.filter({ $0.status == .idle && busy.contains($0.id) }).prefix(6) {
-                            if (try? await client.hasLatestReply(in: chat.id)) == true { verified.insert(chat.id) }
+                            verified[chat.id] = try? await client.latestReply(in: chat.id)
                         }
                     }
                     await client.close()
@@ -599,10 +601,11 @@ final class WorkspaceState {
         return found
     }
 
-    private func recordReply(_ chat: WorkspaceChatID, title: String, date: Date) -> WorkspaceAttention? {
+    private func recordReply(_ chat: WorkspaceChatID, title: String, date: Date, reply: String?) -> WorkspaceAttention? {
         guard let agent = agent(chat.workspace), agent.connector != "Demo",
               !(sceneIsActive && visibleChat == chat && !showingSwitcher && !showingAlerts) else { return nil }
-        let entry = WorkspaceAttention(chat: chat, title: String(title.prefix(180)), reason: .reply, date: date)
+        let entry = WorkspaceAttention(chat: chat, title: String(title.prefix(180)), reason: .reply, date: date,
+                                       replyText: reply)
         store(entry)
         return entry
     }

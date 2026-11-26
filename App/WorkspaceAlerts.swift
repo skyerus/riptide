@@ -182,7 +182,7 @@ final class WorkspaceAlerts {
             guard self.revision == current, self.policy.allows(entry.reason, appIsActive: false, desktop: presence) else { return }
             let content = UNMutableNotificationContent()
             content.title = "Riptide"
-            content.body = entry.reason.title
+            content.body = entry.notificationBody
             content.sound = .default
             content.userInfo = ["workspace": entry.chat.workspace, "chat": entry.chat.chat]
             let identifier = SHA256.hash(data: Data("\(entry.chat.workspace)\n\(entry.chat.chat)\n\(entry.reason.rawValue)".utf8))

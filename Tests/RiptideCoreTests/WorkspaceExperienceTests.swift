@@ -70,6 +70,29 @@ struct WorkspaceExperienceTests {
         #expect(!AttentionPolicy(delivery: .always, replies: false).allows(.reply, appIsActive: false, desktop: nil, now: now))
     }
 
+    @Test func notificationsUseOnlyTheFirstNonemptyReplyLine() throws {
+        let chat = WorkspaceChatID(workspace: "agent", chat: "main")
+        let entry = WorkspaceAttention(chat: chat, title: "Main Chat", reason: .reply,
+                                       replyText: "\r\n  Your update is ready. \r\nThe rest of the reply.")
+        #expect(entry.notificationBody == "Your update is ready.")
+        let restored = try JSONDecoder().decode(WorkspaceAttention.self, from: JSONEncoder().encode(entry))
+        #expect(restored.id == entry.id)
+        #expect(restored.notificationBody == "Reply ready")
+        #expect(WorkspaceAttention(chat: chat, title: "Main Chat", reason: .reply, replyText: " \n\t").notificationBody == "Reply ready")
+        #expect(WorkspaceAttention(chat: chat, title: "Main Chat", reason: .approval, replyText: "Tool details").notificationBody == "Approval needed")
+        #expect(WorkspaceAttention.preview(String(repeating: "🙂", count: 200)) == String(repeating: "🙂", count: 179) + "…")
+    }
+
+    @Test func codexReplyPreviewUsesTheFinalAnswerWhenPresent() {
+        var turn = CodexTranscriptTurn(id: "turn")
+        turn.upsert(.init(id: "progress", role: .assistant, text: "Checking.", streaming: false, phase: .commentary))
+        #expect(turn.replyText == nil)
+        turn.upsert(.init(id: "partial", role: .assistant, text: "An interim answer.", streaming: false, phase: .partialAnswer))
+        #expect(turn.replyText == "An interim answer.")
+        turn.upsert(.init(id: "final", role: .assistant, text: "The final answer.", streaming: false, phase: .finalAnswer))
+        #expect(turn.replyText == "The final answer.")
+    }
+
     @Test func appServerStatusDistinguishesInputApprovalAndUnloaded() throws {
         let approval = try #require(CodexChatSummary(["id": "chat", "status": [
             "type": "active", "activeFlags": .array(["waitingOnApproval"])

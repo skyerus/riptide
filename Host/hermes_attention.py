@@ -16,7 +16,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(host))
     sys.path.insert(0, str(host.parent / "dependencies"))
 
-from attention_relay import APNs, AttentionState, WORKSPACE_ID, valid
+from attention_relay import APNs, AttentionState, WORKSPACE_ID, reply_preview, valid
 
 
 MAX_FRAME = 8192
@@ -57,11 +57,11 @@ async def serve_ssh(socket):
 def attention(event):
     kind, payload = event.get("type"), event.get("payload", {})
     if kind == "message.complete" and payload.get("status") == "complete":
-        return "reply", payload.get("admission_id"), "active"
+        return "reply", payload.get("admission_id"), "active", reply_preview(payload.get("text"))
     if kind in ("approval.request", "approval.settled", "clarify.request", "clarify.settled"):
         control, stage = kind.split(".")
         return ("approval" if control == "approval" else "input", payload.get("prompt_id"),
-                "active" if stage == "request" else "resolved")
+                "active" if stage == "request" else "resolved", None)
     return None
 
 
@@ -151,14 +151,14 @@ class HermesAttention:
         notification = attention(event)
         if not notification:
             return
-        reason, event_id, disposition = notification
+        reason, event_id, disposition, preview = notification
         if not valid(event_id, r"[A-Za-z0-9._:-]{1,160}"):
             return
         async with self.state_lock:
             workspaces = {row["workspace"] for row in self.state.devices.values()}
             for workspace in workspaces:
                 self.state.publish({"workspace": workspace, "chat": chat, "reason": reason,
-                                    "eventID": event_id, "state": disposition})
+                                    "eventID": event_id, "state": disposition, "preview": preview})
 
     async def flush(self):
         while True:

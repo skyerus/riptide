@@ -89,6 +89,13 @@ public struct CodexTranscriptTurn: Identifiable, Sendable {
 
     public init(id: String) { self.id = id }
 
+    public var replyText: String? { Self.replyText(in: messages) }
+
+    static func replyText(in messages: [CodexChatMessage]) -> String? {
+        let replies = messages.lazy.filter { $0.role == .assistant && $0.phase != .commentary && !$0.text.isEmpty }
+        return (replies.first { $0.phase == .finalAnswer } ?? replies.first)?.text
+    }
+
     public mutating func upsert(_ message: CodexChatMessage) {
         let index: Int
         if let existing = messages.firstIndex(where: { $0.id == message.id }) {
@@ -107,13 +114,12 @@ public struct CodexTranscriptTurn: Identifiable, Sendable {
         }
     }
 
-    public mutating func appendReply(_ text: String, id: String) -> Bool {
+    public mutating func appendReply(_ text: String, id: String) {
         let current = messages.first { $0.id == id }
-        guard current?.streaming != false else { return false }
+        guard current?.streaming != false else { return }
         var message = current ?? CodexChatMessage(id: id, role: .assistant, text: "", streaming: true)
         message.text += text
         upsert(message)
-        return message.phase != .commentary && !text.isEmpty
     }
 
     public mutating func finishStreaming() {

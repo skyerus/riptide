@@ -4,6 +4,24 @@ from codex_attention import AppServer, enqueue, safe_origin, transitions
 
 
 class CodexAttentionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_latest_reply_prefers_the_final_answer_to_progress_messages(self):
+        class FakeAppServer(AppServer):
+            async def call(self, method, params):
+                return {"data": [self.turn]}
+
+        server = FakeAppServer(None)
+        commentary = {"type": "agentMessage", "phase": "commentary", "text": "Checking."}
+        partial = {"type": "agentMessage", "phase": "partial_answer", "text": "An interim answer."}
+        final = {"type": "agentMessage", "phase": "final_answer", "text": "The final answer.\nMore details."}
+        server.turn = {"status": "completed", "items": [commentary, partial, final]}
+        self.assertEqual(await server.latest_reply("chat"), final["text"])
+        server.turn["items"] = [commentary, partial]
+        self.assertEqual(await server.latest_reply("chat"), partial["text"])
+        server.turn["items"] = [commentary]
+        self.assertIsNone(await server.latest_reply("chat"))
+        server.turn = {"status": "interrupted", "items": [final]}
+        self.assertIsNone(await server.latest_reply("chat"))
+
     def test_only_real_attention_transitions_are_published(self):
         prior = {"one": ("approval", 1), "two": ("active", 3), "three": ("active", 3)}
         current = {"one": ("active", 4), "two": ("idle", 4), "three": ("notLoaded", 4),

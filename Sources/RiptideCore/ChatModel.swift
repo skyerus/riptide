@@ -28,11 +28,20 @@ public struct Transcript: Equatable, Sendable {
     public init() {}
 
     public var latestAssistantEntryID: UUID? {
+        latestAssistantEntry?.id
+    }
+
+    fileprivate var latestAssistantText: String? {
+        guard let latestAssistantEntry, case .message(.assistant, let text) = latestAssistantEntry.content else { return nil }
+        return text
+    }
+
+    private var latestAssistantEntry: ChatEntry? {
         guard let latest = entries.last(where: {
             if case .message = $0.content { return true }
             return false
         }), case .message(.assistant, _) = latest.content else { return nil }
-        return latest.id
+        return latest
     }
 
     public mutating func addPrompt(_ text: String) {
@@ -133,7 +142,7 @@ public final class AgentChatModel {
     public private(set) var refreshingList = false
     public private(set) var creatingChat = false
     private var chats: [String: ChatState] = [:]
-    public private(set) var completedReplies: [String: Date] = [:]
+    public private(set) var completedReplies: [String: CompletedReply] = [:]
     public private(set) var pendingApprovalSince: [String: Date] = [:]
     public private(set) var workingChats = Set<String>()
     private var newlyCreatedOpenClawKeys: [String: String] = [:]
@@ -141,6 +150,11 @@ public final class AgentChatModel {
     @ObservationIgnored private var makeClient: (@Sendable () -> ACPClient)?
     @ObservationIgnored private var observer: Task<Void, Never>?
     @ObservationIgnored private var mainPreload: Task<Void, Never>?
+
+    public struct CompletedReply: Equatable, Sendable {
+        public let date: Date
+        public let preview: String?
+    }
 
     public struct ChatState {
         public fileprivate(set) var transcript = Transcript()
@@ -383,8 +397,8 @@ public final class AgentChatModel {
                 switch reason {
                 case "end_turn":
                     chats[sessionID]?.transcript.markPromptSeen()
-                    if chats[sessionID]?.transcript.latestAssistantEntryID != nil {
-                        completedReplies[sessionID] = .now
+                    if let reply = chats[sessionID]?.transcript.latestAssistantText {
+                        completedReplies[sessionID] = CompletedReply(date: .now, preview: WorkspaceAttention.preview(reply))
                     }
                 case "cancelled": chats[sessionID]?.notice = "Reply stopped."
                 case "max_tokens": chats[sessionID]?.notice = "The agent reached its reply limit."
