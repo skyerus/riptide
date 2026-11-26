@@ -331,10 +331,10 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
-    func testAShortScrollUpKeepsTheReadingPosition() {
+    func testHermesKeepsTheReadingPositionAndHidesLatestAtTheBottom() {
         continueAfterFailure = false
         let app = freshApp()
-        openMainChat(in: app)
+        openMainChat(in: app, agent: "hermes")
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         composer.tap()
@@ -369,6 +369,7 @@ final class WorkspaceUXUITests: XCTestCase {
         transcript.swipeUp(velocity: .slow)
         XCTAssertTrue(jump.waitForNonExistence(timeout: 5), "Scrolling back to the bottom should resume following.")
         XCTAssertEqual(latest.frame.midY, initialY, accuracy: 2)
+        capture(app, as: "Chat at the bottom after scrolling")
     }
 
     @MainActor
