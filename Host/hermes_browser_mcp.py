@@ -16,7 +16,7 @@ from mcp_stdio import MCPServer, ToolContent
 SERVER = "riptide_hermes_browser"
 HANDOFF = "Browser handoff complete"
 INPUT_ACTIONS = {"click", "scroll", "type", "key"}
-INPUT_FIELDS = {"action", "element", "coordinate", "direction", "amount", "text", "keys", "delivery_mode"}
+INPUT_FIELDS = {"action", "element", "coordinate", "direction", "amount", "text", "keys"}
 
 
 def connector(python, source, home):
@@ -26,7 +26,7 @@ def connector(python, source, home):
 
 def tool_definitions(schema):
     properties = schema["parameters"]["properties"]
-    input_properties = {key: properties[key] for key in INPUT_FIELDS}
+    input_properties = {key: value for key, value in properties.items() if key in INPUT_FIELDS}
     input_properties["action"] = {**properties["action"], "enum": sorted(INPUT_ACTIONS)}
     return [
         {"name": "computer_use",
@@ -36,7 +36,7 @@ def tool_definitions(schema):
              "action": {**properties["action"], "enum": ["capture"]}, "mode": properties["mode"],
          }, "required": ["action"], "additionalProperties": False}},
         {"name": "chrome_input",
-         "description": "Click, scroll, type or send a key to the paired Chrome window after a fresh capture. "
+         "description": "Click, scroll, type or send a foreground key to the paired Chrome window after a fresh capture. "
          "Use Chrome's address bar for navigation. Use chrome_handoff for credentials, payment, verification "
          "or steps that require the user.",
          "inputSchema": {"type": "object", "properties": input_properties, "required": ["action"],
@@ -172,6 +172,10 @@ class Chrome:
             payload = {**args, "app": "chrome"}
             if capture:
                 payload.update(mode=args.get("mode", "vision"), pid=pid, window_id=window_id)
+            else:
+                # Linux Chromium filters background synthetic input. The lease and window checks
+                # keep foreground delivery on this profile's active browser.
+                payload["delivery_mode"] = "foreground"
             result = tool_result(self.native.handle_computer_use(payload, session_id=SERVER))
         finally:
             self.native.set_approval_callback(None)

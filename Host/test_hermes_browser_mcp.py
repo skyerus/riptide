@@ -40,6 +40,7 @@ class ChromeComputerUseTests(unittest.TestCase):
         elicit = Mock(side_effect=AssertionError("Chrome input must not ask for a second approval."))
         self.assertTrue(self.chrome.call("chrome_input", {"action": "key", "keys": "ctrl+l"}, elicit)["approved"])
         elicit.assert_not_called()
+        self.assertEqual(self.native.handle_computer_use.call_args.args[0]["delivery_mode"], "foreground")
 
     def test_input_still_requires_the_captured_window_at_dispatch(self):
         self.chrome.call("computer_use", {"action": "capture"}, None)
