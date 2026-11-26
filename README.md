@@ -33,7 +33,7 @@ The composer’s model picker and context ring show session-specific settings an
 
 ## Desktop-aware notifications
 
-Choose **Inbox → bell → When I’m away**. Riptide holds alerts only for the workspace with a fresh desktop-active signal. Other workspaces still alert. The companion checks whether a selected app is frontmost and the Mac has recent input; it sends the configured workspace ID and a Boolean, not app names, input events, or activity history. Phone alerts are generic and carry no chat titles or message text.
+Choose **Inbox → bell → When I’m away**. Riptide holds alerts only for the workspace with a fresh desktop-active signal. Other workspaces still alert. The companion checks whether a selected app is frontmost and the Mac has recent input. It sends the configured workspace ID and whether the workspace is active. Reply alerts can include the first non-empty line of the reply.
 
 **With no relay** the Inbox still works for connected agents. Local alerts apply only to events Riptide can observe while iOS is letting it run. For alerts while Riptide is suspended, use a push-provisioned build and a private relay that receives host-side events. Nothing is hosted or set up automatically.
 

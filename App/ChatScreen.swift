@@ -11,6 +11,7 @@ struct ChatScreen: View {
     @State private var composerHeight: CGFloat = 0
     @State private var landing = true
     @State private var couldNotOpen = false
+    @State private var openAttempt = 0
     @State private var viewport = TranscriptViewport()
     @State private var showsCompletedToolCalls = false
     @State private var pairingVoice = false
@@ -77,8 +78,10 @@ struct ChatScreen: View {
                 ContentUnavailableView {
                     Label("Chat unavailable", systemImage: "bubble.left")
                 } description: {
-                    Text("This connector didn’t list the saved chat.")
+                    Text(model.listError ?? "This connector didn’t list the saved chat.")
                 } actions: {
+                    Button("Retry") { openAttempt += 1 }
+                        .buttonStyle(.borderedProminent)
                     Button("Open Main Chat") {
                         Task {
                             model.selectMain()
@@ -194,12 +197,14 @@ struct ChatScreen: View {
             Button("Voice settings") { pairingVoice = true }
             Button("Cancel", role: .cancel) {}
         } message: { Text(voiceError ?? "") }
-        .task {
+        .task(id: openAttempt) {
             if let id = initialChatID, id != model.target.mainSessionID {
+                landing = true
+                couldNotOpen = false
                 if !model.sessions.contains(where: { $0.id == id }) {
-                    await model.showMain()
                     await model.refreshSessions()
                 }
+                guard !Task.isCancelled else { return }
                 if model.sessions.contains(where: { $0.id == id }) { await model.open(id) }
                 else { couldNotOpen = true }
             } else {
@@ -212,6 +217,7 @@ struct ChatScreen: View {
             visit()
         }
         .onChange(of: model.selectedID) {
+            if !landing { couldNotOpen = false }
             showsCompletedToolCalls = false
             visit()
         }

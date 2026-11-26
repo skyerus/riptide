@@ -124,10 +124,9 @@ async def watch(args):
                     for chat, reason, state, stamp in transitions(statuses, updated):
                         preview = None
                         if reason == "reply" and state == "active":
-                            reply = await server.latest_reply(chat)
-                            if reply is None:
+                            preview = reply_preview(await server.latest_reply(chat))
+                            if preview is None:
                                 continue
-                            preview = reply_preview(reply)
                         eligible.append((chat, reason, state, stamp, preview))
                 for chat, reason, state, stamp, preview in eligible:
                     key = (chat, reason)

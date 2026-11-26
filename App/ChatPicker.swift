@@ -25,6 +25,7 @@ struct ChatPicker: View {
                     .padding(.bottom, 12)
             }
             .scrollDismissesKeyboard(.interactively)
+            .refreshable { await model.refreshSessions() }
             .accessibilityIdentifier("chat-picker-list")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

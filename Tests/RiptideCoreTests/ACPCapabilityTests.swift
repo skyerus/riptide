@@ -724,7 +724,8 @@ struct ACPCapabilityTests {
         await client.close()
     }
 
-    @Test @MainActor func openClawSeparateCallNeedsTheHostToEchoTheNewAgentScopedKey() async throws {
+    @Test(arguments: [false, true])
+    @MainActor func openClawNewChatNeedsTheHostToEchoTheNewAgentScopedKey(hasOpenedMain: Bool) async throws {
         for reportsFreshKey in [true, false] {
             let transport = ScriptedTransport { request in
                 let id = try #require(request["id"])
@@ -753,8 +754,8 @@ struct ACPCapabilityTests {
             }
             let client = ACPClient(transport: transport)
             let model = AgentChatModel(target: AgentTarget(id: "target", name: "OpenClaw", mainSessionID: "current", cwd: "/demo"),
-                                       client: client)
-            await model.showMain()
+                                       connect: { client })
+            if hasOpenedMain { await model.showMain() }
             #expect(await model.createChat(openClaw: true) == reportsFreshKey)
             if reportsFreshKey {
                 #expect(model.selectedID == "new")
@@ -765,6 +766,36 @@ struct ACPCapabilityTests {
             }
             await client.close()
         }
+    }
+
+    @Test @MainActor func createsAndKeepsAnUnlistedNewChatWithoutOpeningMain() async throws {
+        let transport = ScriptedTransport { request in
+            let id = try #require(request["id"])
+            switch request["method"]?.string {
+            case "initialize":
+                return [.reply(id, result: ["protocolVersion": .integer(1), "agentCapabilities": [
+                    "loadSession": .boolean(true), "sessionCapabilities": ["list": [:]]
+                ]])]
+            case "session/list":
+                return [.reply(id, result: ["sessions": .array([
+                    ["sessionId": "saved", "cwd": "/paired", "title": "Host-created chat"],
+                    ["sessionId": "other", "cwd": "/elsewhere", "title": "Other workspace"]
+                ])])]
+            case "session/new":
+                #expect(request["params"]?["cwd"] == "/paired")
+                return [.reply(id, result: ["sessionId": "new"])]
+            default:
+                Issue.record("Unexpected ACP call")
+                return []
+            }
+        }
+        let target = AgentTarget(id: "target", name: "Hermes", mainSessionID: "main", cwd: "/paired")
+        let model = AgentChatModel(target: target, connect: { ACPClient(transport: transport) })
+        #expect(await model.createChat())
+        #expect(model.selectedID == "new")
+        #expect(model.selected.loaded)
+        await model.refreshSessions()
+        #expect(model.sessions.map(\.id) == ["saved", "new"])
     }
 
     @Test @MainActor func unavailableMainDoesNotSilentlyCreateAnotherSession() async {

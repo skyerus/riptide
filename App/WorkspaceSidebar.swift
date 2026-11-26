@@ -91,6 +91,7 @@ struct AgentWorkspaceScreen: View {
     let agent: WorkspaceAgent
     @Environment(WorkspaceState.self) private var workspace
     @State private var loading = true
+    @State private var creatingChat = false
     @State private var failure: String?
     @State private var voiceEndpoint: CodexLocalEndpoint?
     @State private var showingCall = false
@@ -131,8 +132,8 @@ struct AgentWorkspaceScreen: View {
                     SidebarSectionTitle(isCodex ? "Chats" : "Side chats")
                     Spacer()
                     if isCodex, let endpoint = workspace.codexEndpoint(for: agent.id) {
+                        newChatButton { workspace.startCodexChat(agent.id) }
                         Menu {
-                            Button("New chat", systemImage: "square.and.pencil") { workspace.startCodexChat(agent.id) }
                             Button("Call Codex directly", systemImage: "phone") {
                                 voiceEndpoint = endpoint
                                 showingCall = true
@@ -144,6 +145,9 @@ struct AgentWorkspaceScreen: View {
                                 .frame(width: 44, height: 44)
                                 .contentShape(Rectangle())
                         }
+                    } else if workspace.mainChatID(for: agent.id) != nil {
+                        newChatButton { Task { await startACPChat() } }
+                            .disabled(creatingChat)
                     }
                 }
                 .sidebarHeaderStyle()
@@ -187,6 +191,36 @@ struct AgentWorkspaceScreen: View {
         .refreshable { await reload() }
         .sheet(isPresented: $showingCall) {
             if let voiceEndpoint { CodexVoiceScreen(endpoint: voiceEndpoint) }
+        }
+    }
+
+    private func newChatButton(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label("New chat", systemImage: "square.and.pencil")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(ChatTheme.ink)
+                .frame(minHeight: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("workspace-new-chat")
+    }
+
+    private func startACPChat() async {
+        guard !creatingChat else { return }
+        guard let model = workspace.sidebarACPModel(for: agent.id) else {
+            failure = "Unlock this device or pair the remote again."
+            return
+        }
+        creatingChat = true
+        failure = nil
+        defer { creatingChat = false }
+        let openClaw = workspace.profile(agent.id)?.kind == .openClaw
+        guard await model.createChat(openClaw: openClaw) else {
+            failure = model.listError
+            return
+        }
+        if let route = workspace.path.last, route.showsAgentWorkspace, route.workspace == agent.id {
+            workspace.open(agent.id, chat: model.selectedID)
         }
     }
 
