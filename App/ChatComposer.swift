@@ -9,12 +9,14 @@ struct ChatComposer: View {
     var editorFocus: FocusState<Bool>.Binding
     let transcribe: DictationTranscriber?
     let didSend: () -> Void
-    let submit: (String) -> Void
+    let submit: (String) -> Bool
 
     @State private var showContext = false
 
     var body: some View {
-        let prompt = "Message \(model.target.name)"
+        let working = model.selected.working
+        let prompt = working ? "Steer this reply" : "Message \(model.target.name)"
+        let queue: (() -> Void)? = working ? { submitDraft(queue: true) } : nil
         DictatingComposer(
             focused: editorFocus.wrappedValue,
             showsOptions: model.selected.context != nil || model.selected.hasConfigChoices
@@ -29,7 +31,8 @@ struct ChatComposer: View {
                 showContext = false
             },
             canSubmit: canSubmit,
-            submitDraft: submitDraft
+            submitDraft: { submitDraft(queue: false) },
+            queueDraft: queue
         ) {
             TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
@@ -42,7 +45,18 @@ struct ChatComposer: View {
             }
             ChatModelControls(model: model, isExpanded: $modelPickerVisible)
         } actions: {
-            actionButton
+            if working {
+                ComposerAction("Stop reply", symbol: "stop.fill", disabled: model.selected.stopping) {
+                    Task { await model.stop() }
+                }
+                .accessibilityIdentifier("stop-reply")
+            }
+            ComposerAction(working ? "Steer" : "Send", symbol: "arrow.up",
+                           disabled: !canSubmit || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                           queue: queue) {
+                submitDraft(queue: false)
+            }
+            .accessibilityIdentifier("send-message")
         }
         .onChange(of: model.selectedID) {
             showContext = false
@@ -89,30 +103,27 @@ struct ChatComposer: View {
 
     private var canSubmit: Bool {
         model.selectedID == chatID && model.selected.loaded &&
-            !model.selected.configuring && !model.selected.working
+            !model.selected.loading && !model.selected.configuring && !model.selected.stopping && !model.selected.steering
     }
 
-    private func submitDraft() {
-        guard canSubmit, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        submit(draft)
-        draft = ""
+    private func submitDraft(queue: Bool) {
+        let editor = $draft
+        let text = editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canSubmit, !text.isEmpty else { return }
         editorFocus.wrappedValue = false
         didSend()
-    }
-
-    private var actionButton: some View {
-        let working = model.selected.working
-        let disabled = working ? model.selected.stopping : !canSubmit
-            || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return ComposerAction(working ? "Stop reply" : "Send", symbol: working ? "stop.fill" : "arrow.up",
-                              disabled: disabled) {
-            if working {
-                Task { await model.stop() }
-            } else {
-                submitDraft()
+        if queue {
+            if model.enqueue(text, in: chatID) { editor.wrappedValue = "" }
+        } else if model.selected.working {
+            Task {
+                if await model.steer(text, in: chatID),
+                   editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+                    editor.wrappedValue = ""
+                }
             }
+        } else if submit(text) {
+            editor.wrappedValue = ""
         }
-        .accessibilityIdentifier(working ? "stop-reply" : "send-message")
     }
 }
 
@@ -186,6 +197,8 @@ struct ComposerAction: View {
     let disabled: Bool
     let queue: (() -> Void)?
     let action: () -> Void
+    @State private var showingQueueOptions = false
+    @State private var queueSelection: (() -> Void)?
 
     init(_ title: String, symbol: String, disabled: Bool, queue: (() -> Void)? = nil,
          action: @escaping () -> Void) {
@@ -197,20 +210,35 @@ struct ComposerAction: View {
     }
 
     var body: some View {
-        if let queue, !disabled {
-            button
-                .contextMenu {
-                    Button("Queue", systemImage: "text.append", action: queue)
+        button
+            .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                guard let queue, !disabled else { return }
+                queueSelection = queue
+                showingQueueOptions = true
+            }, including: queue != nil && !disabled ? .all : .none)
+            .popover(isPresented: $showingQueueOptions, arrowEdge: .bottom) {
+                Button("Queue", systemImage: "text.append") {
+                    let selection = queueSelection
+                    showingQueueOptions = false
+                    selection?()
                 }
-                .accessibilityHint("Queues a follow-up when you touch and hold.")
-                .accessibilityAction(named: Text("Queue"), queue)
-        } else {
-            button
-        }
+                .foregroundStyle(ChatTheme.ink)
+                .padding(.horizontal, 16)
+                .frame(minHeight: 44)
+                .presentationCompactAdaptation(.popover)
+                .accessibilityIdentifier("queue-follow-up")
+            }
+            .onChange(of: showingQueueOptions) { if !showingQueueOptions { queueSelection = nil } }
+            .accessibilityHint(queue == nil ? Text("") : Text("Touch and hold for Queue."))
+            .accessibilityActions {
+                if let queue, !disabled { Button("Queue", action: queue) }
+            }
     }
 
     private var button: some View {
-        Button(action: action) {
+        Button {
+            if !showingQueueOptions { action() }
+        } label: {
             Image(systemName: symbol)
                 .font(.system(size: symbol == "stop.fill" ? 11 : 16, weight: .semibold))
                 .foregroundStyle(disabled ? ChatTheme.muted : ChatTheme.background)
@@ -223,11 +251,6 @@ struct ComposerAction: View {
         .disabled(disabled)
         .accessibilityLabel(title)
     }
-}
-
-struct QueuedChatMessage: Identifiable {
-    let id = UUID()
-    let text: String
 }
 
 struct ComposerQueue: View {

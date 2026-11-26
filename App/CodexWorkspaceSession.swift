@@ -119,8 +119,8 @@ final class CodexWorkspaceSession {
     }
 
     @discardableResult
-    func send(_ text: String, queuedID: UUID? = nil) async -> Bool {
-        guard let client, ready, !sending, !stopping, !text.isEmpty else { return false }
+    func send(_ text: String, queuedID: UUID? = nil) async -> CodexMessageDelivery? {
+        guard let client, ready, !sending, !stopping, !text.isEmpty else { return nil }
         sending = true
         sendingQueuedID = queuedID
         sendIssue = nil
@@ -133,19 +133,19 @@ final class CodexWorkspaceSession {
         }
         do {
             let previousTurnID = activeTurnID
-            let started = try await client.sendToSavedChat(text, startOnly: queuedID != nil)
-            guard self.client === client else { return false }
-            if let id = started, activeTurnID == nil || activeTurnID == previousTurnID,
+            let delivery = try await client.sendToSavedChat(text, startOnly: queuedID != nil)
+            guard self.client === client else { return nil }
+            if case .started(let id) = delivery, activeTurnID == nil || activeTurnID == previousTurnID,
                lastCompletedTurnID != id {
                 apply(.turnStarted(id))
             }
             if let queuedID { queuedMessages.removeAll { $0.id == queuedID } }
-            return true
+            return delivery
         } catch {
-            guard self.client === client else { return false }
+            guard self.client === client else { return nil }
             if queuedID != nil { queuePaused = true }
             sendIssue = error.localizedDescription
-            return false
+            return nil
         }
     }
 

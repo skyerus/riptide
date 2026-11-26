@@ -240,10 +240,10 @@ struct ChatScreen: View {
         }
     }
 
-    private func sendMessage(_ text: String) {
-        guard safariApproval.pending != nil, let agent = safariAgent else { model.submit(text); return }
+    private func sendMessage(_ text: String) -> Bool {
+        guard safariApproval.pending != nil, let agent = safariAgent else { return model.submit(text) }
         let chatID = model.selectedID
-        model.submit(text) {
+        return model.submit(text) {
             await safariApproval.prepareTurn(agent: agent, chatID: chatID, stillInChat: {
                 model.selectedID == chatID && !model.selected.stopping
             }, turnWorking: {
@@ -267,6 +267,18 @@ struct ChatScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !resolvingInitialChat {
                 VStack(spacing: 0) {
+                    ComposerQueue(messages: model.selected.queuedMessages, sendingID: nil,
+                                  paused: model.selected.queuePaused, canResume: model.selected.loaded,
+                                  remove: { model.removeQueuedMessage($0, in: chatKey.chat) },
+                                  resume: { model.resumeQueue(in: chatKey.chat) })
+                    if let error = model.selected.steeringError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 4)
+                            .accessibilityIdentifier("chat-steering-status")
+                    }
                     if let error = safariApproval.errorMessage {
                         Text(error)
                             .font(.footnote)

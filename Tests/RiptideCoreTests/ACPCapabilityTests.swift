@@ -227,8 +227,8 @@ struct ACPCapabilityTests {
         await #expect(throws: CodexLiveError.self) {
             try await client.sendToSavedChat("start too soon", startOnly: true)
         }
-        #expect(try await client.sendToSavedChat("keep going") == nil)
-        #expect(try await client.sendToSavedChat("send at completion") == "next")
+        #expect(try await client.sendToSavedChat("keep going") == .steered(turnID: "running"))
+        #expect(try await client.sendToSavedChat("send at completion") == .started(turnID: "next"))
         await client.close()
     }
 

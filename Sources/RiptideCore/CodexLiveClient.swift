@@ -65,6 +65,11 @@ public enum CodexCallEvent: Equatable, Sendable {
     case answer(String)
 }
 
+public enum CodexMessageDelivery: Equatable, Sendable {
+    case steered(turnID: String)
+    case started(turnID: String)
+}
+
 public enum CodexLiveError: LocalizedError, Equatable {
     case connectionClosed, timedOut, noActiveTurn, multipleActiveThreads, invalidResponse, wrongTurn
     case requiresChatGPTSignIn
@@ -210,7 +215,7 @@ public actor CodexLiveClient {
     }
 
     @discardableResult
-    public func sendToSavedChat(_ text: String, startOnly: Bool = false) async throws -> String? {
+    public func sendToSavedChat(_ text: String, startOnly: Bool = false) async throws -> CodexMessageDelivery {
         guard verifiedChat, let threadID, !submitting else { throw CodexLiveError.connectionClosed }
         let turnID = activeTurnID
         if startOnly, turnID != nil {
@@ -225,7 +230,7 @@ public actor CodexLiveClient {
                     "threadId": .string(threadID), "expectedTurnId": .string(turnID), "input": input
                 ])
                 guard result["turnId"]?.string == turnID else { throw CodexLiveError.wrongTurn }
-                return nil
+                return .steered(turnID: turnID)
             } catch CodexLiveError.rejected(let message)
                 where message == "no active turn to steer" && (activeTurnID == turnID || activeTurnID == nil) {
                 // App Server explicitly rejected the input before the completion notification arrived.
@@ -237,7 +242,7 @@ public actor CodexLiveClient {
             activeTurnID = id
             emitChat.yield(.turnStarted(id))
         }
-        return id
+        return .started(turnID: id)
     }
 
     public func answer(_ approval: CodexChatApproval, allow: Bool) async throws {

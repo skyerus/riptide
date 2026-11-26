@@ -335,7 +335,7 @@ final class WorkspaceUXUITests: XCTestCase {
         editor.tap()
         editor.typeText(followUp)
         steer.press(forDuration: 1)
-        let queue = app.buttons["Queue"]
+        let queue = app.buttons["queue-follow-up"]
         XCTAssertTrue(queue.waitForExistence(timeout: 5))
         XCTAssertFalse(transcript.staticTexts[followUp].exists)
         capture(app, as: "Hold Send to queue")
@@ -352,6 +352,46 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(transcript.staticTexts[followUp].waitForExistence(timeout: 8))
         XCTAssertTrue(queued.waitForNonExistence(timeout: 5))
         XCTAssertTrue(transcript.staticTexts["A reply finished in the other workspace."].waitForExistence(timeout: 12))
+    }
+
+    @MainActor
+    func testHermesTapSteersAndDictationCanQueue() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE"] = "1"
+        continueAfterFailure = false
+        app.launch()
+        openMainChat(in: app, agent: "hermes")
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        editor.tap()
+        editor.typeText("Show an approval")
+        let send = app.buttons["send-message"]
+        send.tap()
+        let deny = app.buttons["approval-reject_once"]
+        XCTAssertTrue(deny.waitForExistence(timeout: 8))
+        editor.tap()
+        editor.typeText("Focus on the draft")
+        send.tap()
+        let transcript = app.scrollViews["chat-transcript"]
+        XCTAssertTrue(transcript.staticTexts["Focus on the draft"].waitForExistence(timeout: 5))
+        XCTAssertTrue(deny.exists)
+
+        app.buttons["dictation-start"].tap()
+        let dictationSend = app.buttons["dictation-send"]
+        XCTAssertTrue(dictationSend.waitForExistence(timeout: 5))
+        dictationSend.press(forDuration: 1)
+        let queue = app.buttons["queue-follow-up"]
+        XCTAssertTrue(queue.waitForExistence(timeout: 5))
+        capture(app, as: "Hermes dictation queue option")
+        queue.tap()
+        let queued = app.buttons["queued-messages"]
+        XCTAssertTrue(queued.waitForExistence(timeout: 8))
+        let dictated = transcript.staticTexts["Add a quick summary of the open items."]
+        XCTAssertFalse(dictated.exists)
+        deny.tap()
+        XCTAssertTrue(dictated.waitForExistence(timeout: 8))
+        XCTAssertTrue(queued.waitForNonExistence(timeout: 5))
     }
 
     @MainActor

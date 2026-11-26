@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+from functools import partial
 import json
 import ssl
 from http import HTTPStatus
@@ -15,7 +16,7 @@ TURN = "busy-fixture-turn"
 TOKEN = "fixture-" + "x" * 40
 
 
-async def fixture(socket):
+async def fixture(socket, live=False):
     async def send(body):
         await socket.send(json.dumps(body))
 
@@ -70,12 +71,13 @@ async def fixture(socket):
         except ConnectionClosed:
             return
 
-    thread = {"id": CHAT, "name": "Busy Codex fixture", "cwd": WORKSPACE, "status": {"type": "idle"}}
+    thread = {"id": CHAT, "name": "Busy Codex fixture", "cwd": WORKSPACE,
+              "status": {"type": "active" if live else "idle"}}
     approval = None
-    started = False
-    turn_number = 0
+    started = live
+    turn_number = 1 if live else 0
     steering_number = 0
-    turn_id = None
+    turn_id = f"{TURN}-1" if live else None
     try:
         async for raw in socket:
             packet = json.loads(raw)
@@ -98,7 +100,11 @@ async def fixture(socket):
             elif method in ("thread/read", "thread/resume"):
                 result = {"thread": thread}
             elif method == "thread/turns/list":
-                result = {"data": []}
+                history = [{"id": turn_id, "status": "inProgress", "items": [{
+                    "id": "fixture-original", "type": "userMessage",
+                    "content": [{"type": "text", "text": "Review the release draft"}],
+                }]}] if live else []
+                result = {"data": history}
             elif method == "turn/start" and not started:
                 started = True
                 turn_number += 1
@@ -125,12 +131,12 @@ async def fixture(socket):
             approval.cancel()
 
 
-async def run(port_file, tls=None):
+async def run(port_file, tls=None, live=False):
     def authenticate(connection, request):
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return connection.respond(HTTPStatus.UNAUTHORIZED, "Fixture credential required.\n")
 
-    async with serve(fixture, "127.0.0.1", 0, process_request=authenticate, ssl=tls) as service:
+    async with serve(partial(fixture, live=live), "127.0.0.1", 0, process_request=authenticate, ssl=tls) as service:
         port_file.write_text(str(service.sockets[0].getsockname()[1]), encoding="utf-8")
         await service.serve_forever()
 
@@ -140,6 +146,7 @@ if __name__ == "__main__":
     parser.add_argument("--port-file", required=True, type=Path)
     parser.add_argument("--tls-cert", type=Path)
     parser.add_argument("--tls-key", type=Path)
+    parser.add_argument("--live", action="store_true")
     args = parser.parse_args()
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key must be used together")
@@ -147,4 +154,4 @@ if __name__ == "__main__":
     if args.tls_cert:
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(args.tls_cert, args.tls_key)
-    asyncio.run(run(args.port_file, tls))
+    asyncio.run(run(args.port_file, tls, args.live))

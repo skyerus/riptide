@@ -14,6 +14,7 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
     let dismissKeyboard: () -> Void
     let canSubmit: Bool
     let submitDraft: () -> Void
+    var queueDraft: (() -> Void)? = nil
     @ViewBuilder let field: () -> Field
     @ViewBuilder let options: () -> Options
     @ViewBuilder let actions: () -> Actions
@@ -37,11 +38,11 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
                     control("Stop dictation", symbol: "stop.fill", identifier: "dictation-stop") {
                         dictation.finish(transcribe: transcribe, insert: insert)
                     }
-                    ComposerAction("Send", symbol: "arrow.up", disabled: !canSubmit) {
-                        dictation.finish(transcribe: transcribe) { transcript in
-                            insert(transcript)
-                            submitDraft()
-                        }
+                    let queue = queueDraft.map { enqueue in
+                        { finish(transcribe, then: enqueue) }
+                    }
+                    ComposerAction("Send", symbol: "arrow.up", disabled: !canSubmit, queue: queue) {
+                        finish(transcribe, then: submitDraft)
                     }
                     .accessibilityIdentifier("dictation-send")
                 }
@@ -142,6 +143,13 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
         } else {
             if draft.last?.isWhitespace == false { draft += " " }
             draft += transcript
+        }
+    }
+
+    private func finish(_ transcribe: @escaping DictationTranscriber, then action: @escaping () -> Void) {
+        dictation.finish(transcribe: transcribe) { transcript in
+            insert(transcript)
+            action()
         }
     }
 

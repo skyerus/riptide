@@ -1,0 +1,100 @@
+diff --git a/src/acp/server.ts b/src/acp/server.ts
+--- a/src/acp/server.ts
++++ b/src/acp/server.ts
+@@ -4,6 +4,7 @@
+ import {
+   AGENT_METHODS,
+   PROTOCOL_VERSION,
++  RequestError,
+   agent as createAgentApp,
+   methods,
+   ndJsonStream,
+@@ -364,6 +365,23 @@
+         connectedTranslator().setSessionConfigOption(params),
+       )
+       .onRequest(methods.agent.session.prompt, ({ params }) => connectedTranslator().prompt(params))
++      .onRequest(
++        "_riptide/session/steer",
++        (params: unknown) => {
++          if (
++            !isJsonObject(params) ||
++            Object.keys(params).length !== 2 ||
++            typeof params.sessionId !== "string" ||
++            typeof params.text !== "string" ||
++            !params.text.trim() ||
++            params.text.length > 65_536
++          ) {
++            throw RequestError.invalidParams();
++          }
++          return { sessionId: params.sessionId, text: params.text };
++        },
++        ({ params }) => connectedTranslator().steer(params.sessionId, params.text),
++      )
+       .onNotification(methods.agent.session.cancel, ({ params }) =>
+         connectedTranslator().cancel(params),
+       )
+diff --git a/src/acp/translator.ts b/src/acp/translator.ts
+--- a/src/acp/translator.ts
++++ b/src/acp/translator.ts
+@@ -117,6 +117,7 @@
+   private readonly sessionState: AcpTranslatorSessionState;
+   private readonly sessionCreateRateLimiter: ReturnType<typeof createFixedWindowBudget>;
+   readonly prompt: AcpTranslatorPromptStream["prompt"];
++  readonly steer: AcpTranslatorPromptStream["steer"];
+   readonly cancel: AcpTranslatorPromptStream["cancel"];
+   private readonly ownedSessionStore: ReturnType<typeof createInMemorySessionStore> | undefined;
+   private readonly approvalRelays = new Map<string, AcpPendingApprovalRelay>();
+@@ -169,6 +170,7 @@
+       ),
+     });
+     this.prompt = this.promptStream.prompt.bind(this.promptStream);
++    this.steer = this.promptStream.steer.bind(this.promptStream);
+     this.cancel = this.promptStream.cancel.bind(this.promptStream);
+   }
+
+diff --git a/src/acp/translator.prompt-stream.ts b/src/acp/translator.prompt-stream.ts
+--- a/src/acp/translator.prompt-stream.ts
++++ b/src/acp/translator.prompt-stream.ts
+@@ -235,6 +235,42 @@
+     if (evt.event === "agent") {
+       await this.agentEvents.handleAgentEvent(evt);
+     }
++  }
++
++  async steer(sessionId: string, text: string): Promise<{ status: "steered" | "idle" }> {
++    if (!this.sessionStore.getSession(sessionId)) {
++      throw new Error("Open the conversation before steering it.");
++    }
++    const pending = this.pendingPrompts.get(sessionId);
++    if (!pending) {
++      if (this.pendingPromptAdmissions.has(sessionId)) {
++        throw new Error("OpenClaw is still starting this turn. Try again in a moment.");
++      }
++      return { status: "idle" };
++    }
++
++    // Authorize through the Gateway as the same caller that submitted this
++    // prompt. Only target a run that belongs to this ACP connection.
++    const { target } = await this.gateway.request<{
++      target: { sessionId: string; runId: string } | null;
++    }>("sessions.steerTarget", { sessionKey: pending.sessionKey });
++    if (!target && !this.getPendingPrompt(sessionId, pending.idempotencyKey)) {
++      return { status: "idle" };
++    }
++    if (!target || target.runId !== pending.idempotencyKey) {
++      throw new Error("OpenClaw cannot steer this turn.");
++    }
++    const reply = await this.gateway.request<{ status: string }>("sessions.steerActive", {
++      sessionKey: pending.sessionKey,
++      sessionId: target.sessionId,
++      runId: target.runId,
++      message: text,
++      idempotencyKey: randomUUID(),
++    });
++    if (reply.status !== "accepted") {
++      throw new Error("OpenClaw did not confirm steering for this turn.");
++    }
++    return { status: "steered" };
+   }
+
+   async prompt(params: PromptRequest): Promise<PromptResponse> {

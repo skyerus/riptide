@@ -295,7 +295,8 @@ struct CodexSavedChatScreen: View {
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
             dismissKeyboard: { composerFocused = false },
             canSubmit: canSubmit,
-            submitDraft: send
+            submitDraft: send,
+            queueDraft: working ? { submitDraft(queue: true) } : nil
         ) {
             TextField(prompt, text: editor, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
@@ -363,7 +364,7 @@ struct CodexSavedChatScreen: View {
             draft.wrappedValue = ""
         } else {
             Task {
-                if await session.send(text),
+                if await session.send(text) != nil,
                    draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
                     draft.wrappedValue = ""
                 }

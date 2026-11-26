@@ -83,6 +83,40 @@ final class CodexLiveUITests: XCTestCase {
     }
 
     @MainActor
+    func testLiveCodexComposerSteersAndOffersQueue() throws {
+        guard let port = ProcessInfo.processInfo.environment["RIPTIDE_UX_LIVE_FIXTURE_PORT"] else {
+            throw XCTSkip("Start the Codex UX fixture in --live mode.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_CODEX_URL"] = "ws://127.0.0.1:\(port)"
+        app.launchEnvironment["RIPTIDE_CODEX_BEARER"] = "fixture-" + String(repeating: "x", count: 40)
+        app.launchEnvironment["RIPTIDE_CODEX_WORKSPACE"] = "/riptide-ux-fixture"
+        app.launch()
+        let localCodex = app.buttons["sidebar-agent-local-codex"]
+        XCTAssertTrue(localCodex.waitForExistence(timeout: 8))
+        localCodex.tap()
+        app.buttons["watch-desktop-codex"].tap()
+        let editor = app.descendants(matching: .any).matching(identifier: "codex-steer-input").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        editor.tap()
+        editor.typeText("Check the first paragraph")
+        let send = app.buttons["codex-steer-send"]
+        send.tap()
+        XCTAssertTrue(app.staticTexts["codex-steer-receipt"].waitForExistence(timeout: 8))
+
+        editor.tap()
+        editor.typeText("Review the summary next")
+        send.press(forDuration: 1)
+        let queue = app.buttons["queue-follow-up"]
+        XCTAssertTrue(queue.waitForExistence(timeout: 5))
+        queue.tap()
+        XCTAssertTrue(app.buttons["queued-messages"].waitForExistence(timeout: 5))
+        capture(app, as: "Desktop Codex follow-up queued")
+    }
+
+    @MainActor
     func testWatchesAndSteersAnExistingCodexTurn() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let proofPath = environment["RIPTIDE_CODEX_PROOF_DIR"],

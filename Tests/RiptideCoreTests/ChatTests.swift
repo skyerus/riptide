@@ -6,6 +6,34 @@ import Testing
 struct ChatTests {
     private let target = AgentTarget.demos[0]
 
+    @Test func steeringAndQueuedFollowUpsStayWithTheirOriginalChat() async throws {
+        let model = try makeModel()
+        await model.showMain()
+        let main = model.selectedID
+        #expect(model.submit("Show an approval"))
+        try await waitUntil { !model.selected.permissions.isEmpty }
+        #expect(await model.steer("Focus on the draft", in: main))
+        #expect(model.selected.transcript.entries.contains { $0.content == .message(.user, "Focus on the draft") })
+        #expect(model.enqueue("Follow up separately", in: main))
+        #expect(model.enqueue("Remove this follow-up", in: main))
+        let discarded = try #require(model.selected.queuedMessages.last)
+        model.removeQueuedMessage(discarded.id, in: main)
+        #expect(model.selected.queuedMessages.map(\.text) == ["Follow up separately"])
+        #expect(!model.selected.transcript.entries.contains { $0.content == .message(.user, "Follow up separately") })
+        let permission = try #require(model.selected.permissions.first)
+        await model.answer(permission, optionID: nil)
+        #expect(await model.createChat())
+        try await waitUntil { !model.workingChats.contains(main) }
+        #expect(model.selected.transcript.entries.isEmpty)
+        await model.showMain()
+        #expect(model.selected.queuedMessages.isEmpty)
+        let sent = model.selected.transcript.entries.compactMap { entry in
+            if case .message(.user, let text) = entry.content { return text }
+            return nil
+        }
+        #expect(sent == ["Show an approval", "Focus on the draft", "Follow up separately"])
+    }
+
     @Test func openingMainJoinsAnInFlightPreloadWithoutChangingTheCurrentChatEarly() async throws {
         let fixture = try FixtureTransport(target: target, catalog: ["Side chat"])
         let transport = GatedHistoryTransport(fixture: fixture, mainID: target.mainSessionID)
