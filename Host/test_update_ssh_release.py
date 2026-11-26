@@ -73,6 +73,39 @@ class SSHReleaseTests(unittest.TestCase):
         argv[boundary:boundary] = ["--hermes-groups", "/profile", "/bin/hermes"]
         self.assertEqual([call.args[0] for call in verify.call_args_list], [argv, argv])
 
+    def test_dictation_is_enabled_and_verified_only_for_the_selected_key(self):
+        home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        keys = home / "authorized_keys"
+        releases = home / "releases"
+        releases.mkdir()
+        previous, revision = "a" * 40, "b" * 40
+        old = releases / previous / "Host" / "ssh_acp.py"
+        command = shlex.join([sys.executable, str(old), "--workspace", str(home), "--", sys.executable])
+        entries = []
+        fingerprints = []
+        for name in ("accountant", "primary"):
+            identity = home / name
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(identity)], check=True)
+            public = identity.with_suffix(".pub")
+            entries.append(f'restrict,command="{command}" {public.read_text()}')
+            fingerprints.append(subprocess.check_output(["ssh-keygen", "-lf", str(public)], text=True).split()[1])
+        keys.write_text("".join(entries))
+        auth = home / "auth.json"
+        auth.write_text("{}")
+        auth.chmod(0o640)
+
+        with self.assertRaisesRegex(ValueError, "mode-0600"):
+            update(keys, fingerprints[0], releases, previous, revision, codex_dictation_auth=auth)
+        self.assertEqual(keys.read_text(), "".join(entries))
+
+        auth.chmod(0o600)
+        with redirect_stdout(io.StringIO()):
+            update(keys, fingerprints[0], releases, previous, revision, codex_dictation_auth=auth)
+            update(keys, fingerprints[0], releases, previous, revision, codex_dictation_auth=auth)
+        selected = entries[0].replace(str(old), str(releases / revision / "Host" / "ssh_acp.py"))
+        selected = selected.replace(" -- ", f" --codex-dictation-auth {shlex.quote(str(auth))} -- ")
+        self.assertEqual(keys.read_text(), selected + entries[1])
+
     def test_versioned_update_can_enable_pairing_for_only_the_selected_key(self):
         home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         phone = home / "phone"

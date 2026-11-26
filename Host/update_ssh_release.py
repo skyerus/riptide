@@ -81,6 +81,9 @@ def verify(argv):
         require(result.returncode == 0, f"The staged {route} command failed.")
         return result.stdout
 
+    if "--codex-dictation-auth" in argv[:argv.index("--")]:
+        reply = json.loads(run("riptide-dictation", "{}\n"))
+        require(reply == {"error": "invalidAudio"}, "The staged dictation route did not accept the request.")
     if "--hermes-screen" in argv:
         require(run("riptide-hermes-screen", "") == "", "The Hermes screen command did not close cleanly.")
     if "--hermes-browser-mcp" in argv:
@@ -136,7 +139,8 @@ def verify(argv):
 
 
 def update(keys, fingerprint, releases, previous, revision, attention_socket=None, pairing_config=None,
-           enable_hermes_groups=False, agent_profile_state=None, browser_mcp=None, previous_releases=None, hermes_screen=None):
+           enable_hermes_groups=False, agent_profile_state=None, browser_mcp=None, previous_releases=None,
+           hermes_screen=None, codex_dictation_auth=None):
     directory = releases.lstat()
     require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid() and not directory.st_mode & 0o022,
             "Use an existing release directory controlled by the deployment account.")
@@ -152,6 +156,14 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
         require(Path(prefix[script]) in (old, new), "The pairing points to an unexpected SSH release.")
         retire_safari(prefix, agent)
         prefix[script] = str(stage(releases, revision))
+        if codex_dictation_auth is not None:
+            require(codex_dictation_auth.is_absolute(), "Use an absolute Codex dictation auth file path.")
+            auth, mode = read_owned(codex_dictation_auth)
+            require(auth is not None and mode == 0o600, "Use an existing mode-0600 Codex dictation auth file.")
+            if "--codex-dictation-auth" in prefix:
+                prefix[prefix.index("--codex-dictation-auth") + 1] = str(codex_dictation_auth)
+            else:
+                prefix.extend(["--codex-dictation-auth", str(codex_dictation_auth)])
         if attention_socket is not None:
             from hermes_attention import exchange
             require(attention_socket.is_absolute(), "Use an absolute notification socket path.")
@@ -216,6 +228,8 @@ def main():
     parser.add_argument("--revision", required=True)
     parser.add_argument("--attention-socket", type=Path)
     parser.add_argument("--pairing-config", type=Path)
+    parser.add_argument("--codex-dictation-auth", type=Path,
+                        help="Enable dictation for this key with an absolute Codex auth file path.")
     parser.add_argument("--agent-profile-state", type=Path,
                         help="Absolute per-agent display name file inside a private directory.")
     parser.add_argument("--hermes-screen", type=Path, nargs=2, metavar=("PROFILE_HOME", "HERMES"),
@@ -232,7 +246,8 @@ def main():
     try:
         update(args.authorized_keys, args.fingerprint, args.releases_dir, args.previous, args.revision,
                args.attention_socket, args.pairing_config, args.enable_hermes_groups, args.agent_profile_state,
-               args.hermes_browser_mcp, args.previous_releases_dir, args.hermes_screen)
+               args.hermes_browser_mcp, args.previous_releases_dir, args.hermes_screen,
+               codex_dictation_auth=args.codex_dictation_auth)
     except subprocess.TimeoutExpired:
         parser.exit(1, "The staged SSH command timed out during verification.\n")
     except (OSError, ValueError) as error:

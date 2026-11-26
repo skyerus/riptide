@@ -367,7 +367,8 @@ if __name__ == "__main__":
             print(json.dumps({"error": "This SSH pairing cannot connect additional Hermes profiles."}))
             sys.exit(1)
         from hermes_pairing import serve as serve_pairing
-        sys.exit(serve_pairing(args.pairing_config, Path(__file__).resolve()))
+        sys.exit(serve_pairing(args.pairing_config, Path(__file__).resolve(),
+                               codex_dictation_auth=args.codex_dictation_auth))
     if requested == "riptide-attention":
         if args.attention_socket is None:
             print('{"ok":false}')
