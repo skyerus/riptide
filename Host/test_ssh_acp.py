@@ -52,6 +52,34 @@ class SSHACPPolicyTests(unittest.TestCase):
             packet["params"]["files"] = [invalid]
             self.assertEqual(stage_attachments(packet)["error"]["code"], -32602)
 
+    def test_private_file_uses_the_forced_command_without_starting_the_agent(self):
+        wrapper = Path(__file__).with_name("ssh_acp.py").resolve()
+        with tempfile.TemporaryDirectory() as workspace:
+            argv = [sys.executable, str(wrapper), "--workspace", workspace, "--", "/missing-agent"]
+            env = {**os.environ, "SSH_ORIGINAL_COMMAND": "riptide-private-file", "TMPDIR": workspace}
+            data = b'{"fixture":"private transfer"}\n'
+            request = {"name": "client.json", "dataBase64": base64.b64encode(data).decode()}
+            with subprocess.Popen(argv, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) as upload:
+                self.assertTrue(select.select([upload.stdout], [], [], 5)[0], "No private transfer handshake")
+                self.assertEqual(json.loads(upload.stdout.readline()), {"version": 1})
+                reply, errors = upload.communicate(json.dumps(request) + "\n", timeout=5)
+                self.assertEqual(upload.returncode, 0)
+                self.assertEqual(errors, "")
+            path = Path(json.loads(reply)["path"])
+            self.assertEqual(path.parent.parent, Path(workspace))
+            self.assertEqual(path.read_bytes(), data)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+
+            for malformed in (json.dumps({**request, "name": "../client.json"}) + "\n",
+                              json.dumps(request), "x" * (2 * 1024 * 1024) + "\n"):
+                attempt = subprocess.run(argv, env=env, input=malformed, capture_output=True,
+                                         text=True, check=True, timeout=5)
+                self.assertEqual(attempt.stdout.splitlines(), ['{"version":1}', '{"error":"uploadRejected"}'])
+                self.assertEqual(attempt.stderr, "")
+            self.assertEqual(list(Path(workspace).iterdir()), [path.parent])
+
     def test_prompt_admits_inline_images_with_the_expected_shape(self):
         image = {"type": "image", "mimeType": "image/png", "data": base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()}
         packet = {"jsonrpc": "2.0", "id": 8, "method": "session/prompt", "params": {"sessionId": "main", "prompt": [image]}}

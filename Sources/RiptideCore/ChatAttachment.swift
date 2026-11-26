@@ -12,7 +12,9 @@ public struct ChatAttachment: Identifiable, Equatable, Sendable {
         self.imageMIMEType = imageMIMEType
     }
 
-    var hostFilename: String {
+    var hostFilename: String { Self.hostFilename(for: name) }
+
+    static func hostFilename(for name: String) -> String {
         let filename = String(name.prefix(120).map { character in
             character.isASCII && (character.isLetter || character.isNumber || "._-".contains(character))
                 ? character : "_"

@@ -99,6 +99,12 @@ Use absolute paths for the regular agent account, workspace, and native ACP laun
 
 Fast mode over Hermes SSH requires a Hermes gateway that advertises the ACP `service_tier` option and the Riptide SSH wrapper from this release. Apply the wrapper to an existing versioned pairing with the [SSH release updater](Host/update_ssh_release.py).
 
+### Send files privately to an SSH-paired host
+
+In the chat composer, tap **+ → Send File to VPS**, choose a file up to 1 MB, and confirm **Upload**. This uses the paired device key and pinned SSH host. The transfer starts only after the host confirms support, and the file and its path stay outside the transcript. Use **Copy VPS Path** to use the uploaded file from the paired account. The VPS stores the file in a temporary directory with owner-only permissions for both the directory and the file. Move it to its intended location or remove the temporary copy after use.
+
+This option is available for SSH-paired agents, including Hermes group chats through their paired host. Install the current `Host/ssh_acp.py` or apply the versioned [SSH release updater](Host/update_ssh_release.py) to the existing key. The transfer uses the existing restricted key and SSH port.
+
 ### Rename a paired agent from chat
 
 In a paired ACP chat, say “Change your name to Harbor.” The `set_display_name` tool updates that agent’s label in Riptide, including its chat header and entry under **Agents**. Riptide saves the new label on the device when it receives the update. The same pairing keeps its chats, photo, and favorites.

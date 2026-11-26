@@ -11,14 +11,20 @@ struct ComposerAttachmentPicker: View {
     @Binding var clipboard: [NSItemProvider]
     let acceptsImages: Bool
     let byteLimit: Int
-    let disabled: Bool
+    let canAttach: Bool
+    let privateFileTransfer: PrivateFileTransfer?
 
     @State private var showCamera = false
     @State private var showPhotos = false
     @State private var showFiles = false
+    @State private var showPrivateFileTransfer = false
     @State private var photos: [PhotosPickerItem] = []
     @State private var importing: Task<Void, Never>?
     @State private var problem: String?
+
+    private var canAddAttachment: Bool {
+        canAttach && importing == nil && attachments.count < ChatAttachment.maxCount
+    }
 
     var body: some View {
         Menu {
@@ -29,10 +35,15 @@ struct ComposerAttachmentPicker: View {
                     } else {
                         problem = "A camera is unavailable on this device."
                     }
-                }
+                }.disabled(!canAddAttachment)
                 Button("Photos", systemImage: "photo.on.rectangle") { showPhotos = true }
+                    .disabled(!canAddAttachment)
             }
             Button("Files", systemImage: "paperclip") { showFiles = true }
+                .disabled(!canAddAttachment)
+            if privateFileTransfer != nil {
+                Button("Send File to VPS", systemImage: "lock") { showPrivateFileTransfer = true }
+            }
         } label: {
             Group {
                 if importing != nil {
@@ -47,7 +58,7 @@ struct ComposerAttachmentPicker: View {
         .menuOrder(.fixed)
         .buttonStyle(.plain)
         .foregroundStyle(ChatTheme.ink)
-        .disabled(disabled || importing != nil || attachments.count >= ChatAttachment.maxCount)
+        .disabled(!canAddAttachment && privateFileTransfer == nil)
         .accessibilityLabel("Add attachments")
         .accessibilityIdentifier("add-attachments")
         .photosPicker(isPresented: $showPhotos, selection: $photos,
@@ -94,6 +105,11 @@ struct ComposerAttachmentPicker: View {
                 }
             }
             .ignoresSafeArea()
+        }
+        .sheet(isPresented: $showPrivateFileTransfer) {
+            if let privateFileTransfer {
+                PrivateFileTransferSheet(transfer: privateFileTransfer)
+            }
         }
         .alert("Attachments", isPresented: Binding(
             get: { problem != nil }, set: { if !$0 { problem = nil } }

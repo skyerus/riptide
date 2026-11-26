@@ -95,7 +95,8 @@ private struct WorkspaceDestination: View {
             AgentWorkspaceScreen(agent: agent)
         } else if let id = route.hermesGroup {
             if let session = workspace.hermesGroupSession(roomID: id, workspaceID: route.workspace) {
-                HermesGroupScreen(workspaceName: workspace.agent(route.workspace)?.name ?? "Hermes", session: session)
+                HermesGroupScreen(workspaceName: workspace.agent(route.workspace)?.name ?? "Hermes",
+                                  privateFileTransfer: workspace.privateFileTransfer(for: route.workspace), session: session)
             } else {
                 ContentUnavailableView("Group chat unavailable", systemImage: "lock",
                                        description: Text("Unlock this device or pair the remote again."))

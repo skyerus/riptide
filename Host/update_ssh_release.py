@@ -52,6 +52,8 @@ def verify(argv):
         require(result.returncode == 0, f"The staged {route} command failed.")
         return result.stdout
 
+    require(json.loads(run("riptide-private-file", "")) == {"version": 1},
+            "The private file transfer command did not confirm its protocol version.")
     if "--safari" in argv:
         state = json.loads(run("riptide-safari", '{"operation":"state","body":{}}\n'))
         require(state.get("status") == 200, "The existing Safari SSH route did not respond.")

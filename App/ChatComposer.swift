@@ -29,6 +29,7 @@ struct ChatComposer: View {
     var acceptsImages = true
     var attachmentByteLimit = ChatAttachment.codexByteLimit
     var attachmentsAvailable = true
+    var privateFileTransfer: PrivateFileTransfer?
     var settings = ChatComposerSettings()
     var context: ContextUsage? = nil
     var ready = true
@@ -56,6 +57,7 @@ struct ChatComposer: View {
                 focused: $editorFocus, prompt: prompt, editorIdentifier: fieldID, editorEnabled: ready,
                 chatID: chatID, canDictate: canDictate, draft: $draft, attachments: $attachments,
                 acceptsImages: acceptsImages, attachmentByteLimit: attachmentByteLimit, canAttach: ready && attachmentsAvailable,
+                privateFileTransfer: privateFileTransfer,
                 transcribe: transcribe,
                 dismissKeyboard: {
                     editorFocus = false

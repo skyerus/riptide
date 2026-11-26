@@ -245,6 +245,11 @@ final class WorkspaceState {
     func agent(_ id: String) -> WorkspaceAgent? { agents.first { $0.id == id } }
     func profile(_ id: String) -> RemoteProfile? { remotes.profiles.first { $0.id.uuidString == id } }
 
+    func privateFileTransfer(for id: String) -> PrivateFileTransfer? {
+        guard let profile = profile(id), let credential = remotes.bearer(for: profile) else { return nil }
+        return profile.makePrivateFileTransfer(credential: credential)
+    }
+
     func isMainChat(_ chat: WorkspaceChatID) -> Bool {
         mainChatID(for: chat.workspace) == chat.chat
     }
