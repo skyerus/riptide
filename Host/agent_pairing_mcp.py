@@ -6,7 +6,7 @@ from functools import partial
 from pathlib import Path
 import sys
 
-from hermes_pairing import PROFILE
+from hermes_chrome_profile import PROFILE
 from ssh_pairing_files import read_owned
 from mcp_stdio import MCPServer
 

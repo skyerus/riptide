@@ -1,17 +1,16 @@
 """Authorize a device-generated key for one operator-configured Hermes profile."""
 
 import asyncio
-import fcntl
 import json
 import os
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import sys
 
-from ssh_pairing_files import Edit, key_identity, read_owned, require
-
-PROFILE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+from hermes_chrome_profile import ChromePolicy, PROFILE, absolute_path
+from ssh_pairing_files import Edit, key_identity, lock_keys, read_owned, require
 MAX_REQUEST = 4096
 
 
@@ -66,9 +65,7 @@ def register_key(path, public_key, command, profile):
     require(not any(c in quoted for c in "\r\n"), "Invalid on-host pairing configuration.")
     key = " ".join(public_key)
     entry = f'restrict,command="{quoted}" {key} riptide-{profile}'
-    lock_path = path.with_name(".riptide-pairing.lock")
-    with os.fdopen(os.open(lock_path, os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR, 0o600), "r+b") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with lock_keys(path):
         content, mode = read_owned(path)
         require(content is not None, "The SSH authorized keys file does not exist.")
         source = content.decode()
@@ -79,14 +76,6 @@ def register_key(path, public_key, command, profile):
             return
         separator = "" if not source or source.endswith("\n") else "\n"
         Edit(path, content, (source + separator + entry + "\n").encode(), mode).apply()
-
-
-def absolute_path(value):
-    require(isinstance(value, str) and not any(c in value for c in "\x00\r\n"),
-            "Invalid on-host pairing configuration.")
-    path = Path(value)
-    require(path.is_absolute(), "Pairing paths must be absolute.")
-    return path
 
 
 def pair(config_path, wrapper, request):
@@ -111,7 +100,19 @@ def pair(config_path, wrapper, request):
     command = [str(hermes), "-p", profile, "acp"]
     key = key_identity(raw_key)
     asyncio.run(verify_chat(command, str(workspace), chat_id))
-    register_key(keys, key, [sys.executable, str(wrapper), "--workspace", str(workspace), "--", *command], profile)
+    options = []
+    if "chrome" in config:
+        policy = ChromePolicy.from_config(config["chrome"])
+        home = policy.profile_home(profile)
+        provisioning = subprocess.run(
+            [str(policy.python), "-B", str(wrapper.with_name("hermes_chrome_profile.py")), str(home),
+             str(wrapper.parent / "hermes-browser-handoff" / "SKILL.md")],
+            capture_output=True, timeout=10,
+        )
+        require(provisioning.returncode == 0, "The host could not prepare this profile's Chrome browser.")
+        options = policy.options(home, hermes)
+    register_key(keys, key, [sys.executable, str(wrapper), "--workspace", str(workspace), *options, "--", *command],
+                 profile)
     return {"name": name, "workspace": str(workspace), "mainSessionID": chat_id}
 
 
@@ -122,7 +123,7 @@ def serve(config_path, wrapper):
         reply = pair(config_path, wrapper, json.loads(frame))
     except ValueError as error:
         reply = {"error": str(error)}
-    except (KeyError, TypeError, AttributeError, OSError):
+    except (KeyError, TypeError, AttributeError, OSError, subprocess.TimeoutExpired):
         reply = {"error": "The host could not complete this Hermes pairing."}
     print(json.dumps(reply), flush=True)
     return int("error" in reply)

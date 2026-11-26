@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Read and update owner-controlled files and restricted SSH key commands."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+import fcntl
 import os
 from pathlib import Path
 import re
@@ -61,6 +63,14 @@ class Edit:
             self.replace(self.before, self.after)
             if rollback is not None:
                 rollback.callback(self.replace, self.after, self.before)
+
+
+@contextmanager
+def lock_keys(path):
+    lock_path = path.with_name(".riptide-pairing.lock")
+    with os.fdopen(os.open(lock_path, os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR, 0o600), "r+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def key_identity(public_key):

@@ -68,6 +68,41 @@ for line in sys.stdin:
         self.assertEqual(self.request()[0].returncode, 0)
         self.assertEqual(self.keys.read_text(), authorized)
 
+    def test_future_approved_pairing_uses_its_own_chrome_profile(self):
+        config = json.loads(self.routes.read_text())
+        profile = self.root / "profiles" / "accountant"
+        profile.mkdir(parents=True)
+        browser_python = self.root / "provisioning-python"
+        provisioned = self.root / "provisioned-profile"
+        browser_python.write_text(
+            f"#!{sys.executable}\nimport sys\nfrom pathlib import Path\n"
+            f"Path({str(provisioned)!r}).write_text(sys.argv[3])\n"
+        )
+        browser_python.chmod(0o700)
+        config["chrome"] = {"home": str(self.root), "source": str(self.root), "python": str(browser_python)}
+        self.routes.write_text(json.dumps(config))
+
+        self.assertEqual(self.request()[0].returncode, 0)
+        self.assertEqual(provisioned.read_text(), str(profile))
+        authorized = self.keys.read_text()
+        prefix, _ = authorized.splitlines()[1].split(" ssh-ed25519 ")
+        self.assertEqual(shlex.split(prefix[len('restrict,command="'):-1]),
+            [sys.executable, str(self.wrapper), "--workspace", str(self.workspace),
+             "--hermes-screen", str(profile), str(self.agent),
+             "--hermes-browser-mcp", str(browser_python), str(self.root),
+             "--", str(self.agent), "-p", "accountant", "acp"])
+        self.assertEqual(self.request()[0].returncode, 0)
+        self.assertEqual(self.keys.read_text(), authorized)
+
+    def test_browser_policy_rejects_a_profile_alias(self):
+        config = json.loads(self.routes.read_text())
+        (self.root / "profiles").mkdir()
+        (self.root / "profiles" / "accountant").symlink_to(self.workspace)
+        config["chrome"] = {"home": str(self.root), "source": str(self.root), "python": sys.executable}
+        self.routes.write_text(json.dumps(config))
+        self.assertIn("error", self.request()[1])
+        self.assertNotIn(self.public_key, self.keys.read_text())
+
     def test_unconfigured_target_does_not_register_a_key(self):
         self.assertIn("error", self.request(profile="not-allowed")[1])
         self.assertNotIn(self.public_key, self.keys.read_text())

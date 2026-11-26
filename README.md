@@ -161,6 +161,18 @@ On Debian or Ubuntu, run this from the exact Riptide release as the owner of the
 bash Host/deploy/install-hermes-stable-chrome.sh /absolute/path/to/hermes /absolute/hermes/profile/home
 ```
 
+For a host where Chrome should be the default for all current and future Hermes pairings, run the rollout from the exact Riptide release using Hermes’s Python environment. It preserves the existing approved target list, migrates trusted Hermes keys, and prepares each configured Hermes profile. The manifest’s `chrome` policy prepares new profiles when you approve **Connect agent** in Riptide.
+
+```sh
+/absolute/hermes/venv/bin/python -B Host/deploy/enable-hermes-chrome.py \
+  --manifest /absolute/hermes/home/riptide-pairing-manifest.json \
+  --home /absolute/hermes/home --source /absolute/hermes/source \
+  --python /absolute/hermes/venv/bin/python \
+  --releases /absolute/riptide/releases --revision "$release_sha" --reload-gateway
+```
+
+Pass `--previous-releases` for any superseded versioned host roots and `--legacy-wrapper` for an approved non-versioned SSH wrapper. Add future profiles to the existing target list using their ACP main chat and workspace. The browser setup uses that profile’s own desktop and persistent Chrome data.
+
 For an existing versioned SSH deployment, stage the matching release and enable the Chrome connector for the paired device:
 
 ```sh

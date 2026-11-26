@@ -14,13 +14,14 @@ import subprocess
 import tempfile
 
 from agent_profile import RENAME, read_name
-from ssh_pairing_files import Edit, key_command, read_owned, require
+from ssh_pairing_files import Edit, key_command, lock_keys, read_owned, require
 
 
 HOST = Path(__file__).resolve().parent
 PAYLOAD = ("ssh_acp.py", "hermes_screen.py", "hermes_groups.py", "hermes_browser_mcp.py", "codex_dictation.py",
            "attention_relay.py", "hermes_attention.py", "hermes_pairing.py", "agent_pairing_mcp.py",
-           "agent_profile.py", "mcp_stdio.py", "ssh_pairing_files.py")
+           "agent_profile.py", "mcp_stdio.py", "ssh_pairing_files.py", "hermes_chrome_profile.py")
+RESOURCES = ("hermes-browser-handoff/SKILL.md",)
 
 
 def retire_safari(prefix, agent):
@@ -55,14 +56,17 @@ def find_key(source, fingerprint):
 
 def stage(releases, revision):
     destination = releases / revision / "Host"
-    payload = {name: (HOST / name).read_bytes() for name in PAYLOAD}
+    payload = {name: (HOST / name).read_bytes() for name in (*PAYLOAD, *RESOURCES)}
     if not destination.exists():
         with tempfile.TemporaryDirectory(prefix=".riptide-stage-", dir=releases) as directory:
             staging = Path(directory) / revision / "Host"
             staging.mkdir(parents=True)
             for name, data in payload.items():
-                compile(data, name, "exec")
-                (staging / name).write_bytes(data)
+                if name in PAYLOAD:
+                    compile(data, name, "exec")
+                path = staging / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
             staging.parent.rename(destination.parent)
     require(all(read_owned(destination / name)[0] == data for name, data in payload.items()),
             "The versioned host payload does not match this release.")
@@ -137,7 +141,7 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
     require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid() and not directory.st_mode & 0o022,
             "Use an existing release directory controlled by the deployment account.")
     # Keep concurrent upgrades for this release directory from racing each other.
-    with (releases / ".update-ssh.lock").open("a") as lock:
+    with (releases / ".update-ssh.lock").open("a") as lock, lock_keys(keys):
         fcntl.flock(lock, fcntl.LOCK_EX)
         original, mode = read_owned(keys)
         require(original is not None, "The paired authorized_keys file does not exist.")
