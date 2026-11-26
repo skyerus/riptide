@@ -209,6 +209,13 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
         sshTransport(credential: credential, command: "riptide-safari")
     }
 
+    public func makePrivateFileTransfer(credential: String) -> PrivateFileTransfer? {
+        guard sshHostFingerprint != nil, SSHDeviceIdentity(privateCredential: credential) != nil else { return nil }
+        return PrivateFileTransfer(destination: name) {
+            sshTransport(credential: credential, command: "riptide-private-file")
+        }
+    }
+
     private func sshTransport(credential: String, command: String) -> SSHACPTransport? {
         guard let sshHostFingerprint, let endpoint = Self.sshEndpoint(address), let pin = SSHHostPin(sshHostFingerprint),
               let identity = SSHDeviceIdentity(privateCredential: credential) else { return nil }

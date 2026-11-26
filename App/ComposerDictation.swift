@@ -16,6 +16,7 @@ struct MessageComposer<Options: View, Actions: View>: View {
     let acceptsImages: Bool
     let attachmentByteLimit: Int
     let canAttach: Bool
+    let privateFileTransfer: PrivateFileTransfer?
     let transcribe: DictationTranscriber?
     let dismissKeyboard: () -> Void
     let canSubmit: Bool
@@ -54,7 +55,8 @@ struct MessageComposer<Options: View, Actions: View>: View {
             }
         } options: {
             ComposerAttachmentPicker(attachments: $attachments, isImporting: $importingAttachments,
-                                     clipboard: $clipboard, acceptsImages: acceptsImages, byteLimit: attachmentByteLimit, disabled: !canAttach)
+                                     clipboard: $clipboard, acceptsImages: acceptsImages, byteLimit: attachmentByteLimit,
+                                     canAttach: canAttach, privateFileTransfer: privateFileTransfer)
                 .id(chatID)
             options()
         } actions: {

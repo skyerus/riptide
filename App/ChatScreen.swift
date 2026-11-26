@@ -349,6 +349,7 @@ struct ChatScreen: View {
                         editorFocus: $composerFocused,
                         acceptsImages: selected.acceptsImages,
                         attachmentByteLimit: ChatAttachment.acpByteLimit,
+                        privateFileTransfer: workspace.privateFileTransfer(for: chatKey.workspace),
                         settings: settings,
                         context: selected.context,
                         ready: selected.loaded,

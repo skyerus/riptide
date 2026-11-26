@@ -316,6 +316,7 @@ struct HermesGroupCreate: View {
 
 struct HermesGroupScreen: View {
     let workspaceName: String
+    let privateFileTransfer: PrivateFileTransfer?
     let session: HermesGroupSession
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -599,6 +600,7 @@ struct HermesGroupScreen: View {
                          draft: $session.draft, attachments: $session.attachments,
                          modelPickerVisible: .constant(false), editorFocus: $composing,
                          attachmentByteLimit: ChatAttachment.acpByteLimit, attachmentsAvailable: session.supportsAttachments,
+                         privateFileTransfer: privateFileTransfer,
                          ready: session.pending == nil && !session.sending,
                          canDictate: false, canSubmit: session.canSend, transcribe: nil,
                          retrying: session.pending != nil,

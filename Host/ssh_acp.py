@@ -46,7 +46,6 @@ def advertise_attachments(packet):
 
 def stage_attachments(packet):
     response = {"jsonrpc": "2.0", "id": packet.get("id")}
-    directory = None
     try:
         if set(packet) != {"jsonrpc", "id", "method", "params"} or not rpc_id(response["id"]):
             raise ValueError
@@ -56,34 +55,66 @@ def stage_attachments(packet):
         files = params["files"]
         if not isinstance(files, list) or not 1 <= len(files) <= 4:
             raise ValueError
-        decoded = []
-        total = 0
-        for item in files:
-            if not isinstance(item, dict) or set(item) != {"name", "dataBase64"}:
-                raise ValueError
-            name, encoded = item["name"], item["dataBase64"]
-            if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", name)
-                    or name in (".", "..") or not isinstance(encoded, str)):
-                raise ValueError
-            data = base64.b64decode(encoded, validate=True)
-            total += len(data)
-            if total > MAX_ATTACHMENT_BYTES:
-                raise ValueError
-            decoded.append((name, data))
-        # A private random directory lets follow-up turns read the files after reconnect.
-        directory = Path(tempfile.mkdtemp(prefix="riptide-attachments-"))
+        response["result"] = {"paths": store_files(files, prefix="riptide-attachments-")}
+    except (ValueError, OSError):
+        response["error"] = {"code": -32602, "message": "The host couldn’t stage these attachments (1 MB total)."}
+    return response
+
+
+def store_files(files, *, prefix):
+    decoded = []
+    total = 0
+    for item in files:
+        if not isinstance(item, dict) or set(item) != {"name", "dataBase64"}:
+            raise ValueError
+        name, encoded = item["name"], item["dataBase64"]
+        if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", name)
+                or name in (".", "..") or not isinstance(encoded, str)):
+            raise ValueError
+        data = base64.b64decode(encoded, validate=True)
+        total += len(data)
+        if total > MAX_ATTACHMENT_BYTES:
+            raise ValueError
+        decoded.append((name, data))
+    # A private random directory keeps files owner-only and avoids overwrites.
+    directory = Path(tempfile.mkdtemp(prefix=prefix))
+    try:
         paths = []
         for index, (name, data) in enumerate(decoded, start=1):
             path = directory / f"{index}-{name}"
             with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
                 file.write(data)
             paths.append(str(path))
-        response["result"] = {"paths": paths}
+        return paths
     except (ValueError, OSError):
-        if directory is not None:
-            shutil.rmtree(directory, ignore_errors=True)
-        response["error"] = {"code": -32602, "message": "The host couldn’t stage these attachments (1 MB total)."}
-    return response
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+
+
+async def receive_private_file():
+    loop = asyncio.get_running_loop()
+    source = asyncio.StreamReader(limit=MAX_FRAME - 1)
+    stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
+    # The client waits for this handshake before sending any file bytes.
+    try:
+        print('{"version":1}', flush=True)
+        try:
+            line = await asyncio.wait_for(source.readline(), 20)
+            if not line:
+                return
+            if not line.endswith(b"\n"):
+                raise ValueError
+            path, = store_files([json.loads(line)], prefix="riptide-private-file-")
+        except (ValueError, OSError, asyncio.TimeoutError):
+            print('{"error":"uploadRejected"}', flush=True)
+            return
+        try:
+            print(json.dumps({"path": path}), flush=True)
+        except OSError:
+            shutil.rmtree(Path(path).parent, ignore_errors=True)
+            raise
+    finally:
+        stdin.close()
 
 
 def prompt_block(block):
@@ -357,10 +388,16 @@ if __name__ == "__main__":
             parser.error("An absolute Hermes profile and launcher are required.")
         adapter = os.path.join(os.path.dirname(os.path.realpath(__file__)), "hermes_screen.py")
         os.execv(sys.executable, [sys.executable, adapter, hermes, os.path.realpath(home)])
-    if requested != "riptide-acp" or not command or not os.path.isabs(command[0]):
+    if requested not in ("riptide-acp", "riptide-private-file") or not command or not os.path.isabs(command[0]):
         parser.exit(1, "This key is only authorized for Riptide ACP.\n")
     if not os.path.isabs(args.workspace) or not os.path.isdir(args.workspace):
         parser.error("An existing absolute workspace is required.")
+    if requested == "riptide-private-file":
+        try:
+            asyncio.run(receive_private_file())
+        except OSError:
+            parser.exit(1, "The private file transport closed.\n")
+        sys.exit(0)
     safari_mcp = None
     if args.safari_mcp_python:
         socket_path = Path(args.safari[0]) if args.safari else None
