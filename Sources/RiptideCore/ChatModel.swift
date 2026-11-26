@@ -93,6 +93,10 @@ public struct Transcript: Equatable, Sendable {
         entries[latestPromptIndex].receipt = .seen
     }
 
+    fileprivate mutating func beginObservedTurn() {
+        activePromptIndex = entries.endIndex
+    }
+
     fileprivate mutating func finishPrompt() {
         activePromptIndex = nil
     }
@@ -139,7 +143,7 @@ public struct Transcript: Equatable, Sendable {
             markPromptSeen()
         case .plan(_, let steps):
             if !steps.isEmpty { markPromptSeen() }
-        case .permissionClosed, .configOptions, .context:
+        case .permissionClosed, .configOptions, .context, .turnActivity:
             break
         }
     }
@@ -162,6 +166,7 @@ public final class AgentChatModel {
     @ObservationIgnored private var client: ACPClient?
     @ObservationIgnored private var makeClient: (@Sendable () -> ACPClient)?
     @ObservationIgnored private var observer: Task<Void, Never>?
+    @ObservationIgnored private var liveEventsDuringLoad: [String: [ACPEvent]] = [:]
     @ObservationIgnored private var mainPreload: Task<Void, Never>?
     @ObservationIgnored private var prompts: [String: Task<Void, Never>] = [:]
 
@@ -181,7 +186,8 @@ public final class AgentChatModel {
         public fileprivate(set) var loading = false
         public fileprivate(set) var loaded = false
         public fileprivate(set) var connectionLost = false
-        public fileprivate(set) var working = false
+        fileprivate var submittingPrompt = false
+        fileprivate var agentWorking = false
         public fileprivate(set) var stopping = false
         fileprivate var preparingPrompt = false
         public fileprivate(set) var steering = false
@@ -192,14 +198,23 @@ public final class AgentChatModel {
         public fileprivate(set) var notice: String?
         public fileprivate(set) var plan: [TurnPlanStep] = []
 
+        public var working: Bool { submittingPrompt || agentWorking }
+        public var canStop: Bool { submittingPrompt }
+
         public var modelName: String? {
             configOptions.first { $0.category == .model }?.currentName ?? reportedModelName
         }
         public var hasConfigChoices: Bool { configOptions.contains { !$0.choices.isEmpty } }
 
-        fileprivate mutating func receive(_ event: ACPEvent) {
+        fileprivate mutating func receive(_ event: ACPEvent, replaying: Bool = false) {
             switch event {
-            case .message(_, _, .user, _) where working:
+            case .turnActivity(_, let active):
+                let wasWorking = working
+                agentWorking = active
+                guard !replaying, wasWorking != working else { return }
+                if working { transcript.beginObservedTurn() }
+                else { transcript.finishPrompt() }
+            case .message(_, _, .user, _) where submittingPrompt:
                 transcript.acknowledgePrompt()
             case .message, .tool, .agentActivity:
                 transcript.apply(event)
@@ -287,8 +302,12 @@ public final class AgentChatModel {
         observe(client)
         chats[sessionID, default: ChatState()].loading = true
         chats[sessionID]?.error = nil
+        liveEventsDuringLoad[sessionID] = []
         defer {
-            if self.client === client { chats[sessionID]?.loading = false }
+            if self.client === client {
+                chats[sessionID]?.loading = false
+                liveEventsDuringLoad.removeValue(forKey: sessionID)
+            }
         }
         do {
             let cwd = sessions.first { $0.id == sessionID }?.cwd ?? target.cwd
@@ -331,7 +350,13 @@ public final class AgentChatModel {
         guard selectedID == sessionID, let client, selected.loaded, !selected.loading, !selected.working,
               !selected.configuring, selected.permissions.isEmpty else { return }
         chats[sessionID]?.loading = true
-        defer { chats[sessionID]?.loading = false }
+        liveEventsDuringLoad[sessionID] = []
+        defer {
+            if self.client === client {
+                chats[sessionID]?.loading = false
+                liveEventsDuringLoad.removeValue(forKey: sessionID)
+            }
+        }
         do {
             let cwd = sessions.first { $0.id == sessionID }?.cwd ?? target.cwd
             let opened = try await client.load(sessionID: sessionID, cwd: cwd)
@@ -445,6 +470,7 @@ public final class AgentChatModel {
         guard let client, let chat = chats[sessionID], sessionID == selectedID, !text.isEmpty,
               chat.loaded, !chat.loading, !chat.configuring, !chat.stopping, !chat.steering else { return false }
         if !chat.working { return startPrompt(text, in: sessionID) }
+        guard chat.canStop else { return false }
         if chat.preparingPrompt {
             chats[sessionID]?.steeringError = "This reply is still starting. Try again in a moment."
             return false
@@ -540,8 +566,8 @@ public final class AgentChatModel {
         }
         observe(client)
         chats[sessionID]?.transcript.addPrompt(text)
-        chats[sessionID]?.working = true
-        workingChats.insert(sessionID)
+        chats[sessionID]?.submittingPrompt = true
+        recordWorkingState(sessionID)
         chats[sessionID]?.plan = []
         chats[sessionID]?.error = nil
         chats[sessionID]?.steeringError = nil
@@ -552,20 +578,19 @@ public final class AgentChatModel {
     private func finishPrompt(_ sessionID: String, from client: ACPClient, advanceQueue: Bool) {
         guard self.client === client else { return }
         prompts[sessionID] = nil
-        chats[sessionID]?.transcript.finishPrompt()
-        chats[sessionID]?.working = false
-        workingChats.remove(sessionID)
-        chats[sessionID]?.stopping = false
-        if advanceQueue {
-            drainQueue(in: sessionID)
-        } else if chats[sessionID]?.queuedMessages.isEmpty == false {
-            chats[sessionID]?.queuePaused = true
-        }
+        guard var chat = chats[sessionID] else { return }
+        chat.submittingPrompt = false
+        chat.stopping = false
+        if !chat.working { chat.transcript.finishPrompt() }
+        if !advanceQueue, !chat.queuedMessages.isEmpty { chat.queuePaused = true }
+        chats[sessionID] = chat
+        recordWorkingState(sessionID)
+        if advanceQueue { drainQueue(in: sessionID) }
     }
 
     public func stop() async {
         let sessionID = selectedID
-        guard let client, selected.working, !selected.stopping else { return }
+        guard let client, selected.canStop, !selected.stopping else { return }
         chats[sessionID]?.stopping = true
         do { try await client.cancel(sessionID: sessionID) }
         catch {
@@ -585,15 +610,11 @@ public final class AgentChatModel {
         observer = Task { [weak self] in
             for await event in client.events {
                 guard let self else { break }
-                if case .agentActivity = event, chats[event.sessionID]?.transcript.hasUnseenPrompt != true { continue }
-                chats[event.sessionID, default: ChatState()].receive(event)
-                switch event {
-                case .permission:
-                    if pendingApprovalSince[event.sessionID] == nil { pendingApprovalSince[event.sessionID] = .now }
-                case .permissionClosed:
-                    if chats[event.sessionID]?.permissions.isEmpty == true { pendingApprovalSince[event.sessionID] = nil }
-                default:
-                    break
+                if liveEventsDuringLoad[event.sessionID] != nil {
+                    // The stream can reach the model before the task awaiting session/load.
+                    liveEventsDuringLoad[event.sessionID]?.append(event)
+                } else {
+                    receiveLive(event)
                 }
             }
             guard let self, self.makeClient != nil, self.client === client, !Task.isCancelled else { return }
@@ -601,6 +622,7 @@ public final class AgentChatModel {
             self.pendingApprovalSince.removeAll()
             self.workingChats.removeAll()
             self.prompts.removeAll()
+            self.liveEventsDuringLoad.removeAll()
             self.newlyCreatedOpenClawKeys.removeAll()
             self.observer = nil
             for id in Array(self.chats.keys) {
@@ -614,7 +636,8 @@ public final class AgentChatModel {
                 chat.transcript.finishPrompt()
                 chat.loading = false
                 chat.loaded = false
-                chat.working = false
+                chat.submittingPrompt = false
+                chat.agentWorking = false
                 chat.stopping = false
                 chat.preparingPrompt = false
                 chat.steering = false
@@ -625,14 +648,44 @@ public final class AgentChatModel {
         }
     }
 
+    private func receiveLive(_ event: ACPEvent) {
+        let sessionID = event.sessionID
+        if case .agentActivity = event, chats[sessionID]?.transcript.hasUnseenPrompt != true { return }
+        chats[sessionID, default: ChatState()].receive(event)
+        switch event {
+        case .turnActivity:
+            recordWorkingState(sessionID)
+            drainQueue(in: sessionID)
+        case .permission, .permissionClosed:
+            recordApprovalState(sessionID)
+        default:
+            break
+        }
+    }
+
+    private func recordWorkingState(_ sessionID: String) {
+        if chats[sessionID]?.working == true { workingChats.insert(sessionID) }
+        else { workingChats.remove(sessionID) }
+    }
+
+    private func recordApprovalState(_ sessionID: String) {
+        if chats[sessionID]?.permissions.isEmpty != false { pendingApprovalSince[sessionID] = nil }
+        else if pendingApprovalSince[sessionID] == nil { pendingApprovalSince[sessionID] = .now }
+    }
+
     private func markLoaded(_ opened: OpenedSession) {
         var chat = chats[opened.id] ?? ChatState()
         chat.transcript = Transcript()
-        for event in opened.events { chat.receive(event) }
+        for event in opened.events { chat.receive(event, replaying: true) }
+        if chat.agentWorking { chat.transcript.beginObservedTurn() }
         if let options = opened.configOptions { chat.configOptions = options }
         chat.reportedModelName = opened.reportedModelName
         chat.loaded = true
+        chat.loading = false
         chat.connectionLost = false
         chats[opened.id] = chat
+        recordWorkingState(opened.id)
+        recordApprovalState(opened.id)
+        for event in liveEventsDuringLoad.removeValue(forKey: opened.id) ?? [] { receiveLive(event) }
     }
 }
