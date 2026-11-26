@@ -114,6 +114,44 @@ final class AgentChatsUITests: XCTestCase {
     }
 
     @MainActor
+    func testChatTablesWrapCellsAndScrollWhenColumnsDoNotFit() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        continueAfterFailure = false
+        app.launch()
+        openMainChat(app, agent: "hermes")
+        send("Tables demo", in: app)
+
+        XCTAssertTrue(app.staticTexts["Table comparison complete."].waitForExistence(timeout: 10))
+        let tables = app.scrollViews.matching(identifier: "markdown-table")
+        XCTAssertEqual(tables.count, 2)
+        let comparison = tables.element(boundBy: 0)
+        let option = comparison.staticTexts["Local app"]
+        let setup = comparison.staticTexts["Follow the setup guide to connect your workspace."]
+        let access = comparison.staticTexts["Each teammate signs in and approves access."]
+        capture(app, as: "Chat table fits the screen with wrapped text")
+        XCTAssertTrue(option.isHittable)
+        XCTAssertTrue(setup.isHittable)
+        XCTAssertTrue(access.isHittable)
+        XCTAssertLessThanOrEqual(access.frame.maxX, comparison.frame.maxX)
+        XCTAssertGreaterThan(setup.frame.height, comparison.staticTexts["Setup"].frame.height + 10)
+        let lastAccess = comparison.staticTexts["Teammates open the link in their browser."]
+        XCTAssertLessThanOrEqual(lastAccess.frame.maxY, comparison.frame.maxY + 1)
+
+        let details = tables.element(boundBy: 1)
+        let owner = details.staticTexts["Workspace admin"]
+        let followUp = details.staticTexts["Check access after setup."]
+        XCTAssertTrue(owner.isHittable)
+        XCTAssertGreaterThan(followUp.frame.minX, details.frame.maxX)
+        details.swipeLeft(velocity: .slow)
+        capture(app, as: "Wide chat table scrolled to the final column")
+        XCTAssertTrue(followUp.isHittable)
+        XCTAssertGreaterThanOrEqual(followUp.frame.minX, details.frame.minX)
+        XCTAssertLessThanOrEqual(followUp.frame.maxX, details.frame.maxX + 1)
+        XCTAssertLessThanOrEqual(followUp.frame.maxY, details.frame.maxY + 1)
+    }
+
+    @MainActor
     func testReplyGroupsInlineCitationsAndListsAllSources() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
