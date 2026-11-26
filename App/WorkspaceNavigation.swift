@@ -211,33 +211,32 @@ private struct WorkspaceFlickNavigation: ViewModifier {
 
 struct WorkspaceRail: View {
     let selected: WorkspaceTab
+    var scrollable = false
     @Environment(WorkspaceState.self) private var workspace
-    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Group {
-            if typeSize.isAccessibilitySize {
+            if scrollable {
                 ScrollViewReader { proxy in
-                    ScrollView(.horizontal) { tabs(expands: false) }
+                    ScrollView(.horizontal) { tabs }
                         .scrollIndicators(.hidden)
+                        .fixedSize(horizontal: false, vertical: true)
                         .onAppear { proxy.scrollTo(selected, anchor: .center) }
                         .onChange(of: selected) { proxy.scrollTo(selected, anchor: .center) }
                 }
             } else {
-                tabs(expands: true)
+                tabs
             }
         }
-        .padding(.horizontal, ChatTheme.gutter)
-        .padding(.bottom, 12)
-        .background(ChatTheme.background)
+        .accessibilitySortPriority(1)
         .sensoryFeedback(.selection, trigger: selected)
     }
 
-    private func tabs(expands: Bool) -> some View {
+    private var tabs: some View {
         let waiting = workspace.inboxRows.count
-        return HStack(spacing: 3) {
-            tab(.inbox, title: "Inbox", symbol: "tray", identifier: "sidebar-inbox",
-                value: waiting == 0 ? "All caught up" : "\(waiting) waiting", expands: expands) {
+        return HStack(spacing: 8) {
+            tab(.inbox, title: "Inbox", identifier: "sidebar-inbox",
+                value: waiting == 0 ? "All caught up" : "\(waiting) waiting") {
                 if waiting > 0 {
                     Text(waiting > 99 ? "99+" : waiting.formatted())
                         .font(.caption2.weight(.semibold).monospacedDigit())
@@ -245,39 +244,38 @@ struct WorkspaceRail: View {
                         .accessibilityHidden(true)
                 }
             }
-            tab(.agents, title: "Agents", symbol: "person.crop.circle", identifier: "sidebar-agents", expands: expands) {
-                EmptyView()
-            }
-            tab(.groups, title: "Groups", symbol: "person.2", identifier: "sidebar-group-chats", expands: expands) {
-                EmptyView()
-            }
+            tab(.agents, title: "Agents", identifier: "sidebar-agents") { EmptyView() }
+            tab(.groups, title: "Groups", identifier: "sidebar-group-chats") { EmptyView() }
         }
-        .padding(4)
-        .background(ChatTheme.surface, in: Capsule())
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private func tab<Accessory: View>(
-        _ target: WorkspaceTab, title: String, symbol: String, identifier: String, value: String = "",
-        expands: Bool, @ViewBuilder accessory: () -> Accessory
+        _ target: WorkspaceTab, title: String, identifier: String, value: String = "",
+        @ViewBuilder accessory: () -> Accessory
     ) -> some View {
         let isSelected = selected == target
         return Button {
             if !isSelected { workspace.showSidebar(target) }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: symbol)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(isSelected ? ChatTheme.sidebarAccent : ChatTheme.muted)
-                    .accessibilityHidden(true)
-                Text(title).lineLimit(1).minimumScaleFactor(0.8)
+                Text(title).lineLimit(1)
                 accessory()
             }
-            .font(.subheadline.weight(isSelected ? .semibold : .medium))
+            .font(.body.weight(.medium))
             .foregroundStyle(isSelected ? ChatTheme.ink : ChatTheme.muted)
-            .padding(.horizontal, 7)
-            .frame(maxWidth: expands ? .infinity : nil, minHeight: 44)
-            .background(isSelected ? ChatTheme.raised : .clear, in: Capsule())
-            .contentShape(Capsule())
+            .padding(.horizontal, 8)
+            .padding(.vertical, 10)
+            .frame(minWidth: 44, minHeight: 51)
+            .overlay(alignment: .bottom) {
+                if isSelected {
+                    Capsule().fill(ChatTheme.sidebarAccent)
+                        .frame(width: 20, height: 2)
+                        .offset(y: -1)
+                        .accessibilityHidden(true)
+                }
+            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)

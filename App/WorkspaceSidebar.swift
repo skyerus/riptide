@@ -7,18 +7,9 @@ struct WorkspaceSidebar: View {
     @State private var editing = false
     @State private var creatingGroup = false
 
-    private var title: String {
-        switch workspace.sidebarTab {
-        case .inbox: "Inbox"
-        case .agents: "Agents"
-        case .groups: "Group chats"
-        }
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            header(title: title)
-            WorkspaceRail(selected: workspace.sidebarTab)
+            header
             switch workspace.sidebarTab {
             case .inbox:
                 WorkspaceInboxList().id(workspace.inboxReset)
@@ -41,43 +32,50 @@ struct WorkspaceSidebar: View {
         .sheet(isPresented: $editing) { WorkspaceEditor().environment(workspace) }
     }
 
-    private func header(title: String) -> some View {
-        HStack(alignment: .center, spacing: 4) {
-            Text(title)
-                .font(.largeTitle.weight(.semibold))
-                .lineLimit(2)
-                .layoutPriority(1)
-                .accessibilityAddTraits(.isHeader)
-                .accessibilityIdentifier("sidebar-heading")
-            Spacer(minLength: 6)
-            if workspace.sidebarTab == .inbox {
-                sidebarAction("Notification settings", symbol: "bell") { workspace.showingAlerts = true }
-                    .accessibilityIdentifier("inbox-notifications")
+    private var header: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 0) {
+                WorkspaceRail(selected: workspace.sidebarTab)
+                Spacer(minLength: 0)
+                headerActions
             }
-            if workspace.sidebarTab == .groups {
-                if !workspace.hermesGroupSources.isEmpty {
-                    sidebarAction("New group chat", symbol: "plus") { creatingGroup = true }
-                        .accessibilityIdentifier("new-hermes-group")
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    headerActions
                 }
-            } else {
-                sidebarAction("Manage agents", symbol: "pencil") { editing = true }
-                    .accessibilityIdentifier("edit-roster")
+                WorkspaceRail(selected: workspace.sidebarTab, scrollable: true)
             }
         }
-        .foregroundStyle(ChatTheme.ink)
-        .padding(.leading, ChatTheme.gutter)
-        .padding(.trailing, ChatTheme.gutter - 4)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
+        .padding(.horizontal, ChatTheme.gutter - 8)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(ChatTheme.sidebarDivider).frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var headerActions: some View {
+        if workspace.sidebarTab == .inbox {
+            sidebarAction("Notification settings", symbol: "bell") { workspace.showingAlerts = true }
+                .accessibilityIdentifier("inbox-notifications")
+        }
+        if workspace.sidebarTab == .groups {
+            if !workspace.hermesGroupSources.isEmpty {
+                sidebarAction("New group chat", symbol: "plus") { creatingGroup = true }
+                    .accessibilityIdentifier("new-hermes-group")
+            }
+        } else {
+            sidebarAction("Manage agents", symbol: "pencil") { editing = true }
+                .accessibilityIdentifier("edit-roster")
+        }
     }
 
     private func sidebarAction(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.subheadline.weight(.medium))
-                .frame(width: 34, height: 34)
-                .background(ChatTheme.surface, in: Circle())
-                .frame(width: 44, height: 44)
+                .font(.body.weight(.medium))
+                .foregroundStyle(ChatTheme.muted)
+                .frame(width: 44, height: 48)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -88,11 +88,11 @@ struct AgentAvatar: View {
     private var gradient: LinearGradient {
         let seed = Array(SHA256.hash(data: Data(agent.id.utf8)).prefix(2))
         let hue = Double(seed[0]) / 256
-        let shift = (Double(seed[1]) / 255 - 0.5) * 0.42
+        let shift = (Double(seed[1]) / 255 - 0.5) * 0.25
         let shadow = (1 + hue + shift).truncatingRemainder(dividingBy: 1)
         return LinearGradient(colors: [
-            Color(hue: hue, saturation: 0.65, brightness: 0.8),
-            Color(hue: shadow, saturation: 0.76, brightness: 0.42)
+            Color(hue: hue, saturation: 0.43, brightness: 0.49),
+            Color(hue: shadow, saturation: 0.54, brightness: 0.25)
         ], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
@@ -110,8 +110,8 @@ struct AgentAvatar: View {
             } else {
                 gradient
                 Text(initials)
-                    .font(.system(size: size * 0.33, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(.system(size: size * 0.32, weight: .medium))
+                    .foregroundStyle(ChatTheme.ink)
                     .lineLimit(1)
                     .minimumScaleFactor(0.65)
                     .padding(.horizontal, size * 0.14)
@@ -119,7 +119,6 @@ struct AgentAvatar: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
-        .overlay { Circle().strokeBorder(.white.opacity(0.14)) }
         .task(id: agent.id) { workspace.avatars.load(agent.id) }
         .accessibilityHidden(true)
     }
@@ -136,37 +135,38 @@ struct AgentAvatarEditor: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
-                    AgentAvatar(agent: agent, size: 108)
-                    Text(agent.name)
-                        .font(.title3.weight(.semibold))
-                        .multilineTextAlignment(.center)
-                    PhotosPicker(selection: $selection, matching: .images) {
-                        Label(hasPhoto ? "Change photo" : "Choose photo", systemImage: "photo.on.rectangle")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(ChatTheme.background)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 9)
-                            .frame(maxWidth: .infinity, minHeight: 48)
-                            .background(ChatTheme.ink, in: Capsule())
-                            .contentShape(Capsule())
+                VStack(spacing: 20) {
+                    VStack(spacing: 10) {
+                        AgentAvatar(agent: agent, size: 76)
+                        Text(agent.name)
+                            .font(.headline)
+                            .multilineTextAlignment(.center)
+                    }
+                    VStack(spacing: 0) {
+                        PhotosPicker(selection: $selection, matching: .images) {
+                            AgentAvatarPhotoAction(title: hasPhoto ? "Change photo" : "Choose photo", symbol: "photo.on.rectangle")
+                        }
+                        .accessibilityIdentifier("choose-agent-photo")
+                        if hasPhoto {
+                            Divider().overlay(ChatTheme.sidebarDivider)
+                                .padding(.leading, WorkspaceRow.textInset + 14)
+                            Button {
+                                do {
+                                    try workspace.avatars.removePhoto(for: agent.id)
+                                    issue = nil
+                                } catch {
+                                    issue = "Couldn’t remove this photo. Try again."
+                                }
+                            } label: {
+                                AgentAvatarPhotoAction(title: "Use default avatar", symbol: "person.crop.circle")
+                            }
+                            .accessibilityIdentifier("reset-agent-photo")
+                        }
                     }
                     .buttonStyle(.plain)
+                    .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 14))
                     .opacity(loading ? 0.55 : 1)
                     .disabled(loading)
-                    .accessibilityIdentifier("choose-agent-photo")
-                    if hasPhoto {
-                        Button("Use default avatar", systemImage: "person.crop.circle") {
-                            do {
-                                try workspace.avatars.removePhoto(for: agent.id)
-                                issue = nil
-                            } catch {
-                                issue = "Couldn’t remove this photo. Try again."
-                            }
-                        }
-                        .disabled(loading)
-                        .accessibilityIdentifier("reset-agent-photo")
-                    }
                     if loading { ProgressView("Saving photo…").font(.footnote) }
                     if let issue { Text(issue).font(.footnote).foregroundStyle(ChatTheme.warning) }
                 }
@@ -210,4 +210,16 @@ struct AgentAvatarEditor: View {
     }
 
     private var hasPhoto: Bool { workspace.avatars.image(for: agent.id) != nil }
+}
+
+private struct AgentAvatarPhotoAction: View {
+    let title: String
+    let symbol: String
+
+    var body: some View {
+        WorkspaceRow(title: title, subtitle: "", symbol: symbol, color: ChatTheme.muted)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 50)
+            .contentShape(Rectangle())
+    }
 }
