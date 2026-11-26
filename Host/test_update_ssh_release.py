@@ -97,6 +97,28 @@ class SSHReleaseTests(unittest.TestCase):
         self.assertTrue(keys.read_text().endswith("# do not change\n"))
 
 
+    def test_new_screen_and_computer_use_are_enabled_together_for_the_selected_key(self):
+        home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        phone = home / "phone"
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(phone)], check=True)
+        public_key = phone.with_suffix(".pub").read_text().strip()
+        fingerprint = subprocess.check_output(["ssh-keygen", "-lf", str(phone.with_suffix(".pub"))],
+                                              text=True).split()[1]
+        releases = home / "releases"
+        releases.mkdir()
+        previous, revision = "a" * 40, "b" * 40
+        old = releases / previous / "Host" / "ssh_acp.py"
+        command = [sys.executable, str(old), "--workspace", "/work", "--", "/bin/agent"]
+        keys = home / "authorized_keys"
+        keys.write_text(f'restrict,command="{shlex.join(command)}" {public_key}\n')
+        expected = ["--hermes-screen", str(home.resolve()), sys.executable,
+                    "--hermes-browser-mcp", sys.executable, str(home)]
+        with patch("update_ssh_release.verify") as verified, redirect_stdout(io.StringIO()):
+            for _ in range(2):
+                update(keys, fingerprint, releases, previous, revision,
+                       browser_mcp=(Path(sys.executable), home), hermes_screen=(home, Path(sys.executable)))
+        self.assertEqual([call.args[0][4:-2] for call in verified.call_args_list], [expected, expected])
+
     def test_versioned_update_enables_name_tool_for_a_pairing_without_a_screen(self):
         home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         phone = home / "phone"
