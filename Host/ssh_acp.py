@@ -13,6 +13,9 @@ from agent_profile import PROFILE_UPDATE, connector as profile_connector, publis
 
 MAX_FRAME = 2 * 1024 * 1024
 MAX_ATTACHMENT_BYTES = 1024 * 1024
+PRIVATE_FILE_LIMIT = 100 * 1024 * 1024
+PRIVATE_FILE_CHUNK = 512 * 1024
+PRIVATE_FILE_GREETING = {"version": 1, "streaming": {"chunkBytes": PRIVATE_FILE_CHUNK, "byteLimit": PRIVATE_FILE_LIMIT}}
 STAGE_ATTACHMENTS = "riptide/stageAttachments"
 REQUESTS = {
     "initialize": {"protocolVersion", "clientCapabilities", "clientInfo"},
@@ -68,8 +71,7 @@ def store_files(files, *, prefix):
         if not isinstance(item, dict) or set(item) != {"name", "dataBase64"}:
             raise ValueError
         name, encoded = item["name"], item["dataBase64"]
-        if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", name)
-                or name in (".", "..") or not isinstance(encoded, str)):
+        if not valid_filename(name) or not isinstance(encoded, str):
             raise ValueError
         data = base64.b64decode(encoded, validate=True)
         total += len(data)
@@ -91,20 +93,71 @@ def store_files(files, *, prefix):
         raise
 
 
+def valid_filename(name):
+    return (isinstance(name, str) and name not in (".", "..")
+            and re.fullmatch(r"[A-Za-z0-9._-]{1,120}", name) is not None)
+
+
+async def private_file_frame(source):
+    line = await asyncio.wait_for(source.readline(), 60)
+    if not line:
+        return None
+    if not line.endswith(b"\n"):
+        raise ValueError
+    frame = json.loads(line)
+    if not isinstance(frame, dict):
+        raise ValueError
+    return frame
+
+
+async def receive_file_chunks(source, header):
+    filename, size = header["name"], header["size"]
+    if not valid_filename(filename) or type(size) is not int or not 0 <= size <= PRIVATE_FILE_LIMIT:
+        raise ValueError
+    directory = Path(tempfile.mkdtemp(prefix="riptide-private-file-"))
+    partial = directory / ".partial"
+    received = 0
+    completed = False
+    try:
+        with os.fdopen(os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
+            print('{"received":0}', flush=True)
+            while received < size:
+                chunk = await private_file_frame(source)
+                if chunk is None or set(chunk) != {"dataBase64"} or not isinstance(chunk["dataBase64"], str):
+                    raise ValueError
+                data = base64.b64decode(chunk["dataBase64"], validate=True)
+                if not 0 < len(data) <= min(PRIVATE_FILE_CHUNK, size - received):
+                    raise ValueError
+                file.write(data)
+                received += len(data)
+                print(json.dumps({"received": received}), flush=True)
+            finish = await private_file_frame(source)
+            if finish is None or set(finish) != {"complete"} or finish["complete"] is not True:
+                raise ValueError
+        path = directory / f"1-{filename}"
+        partial.rename(path)
+        completed = True
+        return str(path)
+    finally:
+        if not completed:
+            shutil.rmtree(directory, ignore_errors=True)
+
+
 async def receive_private_file():
     loop = asyncio.get_running_loop()
     source = asyncio.StreamReader(limit=MAX_FRAME - 1)
     stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
     # The client waits for this handshake before sending any file bytes.
     try:
-        print('{"version":1}', flush=True)
+        print(json.dumps(PRIVATE_FILE_GREETING), flush=True)
         try:
-            line = await asyncio.wait_for(source.readline(), 20)
-            if not line:
+            header = await private_file_frame(source)
+            if header is None:
                 return
-            if not line.endswith(b"\n"):
-                raise ValueError
-            path, = store_files([json.loads(line)], prefix="riptide-private-file-")
+            if set(header) == {"name", "size"}:
+                path = await receive_file_chunks(source, header)
+            else:
+                path, = store_files([header], prefix="riptide-private-file-")
         except (ValueError, OSError, asyncio.TimeoutError):
             print('{"error":"uploadRejected"}', flush=True)
             return

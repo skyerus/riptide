@@ -101,9 +101,9 @@ Fast mode over Hermes SSH requires a Hermes gateway that advertises the ACP `ser
 
 ### Send files privately to an SSH-paired host
 
-In the chat composer, tap **+ → Send File to VPS**, choose a file up to 1 MB, and confirm **Upload**. This uses the paired device key and pinned SSH host. The transfer starts only after the host confirms support, and the file and its path stay outside the transcript. Use **Copy VPS Path** to use the uploaded file from the paired account. The VPS stores the file in a temporary directory with owner-only permissions for both the directory and the file. Move it to its intended location or remove the temporary copy after use.
+In the chat composer, tap **+ → Send File to VPS**, choose a file up to 100 MiB, and confirm **Upload**. Riptide streams the file in chunks over the existing pinned SSH pairing and shows progress as the VPS acknowledges each chunk. The file and its path stay outside the transcript. Use **Copy VPS Path** to use the uploaded file from the paired account. The VPS stores completed files in temporary directories with owner-only permissions and removes incomplete uploads when the connection closes. Move the file to its intended location or remove the temporary copy after use.
 
-This option is available for SSH-paired agents, including Hermes group chats through their paired host. Install the current `Host/ssh_acp.py` or apply the versioned [SSH release updater](Host/update_ssh_release.py) to the existing key. The transfer uses the existing restricted key and SSH port.
+This option is available for SSH-paired agents, including Hermes group chats through their paired host. For files over 1 MiB, update both the iPhone app and the VPS wrapper. Install the current `Host/ssh_acp.py` or apply the versioned [SSH release updater](Host/update_ssh_release.py) to the existing key. The transfer uses the existing restricted key and SSH port.
 
 ### Rename a paired agent from chat
 

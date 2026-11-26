@@ -9,6 +9,7 @@ struct PrivateFileTransferSheet: View {
     @State private var choosing = false
     @State private var selected: URL?
     @State private var upload: Task<Void, Never>?
+    @State private var progress: Double?
     @State private var path: String?
     @State private var copied = false
     @State private var problem: String?
@@ -37,13 +38,23 @@ struct PrivateFileTransferSheet: View {
                         if let selected {
                             Text(selected.lastPathComponent)
                             if upload != nil {
-                                ProgressView("Uploading…")
+                                if let progress {
+                                    ProgressView(value: progress) {
+                                        Text("Uploading…")
+                                    } currentValueLabel: {
+                                        Text(progress.formatted(.percent.precision(.fractionLength(0))))
+                                            .monospacedDigit()
+                                    }
+                                    .accessibilityIdentifier("private-file-upload-progress")
+                                } else {
+                                    ProgressView("Uploading…")
+                                }
                             } else {
                                 Button("Upload", systemImage: "lock", action: send)
                             }
                         }
                     } footer: {
-                        Text("Choose one file up to 1 MB.")
+                        Text("Choose one file up to 100 MiB.")
                     }
                 }
                 if let problem {
@@ -76,44 +87,18 @@ struct PrivateFileTransferSheet: View {
     private func send() {
         guard let selected, upload == nil else { return }
         problem = nil
+        progress = nil
         upload = Task {
             defer { upload = nil }
             do {
-                let data = try await Self.readFile(selected)
-                try Task.checkCancellation()
-                let receipt = try await transfer.send(name: selected.lastPathComponent, data: data)
+                let receipt = try await transfer.send(file: selected) { sent, total in
+                    await MainActor.run {
+                        progress = total > 0 ? Double(sent) / Double(total) : nil
+                    }
+                }
                 if !Task.isCancelled { path = receipt }
             } catch {
                 if !Task.isCancelled { problem = error.localizedDescription }
-            }
-        }
-    }
-
-    @concurrent private static func readFile(_ url: URL) async throws -> Data {
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let data: Data
-        do {
-            guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
-                throw CocoaError(.fileReadUnknown)
-            }
-            let handle = try FileHandle(forReadingFrom: url)
-            defer { try? handle.close() }
-            data = try handle.read(upToCount: PrivateFileTransfer.byteLimit + 1) ?? Data()
-        } catch {
-            throw ReadError.unreadable
-        }
-        guard data.count <= PrivateFileTransfer.byteLimit else { throw ReadError.tooLarge }
-        return data
-    }
-
-    private enum ReadError: LocalizedError {
-        case unreadable, tooLarge
-
-        var errorDescription: String? {
-            switch self {
-            case .unreadable: "Riptide couldn’t read the selected file."
-            case .tooLarge: "Choose a file up to 1 MB."
             }
         }
     }

@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 
-from ssh_acp import STAGE_ATTACHMENTS, admitted, stage_attachments
+from ssh_acp import PRIVATE_FILE_CHUNK, PRIVATE_FILE_GREETING, PRIVATE_FILE_LIMIT, STAGE_ATTACHMENTS, admitted, stage_attachments
 
 
 class SSHACPPolicyTests(unittest.TestCase):
@@ -62,7 +62,7 @@ class SSHACPPolicyTests(unittest.TestCase):
             with subprocess.Popen(argv, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, text=True) as upload:
                 self.assertTrue(select.select([upload.stdout], [], [], 5)[0], "No private transfer handshake")
-                self.assertEqual(json.loads(upload.stdout.readline()), {"version": 1})
+                self.assertEqual(json.loads(upload.stdout.readline()), PRIVATE_FILE_GREETING)
                 reply, errors = upload.communicate(json.dumps(request) + "\n", timeout=5)
                 self.assertEqual(upload.returncode, 0)
                 self.assertEqual(errors, "")
@@ -76,9 +76,46 @@ class SSHACPPolicyTests(unittest.TestCase):
                               json.dumps(request), "x" * (2 * 1024 * 1024) + "\n"):
                 attempt = subprocess.run(argv, env=env, input=malformed, capture_output=True,
                                          text=True, check=True, timeout=5)
-                self.assertEqual(attempt.stdout.splitlines(), ['{"version":1}', '{"error":"uploadRejected"}'])
+                self.assertEqual([json.loads(line) for line in attempt.stdout.splitlines()],
+                                 [PRIVATE_FILE_GREETING, {"error": "uploadRejected"}])
                 self.assertEqual(attempt.stderr, "")
             self.assertEqual(list(Path(workspace).iterdir()), [path.parent])
+
+    def test_streaming_preserves_a_file_larger_than_the_legacy_limit_and_cleans_up_failed_uploads(self):
+        wrapper = Path(__file__).with_name("ssh_acp.py").resolve()
+        with tempfile.TemporaryDirectory() as workspace:
+            argv = [sys.executable, str(wrapper), "--workspace", workspace, "--", "/missing-agent"]
+            env = {**os.environ, "SSH_ORIGINAL_COMMAND": "riptide-private-file", "TMPDIR": workspace}
+            first = bytes(range(256)) * (PRIVATE_FILE_CHUNK // 256)
+            pieces = [first, first, b"tail"]
+            data = b"".join(pieces)
+            start = {"name": "statement.pdf", "size": len(data)}
+            chunks = [{"dataBase64": base64.b64encode(piece).decode()} for piece in pieces]
+
+            def upload(*frames):
+                result = subprocess.run(argv, env=env, input="".join(json.dumps(frame) + "\n" for frame in frames),
+                                        capture_output=True, text=True, check=True, timeout=6)
+                self.assertEqual(result.stderr, "")
+                replies = [json.loads(line) for line in result.stdout.splitlines()]
+                self.assertEqual(replies.pop(0), PRIVATE_FILE_GREETING)
+                return replies
+
+            *progress, receipt = upload(start, *chunks, {"complete": True})
+            self.assertEqual(progress, [{"received": value} for value in [0, len(first), 2 * len(first), len(data)]])
+            path = Path(receipt["path"])
+            self.assertEqual(path.read_bytes(), data)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+
+            for frames in (
+                ({**start, "size": PRIVATE_FILE_LIMIT + 1},),
+                ({**start, "size": True},),
+                (start, chunks[0]),
+                ({**start, "size": 1}, chunks[0]),
+                (start, *chunks, {"complete": False}),
+            ):
+                self.assertEqual(upload(*frames)[-1], {"error": "uploadRejected"})
+                self.assertEqual(list(Path(workspace).iterdir()), [path.parent])
 
     def test_prompt_admits_inline_images_with_the_expected_shape(self):
         image = {"type": "image", "mimeType": "image/png", "data": base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()}
