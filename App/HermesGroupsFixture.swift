@@ -4,9 +4,11 @@ import RiptideCore
 
 actor HermesGroupsFixture {
     private let file: URL
+    private let source: String
 
-    init(namespace: UUID) {
-        file = .applicationSupportDirectory.appending(path: "HermesGroups-\(namespace.uuidString).json")
+    init(namespace: UUID, source: String) {
+        self.source = source
+        file = .applicationSupportDirectory.appending(path: "HermesGroups-\(namespace.uuidString)-\(source).json")
     }
 
     func exchange(_ frame: Data) throws -> Data {
@@ -16,10 +18,19 @@ actor HermesGroupsFixture {
         let stored = try? Data(contentsOf: file)
         let saved = stored.flatMap { try? JSONSerialization.jsonObject(with: $0) }
         var rooms = saved as? [String: [String: Any]] ?? [:]
-        let bots = [
-            ["name": "sable-accountant", "display_name": "Sable Accountant"],
-            ["name": "skye-accountant", "display_name": "Skye Accountant"],
-        ]
+        let studio = source == "hermes-studio"
+        let bots = studio
+            ? [["name": "editor", "display_name": "Editor"], ["name": "reviewer", "display_name": "Reviewer"]]
+            : [["name": "sable-accountant", "display_name": "Sable Accountant"],
+               ["name": "skye-accountant", "display_name": "Skye Accountant"]]
+        if stored == nil && studio {
+            let members = bots.map { bot in
+                ["member_id": bot["name"]!, "profile": bot["name"]!, "handle": bot["name"]!,
+                 "display_name": bot["display_name"]!]
+            }
+            rooms["editorial"] = ["room": ["room_id": "editorial", "name": "Editorial review", "members": members,
+                                          "authority_gateway_id": source, "authority_epoch": 1, "latest_seq": 0], "events": []]
+        }
         func event(_ id: String, _ seq: Int, _ kind: String, actor: [String: String], text: String, thread: String) -> [String: Any] {
             ["room_id": roomID, "event_id": id, "seq": seq, "kind": kind, "actor": actor,
              "created_at": Date().timeIntervalSince1970, "payload": ["text": text, "thread_id": thread]]
@@ -36,7 +47,7 @@ actor HermesGroupsFixture {
             result = ["rooms": rooms.values.compactMap { $0["room"] }]
         case "groups.create":
             let room: [String: Any] = ["room_id": roomID, "name": params["name"]!, "members": params["members"]!,
-                                       "authority_epoch": 1, "latest_seq": 0]
+                                       "authority_gateway_id": source, "authority_epoch": 1, "latest_seq": 0]
             if rooms[roomID] == nil { rooms[roomID] = ["room": room, "events": []] }
             result = ["room": rooms[roomID]!["room"]!]
         case "groups.state":

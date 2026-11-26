@@ -23,6 +23,7 @@ public struct HermesGroup: Decodable, Identifiable, Sendable {
     public let roomId: String
     public let name: String
     public let members: [Member]
+    public let authorityGatewayId: String?
     public let authorityEpoch: Int?
     public let latestSeq: Int?
     public var id: String { roomId }
@@ -312,7 +313,7 @@ private actor HermesGroupsChannel {
 
     private func exchange(_ frame: Data) async throws -> Data {
         var current: Link
-        if let link, link.lastUse.duration(to: .now) < .seconds(12) {
+        if let link, link.lastUse.duration(to: .now) < .seconds(35) {
             current = link
         } else {
             if let link { await link.transport.close() }

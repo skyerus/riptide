@@ -4,6 +4,7 @@ import SwiftUI
 
 enum WorkspaceTab: Hashable {
     case inbox
+    case groups
     case agent(String)
 
     var agentID: String? {
@@ -54,14 +55,14 @@ final class WorkspaceState {
     @ObservationIgnored private var hermesGroupsClients: [String: HermesGroupsClient] = [:]
     @ObservationIgnored private var hermesGroupSessions: [WorkspaceChatID: HermesGroupSession] = [:]
     #if DEBUG
-    var groupFixture: HermesGroupsClient?
+    var groupFixtures: [String: HermesGroupsClient] = [:]
     #endif
     var path: [WorkspaceRoute] = []
     private(set) var sidebarTab: WorkspaceTab = .inbox
     private(set) var inboxReset = 0
     var showingSwitcher = false
     var showingAlerts = false
-    var inboxRequested = false
+    var sidebarRequested: WorkspaceTab?
     var alertsRequested = false
     private(set) var visibleChat: WorkspaceChatID?
     private(set) var recent: [WorkspaceVisit]
@@ -311,16 +312,18 @@ final class WorkspaceState {
         push(WorkspaceRoute(workspace: workspaceID, chat: chat ?? cachedChat))
     }
 
+    var hermesGroupSources: [WorkspaceAgent] { agents.filter { supportsHermesGroups($0.id) } }
+
     func supportsHermesGroups(_ workspaceID: String) -> Bool {
         #if DEBUG
-        if workspaceID == "hermes", groupFixture != nil { return true }
+        if groupFixtures[workspaceID] != nil { return true }
         #endif
         return profile(workspaceID)?.canOpenHermesGroups == true
     }
 
     func hermesGroupsClient(for workspaceID: String) -> HermesGroupsClient? {
         #if DEBUG
-        if workspaceID == "hermes", let groupFixture { return groupFixture }
+        if let groupFixture = groupFixtures[workspaceID] { return groupFixture }
         #endif
         guard let profile = profile(workspaceID), let bearer = remotes.bearer(for: profile) else {
             hermesGroupsClients[workspaceID] = nil
@@ -443,7 +446,9 @@ final class WorkspaceState {
         hermesGroupsClients[workspaceID] = nil
         hermesGroupSessions = hermesGroupSessions.filter { $0.key.workspace != workspaceID }
         HermesGroupSession.removeDrafts(workspaceID: workspaceID)
-        if sidebarTab == .agent(workspaceID) { sidebarTab = .inbox }
+        if sidebarTab == .agent(workspaceID) || (sidebarTab == .groups && hermesGroupSources.isEmpty) {
+            sidebarTab = .inbox
+        }
         for key in codexRecency.filter({ $0.workspace == workspaceID }) {
             codexSessions.removeValue(forKey: key)?.detach()
         }
