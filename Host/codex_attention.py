@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 from websockets.asyncio.client import connect
 
-from attention_relay import read_secret, token_from
+from attention_relay import read_secret, reply_preview, token_from
 
 
 def safe_origin(value, *, socket=False):
@@ -64,15 +64,20 @@ class AppServer:
             statuses[chat["id"]] = (kind, chat.get("updatedAt"))
         return statuses
 
-    async def has_reply(self, chat):
+    async def latest_reply(self, chat):
         latest = await self.call("thread/turns/list", {
             "threadId": chat, "limit": 1, "itemsView": "full", "sortDirection": "desc"
         })
         turns = latest.get("data", [])
         if not turns or turns[0].get("status") != "completed":
-            return False
-        return any(item.get("type") == "agentMessage" and item.get("phase") != "commentary"
-                   and bool(item.get("text")) for item in turns[0].get("items", []))
+            return None
+        replies = [item for item in turns[0].get("items", [])
+                   if item.get("type") == "agentMessage" and item.get("phase") != "commentary"
+                   and isinstance(item.get("text"), str) and item["text"]]
+        if not replies:
+            return None
+        reply = next((item for item in replies if item.get("phase") == "final_answer"), replies[0])
+        return reply["text"]
 
 
 def transitions(before, after):
@@ -117,10 +122,14 @@ async def watch(args):
                     updated = await server.list_status(args.cwd, account_id)
                     eligible = []
                     for chat, reason, state, stamp in transitions(statuses, updated):
-                        if reason == "reply" and state == "active" and not await server.has_reply(chat):
-                            continue
-                        eligible.append((chat, reason, state, stamp))
-                for chat, reason, state, stamp in eligible:
+                        preview = None
+                        if reason == "reply" and state == "active":
+                            reply = await server.latest_reply(chat)
+                            if reply is None:
+                                continue
+                            preview = reply_preview(reply)
+                        eligible.append((chat, reason, state, stamp, preview))
+                for chat, reason, state, stamp, preview in eligible:
                     key = (chat, reason)
                     if state == "active":
                         receipt = f"codex:{stamp if isinstance(stamp, int) else 0}:{uuid.uuid4()}"
@@ -130,7 +139,7 @@ async def watch(args):
                         if receipt is None:
                             continue
                     enqueue(pending, {"workspace": args.agent, "chat": chat,
-                                      "reason": reason, "state": state, "eventID": receipt})
+                                      "reason": reason, "state": state, "eventID": receipt, "preview": preview})
                 statuses = updated
                 while pending:
                     key = next(iter(pending))

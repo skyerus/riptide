@@ -75,6 +75,7 @@ struct ChatTests {
         }
         #expect(tool.status == "completed")
         #expect(reply.contains("| Area | Status |\n| --- | --- |"))
+        #expect(model.completedReplies[sideID]?.preview == WorkspaceAttention.preview(reply))
     }
 
     @Test func reopeningAfterDisconnectReplaysTheReplyWithoutSendingThePromptAgain() async throws {

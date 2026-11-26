@@ -47,13 +47,17 @@ class HermesAttentionTests(unittest.IsolatedAsyncioTestCase):
         await gateway.publish("approval.request", {"prompt_id": "request-1", "command": "private"}, seq=6)
         await gateway.publish("approval.settled", {"prompt_id": "request-1"}, seq=7)
         await gateway.publish("message.complete", {"status": "error", "admission_id": "failed"}, seq=8)
-        await gateway.publish("message.complete", {"status": "complete", "admission_id": "reply-1", "text": "private"}, seq=9)
+        await gateway.publish("message.complete", {
+            "status": "complete", "admission_id": "reply-1", "text": "\nThe report is ready.\nThe rest of the reply.",
+        }, seq=9)
         await gateway.publish("clarify.request", {"prompt_id": "input-2", "question": "private"}, seq=10)
         state.publish({"workspace": "unpaired", "chat": "editor", "reason": "input", "eventID": "other"})
         state.flush()
         self.assertEqual([(workspace, item.chat, item.reason, item.event_id) for workspace, item in sent],
                          [("phone-workspace", "editor", "reply", "reply-1"),
                           ("phone-workspace", "editor", "input", "input-2")])
+        self.assertEqual([item.preview for _, item in sent], ["The report is ready.", None])
+        self.assertTrue(all("preview" not in row for row in state.entries()))
         _, task = relay.watches["editor"]
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -73,5 +77,5 @@ class HermesAttentionTests(unittest.IsolatedAsyncioTestCase):
 
     def test_input_notifications_match_the_same_pending_request(self):
         payload = {"prompt_id": "input-1"}
-        self.assertEqual(attention({"type": "clarify.request", "payload": payload}), ("input", "input-1", "active"))
-        self.assertEqual(attention({"type": "clarify.settled", "payload": payload}), ("input", "input-1", "resolved"))
+        self.assertEqual(attention({"type": "clarify.request", "payload": payload}), ("input", "input-1", "active", None))
+        self.assertEqual(attention({"type": "clarify.settled", "payload": payload}), ("input", "input-1", "resolved", None))

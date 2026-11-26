@@ -29,6 +29,17 @@ REASONS = {
 }
 
 
+def reply_preview(text):
+    if not isinstance(text, str):
+        return None
+    for line in text.splitlines():
+        content = line.strip()
+        if content:
+            preview = content if len(content) <= 180 else content[:179].rstrip() + "…"
+            return preview.encode("utf-8", errors="replace").decode("utf-8")
+    return None
+
+
 def read_secret(path):
     file = Path(path)
     permissions = file.stat().st_mode
@@ -65,6 +76,7 @@ class AttentionEvent:
     chat: str
     reason: str
     event_id: str
+    preview: str | None = None
 
     @property
     def target(self):
@@ -78,7 +90,8 @@ class AttentionEvent:
                 or not isinstance(reason, str) or reason not in REASONS
                 or not valid(event_id, r"[A-Za-z0-9._:-]{1,160}")):
             raise ValueError("Invalid event identifiers.")
-        return cls(workspace, chat, reason, event_id)
+        preview = reply_preview(body.get("preview")) if reason == "reply" else None
+        return cls(workspace, chat, reason, event_id, preview)
 
 
 class AttentionState:
@@ -288,7 +301,7 @@ class APNs:
             "apns-collapse-id": key,
         }
         payload = {
-            "aps": {"alert": {"title": "Riptide", "body": REASONS[event.reason]}, "sound": "default"},
+            "aps": {"alert": {"title": "Riptide", "body": event.preview or REASONS[event.reason]}, "sound": "default"},
             "workspace": event.workspace,
             "chat": event.chat,
         }

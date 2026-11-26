@@ -150,7 +150,7 @@ class AttentionRelayTests(unittest.TestCase):
                 server.shutdown()
                 thread.join(3)
 
-    def test_apns_signs_the_request_and_sends_no_conversation_content(self):
+    def test_apns_signs_the_request_and_only_previews_reply_events(self):
         try:
             import httpx
             from cryptography.hazmat.primitives import hashes, serialization
@@ -178,11 +178,21 @@ class AttentionRelayTests(unittest.TestCase):
             key.public_key().verify(signature, f"{headers}.{claims}".encode(), ec.ECDSA(hashes.SHA256()))
             payload = json.loads(request.content)
             self.assertEqual(payload, {
-                "aps": {"alert": {"title": "Riptide", "body": "Approval needed"}, "sound": "default"},
+                "aps": {"alert": {"title": "Riptide", "body": expected}, "sound": "default"},
                 "workspace": "agent", "chat": "main",
             })
             return httpx.Response(200)
 
         with httpx.Client(transport=httpx.MockTransport(inspect)) as client:
             sender.client = client
-            self.assertEqual(sender.send(self.state.devices[DEVICE], AttentionEvent.parse(self.event())), "sent")
+            for reason, preview, expected in (
+                ("approval", "A private command", "Approval needed"),
+                ("input", "A private question", "Waiting for your input"),
+                ("reply", None, "Reply ready"),
+                ("reply", " \r\n\t ", "Reply ready"),
+                ("reply", "\n  Your update is ready.  \r\nThe rest of the reply.", "Your update is ready."),
+                ("reply", "🙂" * 200 + "\nNext line.", "🙂" * 179 + "…"),
+            ):
+                with self.subTest(reason=reason, expected=expected):
+                    body = self.event(reason) if preview is None else self.event(reason, preview=preview)
+                    self.assertEqual(sender.send(self.state.devices[DEVICE], AttentionEvent.parse(body)), "sent")

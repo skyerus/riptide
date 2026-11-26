@@ -28,6 +28,10 @@ public struct WorkspaceAttention: Identifiable, Equatable, Codable, Sendable {
     public let title: String
     public let reason: AttentionReason
     public let date: Date
+    private var replyPreview: String? = nil
+
+    // Reply text is only needed when issuing an alert. Keep it out of the saved Inbox.
+    private enum CodingKeys: String, CodingKey { case chat, title, reason, date }
 
     public struct ID: Hashable, Sendable {
         public let chat: WorkspaceChatID
@@ -40,12 +44,25 @@ public struct WorkspaceAttention: Identifiable, Equatable, Codable, Sendable {
     }
 
     public var id: ID { ID(chat: chat, reason: reason) }
+    public var notificationBody: String { replyPreview ?? reason.title }
 
-    public init(chat: WorkspaceChatID, title: String, reason: AttentionReason, date: Date = .now) {
+    public init(chat: WorkspaceChatID, title: String, reason: AttentionReason, date: Date = .now,
+                replyText: String? = nil) {
         self.chat = chat
         self.title = title
         self.reason = reason
         self.date = date
+        if reason == .reply { replyPreview = replyText.flatMap(Self.preview) }
+    }
+
+    static func preview(_ text: String) -> String? {
+        for line in text.split(whereSeparator: \.isNewline) {
+            let content = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { continue }
+            if content.unicodeScalars.count <= 180 { return content }
+            return String(content.unicodeScalars.prefix(179)).trimmingCharacters(in: .whitespaces) + "…"
+        }
+        return nil
     }
 
     public static func prioritized(_ entries: [Self]) -> [Self] {

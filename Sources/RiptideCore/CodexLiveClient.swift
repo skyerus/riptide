@@ -165,7 +165,7 @@ public actor CodexLiveClient {
         return chat
     }
 
-    public func hasLatestReply(in chatID: String) async throws -> Bool {
+    public func latestReply(in chatID: String) async throws -> String? {
         if reader == nil { try await connect(experimental: true) }
         if accountFingerprint != nil { _ = try await checkedAccount() }
         let result = try await call("thread/read", ["threadId": .string(chatID), "includeTurns": .boolean(false)])
@@ -174,10 +174,8 @@ public actor CodexLiveClient {
         let history = try await call("thread/turns/list", [
             "threadId": .string(chatID), "limit": .integer(1), "itemsView": "full", "sortDirection": "desc"
         ])
-        guard let turn = history["data"]?.array?.first, turn["status"] == "completed" else { return false }
-        return (turn["items"]?.array ?? []).contains {
-            $0["type"] == "agentMessage" && $0["phase"] != "commentary" && $0["text"]?.string?.isEmpty == false
-        }
+        guard let turn = history["data"]?.array?.first, turn["status"] == "completed" else { return nil }
+        return CodexTranscriptTurn.replyText(in: (turn["items"]?.array ?? []).compactMap { CodexChatMessage($0) })
     }
 
     public func openSavedChat(_ id: String) async throws -> CodexChatSnapshot {
