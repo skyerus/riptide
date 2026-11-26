@@ -5,6 +5,12 @@ public struct HermesPairingInvitation: Equatable, Sendable {
     public let profile: String
     public let optionID: String
 
+    public var displayName: String {
+        profile.split(whereSeparator: { $0 == "-" || $0 == "_" })
+            .map { $0.capitalized }
+            .joined(separator: " ")
+    }
+
     public init?(_ request: PermissionRequest) {
         let prefix = "Pair Hermes profile: "
         guard request.toolCallID?.hasPrefix("clarify-") == true, request.options.count == 2,

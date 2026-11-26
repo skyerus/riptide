@@ -11,6 +11,7 @@ from pathlib import Path
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
+from agent_profile import PROFILE_UPDATE, connector as profile_connector, publish_changes, validate_state
 from ssh_acp import STAGE_ATTACHMENTS, advertise_attachments, rpc_id, stage_attachments
 
 MAX_FRAME = 2 * 1024 * 1024
@@ -34,8 +35,9 @@ def rpc_packet(text):
     return packet
 
 
-def bridge_server(port, token, command, dictation_auth=None):
+def bridge_server(port, token, command, dictation_auth=None, profile_state=None):
     active = set()
+    connector = profile_connector(profile_state) if profile_state is not None else None
 
     def authenticate(connection, request):
         if not ((request.path == "/acp" and command) or (request.path == DICTATION_PATH and dictation_auth)):
@@ -69,7 +71,10 @@ def bridge_server(port, token, command, dictation_auth=None):
             )
 
             initialize_id = None
-            initialized = False
+            initialized = asyncio.Event()
+
+            async def send_profile(packet):
+                await socket.send(json.dumps(packet))
 
             async def to_agent():
                 nonlocal initialize_id
@@ -77,23 +82,32 @@ def bridge_server(port, token, command, dictation_auth=None):
                     if not isinstance(message, str):
                         raise ValueError("Expected a text frame.")
                     packet = rpc_packet(message)
-                    if packet.get("method") == STAGE_ATTACHMENTS and initialized:
+                    method = packet.get("method")
+                    if method == STAGE_ATTACHMENTS and initialized.is_set():
                         await socket.send(json.dumps(stage_attachments(packet)))
                         continue
-                    if packet.get("method") == "initialize" and rpc_id(packet.get("id")):
+                    if method == "initialize" and rpc_id(packet.get("id")):
                         initialize_id = packet["id"]
+                    if connector and method in ("session/new", "session/load"):
+                        params = packet.get("params")
+                        if isinstance(params, dict) and params.get("mcpServers") == []:
+                            params["mcpServers"] = [connector]
                     process.stdin.write((json.dumps(packet, ensure_ascii=False, separators=(",", ":")) + "\n").encode())
                     await process.stdin.drain()
 
             async def to_phone():
-                nonlocal initialized
                 while line := await process.stdout.readline():
                     packet = rpc_packet(line.decode())
+                    if packet.get("method") == PROFILE_UPDATE:
+                        continue
                     if rpc_id(packet.get("id")) and packet["id"] == initialize_id and "method" not in packet:
-                        initialized = advertise_attachments(packet)
+                        if advertise_attachments(packet):
+                            initialized.set()
                     await socket.send(json.dumps(packet, ensure_ascii=False, separators=(",", ":")))
 
             pumps = [asyncio.create_task(to_agent()), asyncio.create_task(to_phone())]
+            if connector:
+                pumps.append(asyncio.create_task(publish_changes(profile_state, initialized, send_profile)))
             done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
@@ -126,7 +140,8 @@ def bridge_server(port, token, command, dictation_auth=None):
 
 
 async def run(args):
-    async with bridge_server(args.port, read_token(args.token_file), args.command, args.codex_dictation_auth) as bridge:
+    async with bridge_server(args.port, read_token(args.token_file), args.command, args.codex_dictation_auth,
+                             args.agent_profile_state) as bridge:
         name = "ACP bridge" if args.command else "Dictation relay"
         print(f"{name} on 127.0.0.1:{bridge.sockets[0].getsockname()[1]}", flush=True)
         await bridge.serve_forever()
@@ -137,6 +152,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--token-file", required=True)
     parser.add_argument("--codex-dictation-auth", metavar="CODEX_AUTH_FILE")
+    parser.add_argument("--agent-profile-state", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command[:1] == ["--"]:
@@ -145,6 +161,11 @@ if __name__ == "__main__":
         parser.error("An absolute Codex auth file path is required.")
     if not (args.command or args.codex_dictation_auth):
         parser.error("Provide a fixed ACP command after -- or enable Codex dictation.")
+    if args.agent_profile_state:
+        try:
+            validate_state(args.agent_profile_state)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:

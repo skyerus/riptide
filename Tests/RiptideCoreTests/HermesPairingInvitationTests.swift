@@ -13,6 +13,7 @@ import Testing
     @Test func onlyStructuredClarificationCanInviteAPairing() {
         let valid = request(name: "Pair Hermes profile: skye-digital-ltd-accountant")
         #expect(HermesPairingInvitation(valid)?.profile == "skye-digital-ltd-accountant")
+        #expect(HermesPairingInvitation(valid)?.displayName == "Skye Digital Ltd Accountant")
         #expect(HermesPairingInvitation(valid)?.optionID == "choice-0")
         #expect(HermesPairingInvitation(request(callID: "ordinary-tool", name: valid.options[0].name)) == nil)
         #expect(HermesPairingInvitation(request(name: "Pair Hermes profile: ../default")) == nil)

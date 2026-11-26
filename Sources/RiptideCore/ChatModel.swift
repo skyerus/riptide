@@ -23,6 +23,7 @@ public struct ChatEntry: Identifiable, Equatable, Sendable {
     public enum Content: Equatable, Sendable {
         case message(ChatRole, String)
         case tool(ToolActivity)
+        case pairingReceipt(name: String, connected: Bool)
     }
 
     public let id = UUID()
@@ -62,6 +63,11 @@ public struct Transcript: Equatable, Sendable {
         latestPromptIndex = entries.count
         activePromptIndex = entries.count
         entries.append(ChatEntry(content: .message(.user, text)))
+    }
+
+    fileprivate mutating func addPairingReceipt(name: String, connected: Bool) {
+        openMessage = nil
+        entries.append(ChatEntry(content: .pairingReceipt(name: name, connected: connected)))
     }
 
     public var hasCompletedToolCalls: Bool {
@@ -658,6 +664,18 @@ public final class AgentChatModel {
         guard selectedID == request.sessionID, let client else { return }
         do { try await client.resolve(request.id, optionID: optionID) }
         catch { chats[request.sessionID]?.error = error.localizedDescription }
+    }
+
+    public func answerPairing(_ request: PermissionRequest, connectedName: String?) async {
+        guard let client, let invitation = HermesPairingInvitation(request),
+              chats[request.sessionID]?.permissions.contains(request) == true else { return }
+        chats[request.sessionID]?.transcript.addPairingReceipt(name: connectedName ?? invitation.displayName,
+                                                              connected: connectedName != nil)
+        do {
+            try await client.resolve(request.id, optionID: connectedName == nil ? "skip" : invitation.optionID)
+        } catch {
+            chats[request.sessionID]?.error = error.localizedDescription
+        }
     }
 
     private func observe(_ client: ACPClient) {

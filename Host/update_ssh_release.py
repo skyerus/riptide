@@ -13,6 +13,7 @@ import stat
 import subprocess
 import tempfile
 
+from agent_profile import RENAME, read_name
 from install_safari import Edit, HOST, PAYLOAD, key_command, read_owned, require
 
 
@@ -54,7 +55,8 @@ def verify(argv):
     if "--safari" in argv:
         state = json.loads(run("riptide-safari", '{"operation":"state","body":{}}\n'))
         require(state.get("status") == 200, "The existing Safari SSH route did not respond.")
-    require(run("riptide-hermes-screen", "") == "", "The Hermes screen command did not close cleanly.")
+    if "--hermes-screen" in argv:
+        require(run("riptide-hermes-screen", "") == "", "The Hermes screen command did not close cleanly.")
     if "--pairing-config" in argv:
         prefix = argv[:argv.index("--")]
         wrapper = next(Path(arg) for arg in prefix if Path(arg).name == "ssh_acp.py")
@@ -76,6 +78,17 @@ def verify(argv):
         responses = [json.loads(line) for line in result.stdout.splitlines()]
         reply = next((frame.get("result", {}) for frame in responses if frame.get("id") == 2), {})
         require(reply.get("isError") is False, "The staged pairing connector could not read its manifest.")
+    if "--agent-profile-state" in argv:
+        prefix = argv[:argv.index("--")]
+        wrapper = next(Path(arg) for arg in prefix if Path(arg).name == "ssh_acp.py")
+        state = Path(prefix[prefix.index("--agent-profile-state") + 1])
+        read_name(state)
+        frame = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        result = subprocess.run([prefix[0], "-BE", str(wrapper.with_name("agent_profile.py")), "--state", str(state)],
+                                input=json.dumps(frame) + "\n", text=True, capture_output=True, timeout=8)
+        require(result.returncode == 0, "The staged agent profile tool could not start.")
+        tools = json.loads(result.stdout).get("result", {}).get("tools", [])
+        require(any(tool.get("name") == RENAME for tool in tools), "The staged agent profile tool is missing.")
     if "--hermes-groups" in argv:
         probe = {"jsonrpc": "2.0", "id": "verify-groups", "method": "groups.capabilities", "params": {}}
         groups = json.loads(run("riptide-hermes-groups", json.dumps(probe) + "\n"))
@@ -84,7 +97,7 @@ def verify(argv):
 
 
 def update(keys, fingerprint, releases, previous, revision, attention_socket=None, pairing_config=None,
-           enable_hermes_groups=False):
+           enable_hermes_groups=False, agent_profile_state=None):
     directory = releases.lstat()
     require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid() and not directory.st_mode & 0o022,
             "Use an existing release directory controlled by the deployment account.")
@@ -95,7 +108,6 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
         require(original is not None, "The paired authorized_keys file does not exist.")
         source = original.decode()
         start, end, prefix, script, agent = key_command(source, find_key(source, fingerprint))
-        require("--hermes-screen" in prefix, "The paired key does not have a Hermes screen route.")
         old = releases / previous / "Host" / "ssh_acp.py"
         new = releases / revision / "Host" / "ssh_acp.py"
         require(Path(prefix[script]) in (old, new), "The pairing points to an unexpected SSH release.")
@@ -116,7 +128,13 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
                 prefix[prefix.index("--pairing-config") + 1] = str(pairing_config)
             else:
                 prefix.extend(["--pairing-config", str(pairing_config)])
+        if agent_profile_state is not None:
+            if "--agent-profile-state" in prefix:
+                prefix[prefix.index("--agent-profile-state") + 1] = str(agent_profile_state)
+            else:
+                prefix.extend(["--agent-profile-state", str(agent_profile_state)])
         if enable_hermes_groups and "--hermes-groups" not in prefix:
+            require("--hermes-screen" in prefix, "The paired key has no Hermes screen profile for groups.")
             screen = prefix.index("--hermes-screen")
             prefix.extend(["--hermes-groups", *prefix[screen + 1:screen + 3]])
         argv = [*prefix, "--", *agent]
@@ -137,6 +155,8 @@ def main():
     parser.add_argument("--revision", required=True)
     parser.add_argument("--attention-socket", type=Path)
     parser.add_argument("--pairing-config", type=Path)
+    parser.add_argument("--agent-profile-state", type=Path,
+                        help="Absolute per-agent display name file inside a private directory.")
     parser.add_argument("--enable-hermes-groups", action="store_true",
                         help="Let this key access group chats on its paired Hermes gateway.")
     args = parser.parse_args()
@@ -146,7 +166,7 @@ def main():
         parser.error("Pass an absolute --releases-dir.")
     try:
         update(args.authorized_keys, args.fingerprint, args.releases_dir, args.previous, args.revision,
-               args.attention_socket, args.pairing_config, args.enable_hermes_groups)
+               args.attention_socket, args.pairing_config, args.enable_hermes_groups, args.agent_profile_state)
     except subprocess.TimeoutExpired:
         parser.exit(1, "The staged SSH command timed out during verification.\n")
     except (OSError, ValueError) as error:

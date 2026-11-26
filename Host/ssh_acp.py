@@ -9,6 +9,8 @@ import shutil
 import sys
 import tempfile
 
+from agent_profile import PROFILE_UPDATE, connector as profile_connector, publish_changes
+
 MAX_FRAME = 2 * 1024 * 1024
 MAX_ATTACHMENT_BYTES = 1024 * 1024
 STAGE_ATTACHMENTS = "riptide/stageAttachments"
@@ -144,7 +146,7 @@ def admitted(packet, workspace, pending):
     return True
 
 
-async def serve(workspace, command, safari_mcp=None, attention_socket=None, pairing_config=None):
+async def serve(workspace, command, safari_mcp=None, attention_socket=None, pairing_config=None, profile_state=None):
     loop = asyncio.get_running_loop()
     source = asyncio.StreamReader(limit=MAX_FRAME)
     stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
@@ -164,22 +166,27 @@ async def serve(workspace, command, safari_mcp=None, attention_socket=None, pair
                      "--config", str(pairing_config)],
             "env": [],
         })
+    if profile_state is not None:
+        connectors.append(profile_connector(profile_state))
     pending = set()
     openings = {}
     opened = set()
     initialize_id = None
-    initialized = False
+    initialized = asyncio.Event()
 
     def write(message):
         sys.stdout.buffer.write(message)
         sys.stdout.buffer.flush()
+
+    async def send_profile(packet):
+        write(json.dumps(packet).encode() + b"\n")
 
     async def to_agent():
         nonlocal initialize_id
         while line := await source.readline():
             packet = json.loads(line)
             method = packet.get("method") if isinstance(packet, dict) else None
-            if method == STAGE_ATTACHMENTS and initialized and packet.get("jsonrpc") == "2.0":
+            if method == STAGE_ATTACHMENTS and initialized.is_set() and packet.get("jsonrpc") == "2.0":
                 reply = stage_attachments(packet)
                 write(json.dumps(reply).encode() + b"\n")
             elif admitted(packet, workspace, pending):
@@ -206,12 +213,14 @@ async def serve(workspace, command, safari_mcp=None, attention_socket=None, pair
                 }).encode() + b"\n")
 
     async def from_agent():
-        nonlocal initialized
         while line := await agent.stdout.readline():
             packet = json.loads(line)
+            if packet.get("method") == PROFILE_UPDATE:
+                continue
             request_id = packet.get("id")
             if rpc_id(request_id) and "method" not in packet and request_id == initialize_id:
-                initialized = advertise_attachments(packet)
+                if advertise_attachments(packet):
+                    initialized.set()
                 line = json.dumps(packet).encode() + b"\n"
             if rpc_id(request_id) and "method" not in packet and request_id in openings:
                 held_id = openings.pop(request_id)
@@ -226,6 +235,8 @@ async def serve(workspace, command, safari_mcp=None, attention_socket=None, pair
             write(line)
 
     pumps = [asyncio.create_task(action()) for action in (to_agent, from_agent)]
+    if profile_state is not None:
+        pumps.append(asyncio.create_task(publish_changes(profile_state, initialized, send_profile)))
     try:
         done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
@@ -281,10 +292,13 @@ if __name__ == "__main__":
     parser.add_argument("--safari-mcp-python", metavar="PYTHON")
     parser.add_argument("--attention-socket", type=Path)
     parser.add_argument("--pairing-config", type=Path)
+    parser.add_argument("--agent-profile-state", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     requested = os.environ.get("SSH_ORIGINAL_COMMAND")
+    if args.agent_profile_state and not args.agent_profile_state.is_absolute():
+        parser.error("An absolute agent profile state path is required.")
     if args.pairing_config and not args.pairing_config.is_absolute():
         parser.error("An absolute pairing manifest path is required.")
     if args.attention_socket and not args.attention_socket.is_absolute():
@@ -361,6 +375,7 @@ if __name__ == "__main__":
             "env": [],
         }
     try:
-        asyncio.run(serve(args.workspace, command, safari_mcp, args.attention_socket, args.pairing_config))
+        asyncio.run(serve(args.workspace, command, safari_mcp, args.attention_socket,
+                          args.pairing_config, args.agent_profile_state))
     except (OSError, ValueError):
         parser.exit(1, "The ACP transport closed.\n")
