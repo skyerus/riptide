@@ -44,6 +44,10 @@ final class HermesGroupsUITests: XCTestCase {
         XCTAssertTrue(heading.waitForExistence(timeout: 8))
         XCTAssertTrue(heading.label.contains("Month-end review"))
         XCTAssertTrue((heading.value as? String)?.contains("Hermes VPS") == true)
+        let context = app.buttons["context-usage"]
+        XCTAssertTrue(context.exists)
+        XCTAssertEqual(context.value as? String, "Usage unavailable")
+        XCTAssertTrue(app.buttons["chat-composer-mentions"].exists)
         let composer = app.descendants(matching: .any).matching(identifier: "hermes-group-composer").firstMatch
         composer.tap()
         composer.typeText("Compare your month-end checklists.")

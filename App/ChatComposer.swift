@@ -10,6 +10,12 @@ struct ChatComposer: View {
         var symbol: String { self == .queue ? "text.append" : "arrow.up" }
     }
 
+    struct Mention: Identifiable {
+        let handle: String
+        let title: String
+        var id: String { handle }
+    }
+
     let prompt: String
     let chatID: String?
     var fieldID = "chat-composer"
@@ -26,9 +32,12 @@ struct ChatComposer: View {
     let canSubmit: Bool
     let transcribe: DictationTranscriber?
     var submission = Submission.send
+    var retrying = false
     var stopping = false
     var stop: (() -> Void)? = nil
     var enqueue: (() -> Void)? = nil
+    var mentions: [Mention] = []
+    var onMention: ((String) -> Void)? = nil
     let submit: () -> Void
 
     @State private var showContext = false
@@ -64,6 +73,22 @@ struct ChatComposer: View {
                 contextButton
                 ChatModelControls(settings: settings, isExpanded: $modelPickerVisible)
                 FastModeButton(settings: settings)
+                if let onMention, !mentions.isEmpty {
+                    Menu {
+                        ForEach(mentions) { mention in
+                            Button(mention.title) { onMention(mention.handle) }
+                        }
+                    } label: {
+                        Label("Mention a bot", systemImage: "at")
+                            .labelStyle(.iconOnly)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(ChatTheme.muted)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(!ready)
+                    .accessibilityIdentifier("chat-composer-mentions")
+                }
             } actions: {
                 actions
             }
@@ -136,7 +161,8 @@ struct ChatComposer: View {
             ComposerAction(stopTitle, symbol: "stop.fill", disabled: stopping, action: stop)
                 .accessibilityIdentifier(stopID)
         }
-        ComposerAction(submission.rawValue, symbol: submission.symbol,
+        let send = retrying ? ("Retry send", "arrow.clockwise") : (submission.rawValue, submission.symbol)
+        ComposerAction(send.0, symbol: send.1,
                        disabled: !canSubmit || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        queue: queueDraft, action: submitDraft)
             .accessibilityIdentifier(sendID)

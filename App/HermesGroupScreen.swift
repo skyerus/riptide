@@ -356,11 +356,6 @@ struct HermesGroupScreen: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    if session.offers("stop"), session.driver?.working == true || pausedDiscussion != nil {
-                        Button("Stop discussion", systemImage: "stop.circle", role: .destructive) {
-                            Task { await session.stop() }
-                        }
-                    }
                     Button("Members", systemImage: "person.2") { showingMembers = true }
                     if session.offers("rename") {
                         Button("Rename group", systemImage: "pencil") {
@@ -568,9 +563,15 @@ struct HermesGroupScreen: View {
 
     private var composer: some View {
         @Bindable var session = session
-        return VStack(alignment: .leading, spacing: 7) {
+        let mentions: [ChatComposer.Mention] = session.members.isEmpty ? [] :
+            [.init(handle: "all", title: "Everyone (@all)")] + session.members.map {
+                .init(handle: $0.handle, title: "\($0.label) · @\($0.handle)")
+            }
+        let canStop = session.offers("stop") && (session.driver?.working == true || pausedDiscussion != nil)
+        return VStack(alignment: .leading, spacing: 0) {
             if let failure = session.actionError {
                 Text(failure).font(.footnote).foregroundStyle(ChatTheme.warning)
+                    .padding(.horizontal, ChatTheme.gutter)
             }
             if let reply = session.reply {
                 HStack {
@@ -580,46 +581,21 @@ struct HermesGroupScreen: View {
                     Button("Cancel reply", systemImage: "xmark") { session.reply = nil }.labelStyle(.iconOnly)
                         .disabled(session.pending != nil)
                 }
+                .padding(.horizontal, ChatTheme.gutter)
             }
-            HStack(alignment: .bottom, spacing: 7) {
-                Menu {
-                    Button("Everyone (@all)") { mention("all") }
-                    ForEach(session.members) { member in
-                        Button("\(member.label) · @\(member.handle)") { mention(member.handle) }
-                    }
-                } label: {
-                    Label("Mention a bot", systemImage: "at").labelStyle(.iconOnly)
-                        .font(.headline).foregroundStyle(ChatTheme.muted)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .disabled(session.members.isEmpty || session.pending != nil)
-                TextField("Message group", text: $session.draft, axis: .vertical)
-                    .lineLimit(1...6)
-                    .padding(.vertical, 11)
-                    .focused($composing)
-                    .disabled(session.pending != nil || session.sending)
-                    .accessibilityIdentifier("hermes-group-composer")
-                Button(session.pending != nil && !session.sending ? "Retry send" : "Send to group",
-                       systemImage: session.pending != nil && !session.sending ? "arrow.clockwise" : "arrow.up") {
-                    Task { await session.send() }
-                }
-                .labelStyle(.iconOnly)
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(session.canSend ? ChatTheme.background : ChatTheme.muted)
-                .frame(width: 34, height: 34)
-                .background(session.canSend ? ChatTheme.ink : ChatTheme.surface, in: Circle())
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-                .disabled(!session.canSend)
-                .accessibilityIdentifier("send-hermes-group")
+            ChatComposer(prompt: "Message group", chatID: session.roomID,
+                         fieldID: "hermes-group-composer", sendID: "send-hermes-group",
+                         stopID: "stop-hermes-group", stopTitle: "Stop discussion",
+                         draft: $session.draft, modelPickerVisible: .constant(false), editorFocus: $composing,
+                         ready: session.pending == nil && !session.sending,
+                         canDictate: false, canSubmit: session.canSend, transcribe: nil,
+                         retrying: session.pending != nil,
+                         stopping: session.acting || session.sending,
+                         stop: canStop ? { Task { await session.stop() } } : nil,
+                         mentions: mentions, onMention: mention) {
+                Task { await session.send() }
             }
-            .padding(4)
-            .background(ChatTheme.raised, in: RoundedRectangle(cornerRadius: 25))
-            .overlay { RoundedRectangle(cornerRadius: 25).strokeBorder(ChatTheme.border).allowsHitTesting(false) }
         }
-        .padding(.horizontal, ChatTheme.gutter)
-        .padding(.vertical, 8)
     }
 
     private func mention(_ handle: String) {
