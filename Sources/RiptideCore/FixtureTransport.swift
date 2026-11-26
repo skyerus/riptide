@@ -138,6 +138,18 @@ public actor FixtureTransport: ACPTransport {
                 catch { sessions[index] = previous; throw error }
                 emit(.reply(id, result: ["configOptions": configuration(sessions[index])]))
                 reportUsage(for: sessions[index])
+            case "_riptide/session/steer":
+                guard let text = params["text"]?.string, !text.isEmpty else {
+                    emit(.failure(id, code: -32602, message: "Enter a follow-up message."))
+                    return
+                }
+                if turns[sessionID] != nil {
+                    try record(Self.chunk("user_message_chunk", id: UUID().uuidString, text: text),
+                               in: sessionID, live: false)
+                    emit(.reply(id, result: ["status": "steered"]))
+                } else {
+                    emit(.reply(id, result: ["status": "idle"]))
+                }
             case "session/prompt":
                 guard turns[sessionID] == nil, let index = index(of: sessionID),
                       let text = params["prompt"]?.array?.first?["text"]?.string else {

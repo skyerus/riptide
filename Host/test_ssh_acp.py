@@ -19,6 +19,7 @@ class SSHACPPolicyTests(unittest.TestCase):
             ("session/new", {"cwd": workspace, "mcpServers": []}),
             ("session/load", {"cwd": workspace, "sessionId": "main", "mcpServers": []}),
             ("session/prompt", {"sessionId": "main", "prompt": [{"type": "text", "text": "Hello"}]}),
+            ("_riptide/session/steer", {"sessionId": "main", "text": "Focus on the draft"}),
             ("session/set_config_option", {"sessionId": "main", "configId": "model", "value": "default"}),
         ):
             with self.subTest(method=method):
@@ -37,6 +38,7 @@ class SSHACPPolicyTests(unittest.TestCase):
             ("session/load", {"cwd": workspace, "sessionId": "main", "mcpServers": [], "_meta": {}}),
             ("session/set_config_option", {"sessionId": "main", "configId": "mode", "value": "unconfigured"}),
             ("session/prompt", {"sessionId": "main", "prompt": [{"type": "resource", "uri": "file:///example"}]}),
+            ("_riptide/session/steer", {"sessionId": "main", "text": " ", "cwd": "/"}),
             ("other/method", {}),
         ):
             with self.subTest(method=method):

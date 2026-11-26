@@ -1,0 +1,46 @@
+diff --git a/acp_adapter/gateway_server.py b/acp_adapter/gateway_server.py
+--- a/acp_adapter/gateway_server.py
++++ b/acp_adapter/gateway_server.py
+@@ -148,6 +148,42 @@
+                                                          resume=SessionResumeCapabilities())),
+             auth_methods=build_auth_methods())
+
++    async def ext_method(self, method, params):
++        if method != "riptide/session/steer":
++            raise acp.RequestError.method_not_found(f"_{method}")
++        editor_id, text = params.get("sessionId"), params.get("text")
++        if (set(params) != {"sessionId", "text"} or not isinstance(editor_id, str)
++                or not isinstance(text, str) or not text.strip() or len(text) > 65_536):
++            raise acp.RequestError.invalid_params()
++        session_id = self._held_session(editor_id)
++        admission_id = self._admissions.get(session_id)
++        if admission_id is None:
++            if session_id in self._submitting:
++                raise acp.RequestError(-32000, "Hermes is still starting this turn. Try again in a moment.")
++            return {"status": "idle"}
++
++        # Use this viewer's original admission and its generation. The native
++        # correction must never steer a different viewer's turn or submit a new prompt.
++        from hermes_cli.gateway_client import GatewayRPCError
++        client = await self._client()
++        receipt = await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id)
++        if receipt.get("status") == "terminal":
++            return {"status": "idle"}
++        if receipt.get("status") != "started" or type(receipt.get("execution_generation")) is not int:
++            raise acp.RequestError(-32000, "Hermes is not ready to steer this turn.")
++        try:
++            # The gateway's redirect preserves the active turn and forwards to
++            # native turn/steer when the execution is backed by Codex.
++            result = await client.rpc("session.redirect", session_id=session_id, text=text,
++                                      execution_generation=receipt["execution_generation"])
++        except GatewayRPCError as exc:
++            if str(exc) == "stale_generation":
++                return {"status": "idle"}
++            raise acp.RequestError(-32000, "Hermes could not steer this turn.") from exc
++        if result.get("status") != "redirected":
++            raise acp.RequestError(-32000, "Hermes could not steer this turn.")
++        return {"status": "steered"}
++
+     async def authenticate(self, method_id, **kwargs):
+         from acp_adapter.server import HermesACPAgent
+         return await HermesACPAgent.authenticate(self, method_id, **kwargs)
