@@ -3,7 +3,7 @@ import SwiftUI
 struct AgentGrid: View {
     @Environment(WorkspaceState.self) private var workspace
     @Environment(\.dynamicTypeSize) private var typeSize
-    @ScaledMetric(relativeTo: .title2) private var avatarSize = 64.0
+    @ScaledMetric(relativeTo: .title2) private var avatarSize = 76.0
     @State private var editingPhoto: WorkspaceAgent?
 
     private var columns: [GridItem] {
@@ -21,7 +21,7 @@ struct AgentGrid: View {
                 }
             }
             .padding(.horizontal, ChatTheme.gutter)
-            .padding(.top, 24)
+            .padding(.top, 18)
             .padding(.bottom, 24)
         }
         .accessibilityIdentifier("agent-grid")
@@ -34,20 +34,20 @@ struct AgentGrid: View {
         Button {
             workspace.openAgentWorkspace(agent.id)
         } label: {
-            VStack(spacing: 8) {
-                AgentAvatar(agent: agent, size: min(avatarSize, 78))
+            VStack(spacing: 9) {
+                AgentAvatar(agent: agent, size: min(avatarSize, 90))
                     .overlay(alignment: .bottomTrailing) {
                         if needsAttention {
                             Circle().fill(ChatTheme.attention)
-                                .frame(width: 8, height: 8)
+                                .frame(width: 11, height: 11)
                                 .padding(2)
                                 .background(ChatTheme.background, in: Circle())
-                                .offset(x: -3, y: -3)
+                                .offset(x: -2, y: -2)
                                 .accessibilityHidden(true)
                         }
                     }
                 Text(agent.name)
-                    .font(.subheadline.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(ChatTheme.ink)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)

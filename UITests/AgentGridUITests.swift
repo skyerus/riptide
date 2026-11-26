@@ -13,6 +13,8 @@ final class AgentGridUITests: XCTestCase {
         XCTAssertTrue(app.buttons["sidebar-inbox"].isSelected)
         XCTAssertTrue(app.buttons["sidebar-group-chats"].isHittable)
         let grid = app.showAgentGrid()
+        let agentsTab = app.buttons["sidebar-agents"]
+        XCTAssertGreaterThan(agentsTab.frame.minY, app.frame.midY)
         let openClaw = grid.buttons["sidebar-agent-openclaw"]
         let vps = grid.buttons["sidebar-agent-hermes"]
         let studio = grid.buttons["sidebar-agent-hermes-studio"]
@@ -25,6 +27,7 @@ final class AgentGridUITests: XCTestCase {
         vps.tap()
         XCTAssertTrue(app.buttons["sidebar-main-chat"].waitForExistence(timeout: 8))
         XCTAssertEqual(app.buttons["agent-workspace-heading"].label, "Hermes VPS")
+        XCTAssertFalse(agentsTab.exists)
         capture(app, "agents-workspace")
         app.navigationBars.buttons["BackButton"].tap()
         XCTAssertTrue(vps.waitForExistence(timeout: 8))

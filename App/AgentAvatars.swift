@@ -88,11 +88,11 @@ struct AgentAvatar: View {
     private var gradient: LinearGradient {
         let seed = Array(SHA256.hash(data: Data(agent.id.utf8)).prefix(2))
         let hue = Double(seed[0]) / 256
-        let shift = (Double(seed[1]) / 255 - 0.5) * 0.25
+        let shift = (Double(seed[1]) / 255 - 0.5) * 0.42
         let shadow = (1 + hue + shift).truncatingRemainder(dividingBy: 1)
         return LinearGradient(colors: [
-            Color(hue: hue, saturation: 0.43, brightness: 0.49),
-            Color(hue: shadow, saturation: 0.54, brightness: 0.25)
+            Color(hue: hue, saturation: 0.65, brightness: 0.8),
+            Color(hue: shadow, saturation: 0.76, brightness: 0.42)
         ], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
@@ -110,8 +110,8 @@ struct AgentAvatar: View {
             } else {
                 gradient
                 Text(initials)
-                    .font(.system(size: size * 0.32, weight: .medium))
-                    .foregroundStyle(ChatTheme.ink)
+                    .font(.system(size: size * 0.33, weight: .semibold))
+                    .foregroundStyle(.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.65)
                     .padding(.horizontal, size * 0.14)
@@ -119,6 +119,7 @@ struct AgentAvatar: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
+        .overlay { Circle().strokeBorder(.white.opacity(0.14)) }
         .task(id: agent.id) { workspace.avatars.load(agent.id) }
         .accessibilityHidden(true)
     }

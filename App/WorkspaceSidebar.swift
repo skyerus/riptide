@@ -7,22 +7,21 @@ struct WorkspaceSidebar: View {
     @State private var editing = false
     @State private var creatingGroup = false
 
+    private var title: String {
+        switch workspace.sidebarTab {
+        case .inbox: "Inbox"
+        case .agents: "Agents"
+        case .groups: "Group chats"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            header
-            switch workspace.sidebarTab {
-            case .inbox:
-                WorkspaceInboxList().id(workspace.inboxReset)
-            case .agents:
-                AgentGrid()
-            case .groups:
-                if workspace.hermesGroupSources.isEmpty {
-                    ContentUnavailableView("Connect a Hermes agent", systemImage: "person.2",
-                                           description: Text("Pair a Hermes agent to start a group chat."))
-                } else {
-                    HermesGroupCatalog(sources: workspace.hermesGroupSources, creating: $creatingGroup)
+            header(title: title)
+            content
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    WorkspaceTabBar(selected: workspace.sidebarTab)
                 }
-            }
         }
         .frame(maxWidth: ChatTheme.readingWidth)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -32,50 +31,60 @@ struct WorkspaceSidebar: View {
         .sheet(isPresented: $editing) { WorkspaceEditor().environment(workspace) }
     }
 
-    private var header: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 0) {
-                WorkspaceRail(selected: workspace.sidebarTab)
-                Spacer(minLength: 0)
-                headerActions
+    @ViewBuilder
+    private var content: some View {
+        switch workspace.sidebarTab {
+        case .inbox:
+            WorkspaceInboxList().id(workspace.inboxReset)
+        case .agents:
+            AgentGrid()
+        case .groups:
+            if workspace.hermesGroupSources.isEmpty {
+                ContentUnavailableView("Connect a Hermes agent", systemImage: "person.2",
+                                       description: Text("Pair a Hermes agent to start a group chat."))
+            } else {
+                HermesGroupCatalog(sources: workspace.hermesGroupSources, creating: $creatingGroup)
             }
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    headerActions
-                }
-                WorkspaceRail(selected: workspace.sidebarTab, scrollable: true)
-            }
-        }
-        .padding(.horizontal, ChatTheme.gutter - 8)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(ChatTheme.sidebarDivider).frame(height: 1)
         }
     }
 
-    @ViewBuilder
-    private var headerActions: some View {
-        if workspace.sidebarTab == .inbox {
-            sidebarAction("Notification settings", symbol: "bell") { workspace.showingAlerts = true }
-                .accessibilityIdentifier("inbox-notifications")
-        }
-        if workspace.sidebarTab == .groups {
-            if !workspace.hermesGroupSources.isEmpty {
-                sidebarAction("New group chat", symbol: "plus") { creatingGroup = true }
-                    .accessibilityIdentifier("new-hermes-group")
+    private func header(title: String) -> some View {
+        HStack(alignment: .center, spacing: 4) {
+            Text(title)
+                .font(.largeTitle.weight(.semibold))
+                .lineLimit(2)
+                .layoutPriority(1)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("sidebar-heading")
+            Spacer(minLength: 6)
+            if workspace.sidebarTab == .inbox {
+                sidebarAction("Notification settings", symbol: "bell") { workspace.showingAlerts = true }
+                    .accessibilityIdentifier("inbox-notifications")
             }
-        } else {
-            sidebarAction("Manage agents", symbol: "pencil") { editing = true }
-                .accessibilityIdentifier("edit-roster")
+            if workspace.sidebarTab == .groups {
+                if !workspace.hermesGroupSources.isEmpty {
+                    sidebarAction("New group chat", symbol: "plus") { creatingGroup = true }
+                        .accessibilityIdentifier("new-hermes-group")
+                }
+            } else {
+                sidebarAction("Manage agents", symbol: "pencil") { editing = true }
+                    .accessibilityIdentifier("edit-roster")
+            }
         }
+        .foregroundStyle(ChatTheme.ink)
+        .padding(.leading, ChatTheme.gutter)
+        .padding(.trailing, ChatTheme.gutter - 4)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
     }
 
     private func sidebarAction(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.body.weight(.medium))
-                .foregroundStyle(ChatTheme.muted)
-                .frame(width: 44, height: 48)
+                .font(.subheadline.weight(.medium))
+                .frame(width: 34, height: 34)
+                .background(ChatTheme.surface, in: Circle())
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

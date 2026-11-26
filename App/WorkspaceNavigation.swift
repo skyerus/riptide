@@ -209,77 +209,88 @@ private struct WorkspaceFlickNavigation: ViewModifier {
     }
 }
 
-struct WorkspaceRail: View {
+struct WorkspaceTabBar: View {
     let selected: WorkspaceTab
-    var scrollable = false
     @Environment(WorkspaceState.self) private var workspace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selection
 
     var body: some View {
-        Group {
-            if scrollable {
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal) { tabs }
-                        .scrollIndicators(.hidden)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .onAppear { proxy.scrollTo(selected, anchor: .center) }
-                        .onChange(of: selected) { proxy.scrollTo(selected, anchor: .center) }
-                }
-            } else {
-                tabs
+        ViewThatFits(in: .horizontal) {
+            tabs(expand: true)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) { tabs(expand: false) }
+                    .scrollIndicators(.hidden)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onAppear { proxy.scrollTo(selected, anchor: .center) }
+                    .onChange(of: selected) { proxy.scrollTo(selected, anchor: .center) }
             }
         }
-        .accessibilitySortPriority(1)
+        .padding(4)
+        .chatGlass(in: Capsule())
+        .padding(.horizontal, ChatTheme.gutter)
+        .padding(.top, 8)
+        .padding(.bottom, 3)
         .sensoryFeedback(.selection, trigger: selected)
     }
 
-    private var tabs: some View {
+    private func tabs(expand: Bool) -> some View {
         let waiting = workspace.inboxRows.count
-        return HStack(spacing: 8) {
-            tab(.inbox, title: "Inbox", identifier: "sidebar-inbox",
-                value: waiting == 0 ? "All caught up" : "\(waiting) waiting") {
-                if waiting > 0 {
-                    Text(waiting > 99 ? "99+" : waiting.formatted())
-                        .font(.caption2.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(ChatTheme.sidebarAccent)
-                        .accessibilityHidden(true)
-                }
-            }
-            tab(.agents, title: "Agents", identifier: "sidebar-agents") { EmptyView() }
-            tab(.groups, title: "Groups", identifier: "sidebar-group-chats") { EmptyView() }
+        return HStack(spacing: 3) {
+            tab(.inbox, title: "Inbox", symbol: "tray", selectedSymbol: "tray.fill",
+                identifier: "sidebar-inbox", expand: expand, waiting: waiting)
+            tab(.agents, title: "Agents", symbol: "person.crop.circle", selectedSymbol: "person.crop.circle.fill",
+                identifier: "sidebar-agents", expand: expand)
+            tab(.groups, title: "Groups", symbol: "person.2", selectedSymbol: "person.2.fill",
+                identifier: "sidebar-group-chats", expand: expand)
         }
-        .fixedSize(horizontal: true, vertical: false)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: selected)
     }
 
-    private func tab<Accessory: View>(
-        _ target: WorkspaceTab, title: String, identifier: String, value: String = "",
-        @ViewBuilder accessory: () -> Accessory
+    private func tab(
+        _ target: WorkspaceTab, title: String, symbol: String, selectedSymbol: String,
+        identifier: String, expand: Bool, waiting: Int? = nil
     ) -> some View {
         let isSelected = selected == target
         return Button {
             if !isSelected { workspace.showSidebar(target) }
         } label: {
-            HStack(spacing: 5) {
-                Text(title).lineLimit(1)
-                accessory()
+            VStack(spacing: 3) {
+                Image(systemName: isSelected ? selectedSymbol : symbol)
+                    .font(.system(size: 19, weight: .medium))
+                    .frame(width: 28, height: 22)
+                    .overlay(alignment: .trailing) {
+                        if let waiting, waiting > 0 {
+                            Text(waiting > 99 ? "99+" : waiting.formatted())
+                                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                                .padding(.horizontal, 4)
+                                .frame(minWidth: 16, minHeight: 16)
+                                .foregroundStyle(ChatTheme.background)
+                                .background(ChatTheme.sidebarAccent, in: Capsule())
+                                .offset(x: 13, y: -6)
+                        }
+                    }
+                    .accessibilityHidden(true)
+                Text(title)
+                    .font(.footnote.weight(.medium))
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .font(.body.weight(.medium))
-            .foregroundStyle(isSelected ? ChatTheme.ink : ChatTheme.muted)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 10)
-            .frame(minWidth: 44, minHeight: 51)
-            .overlay(alignment: .bottom) {
+            .foregroundStyle(isSelected ? ChatTheme.ink : ChatTheme.ink.opacity(0.76))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(minWidth: 44, maxWidth: expand ? .infinity : nil, minHeight: 49)
+            .background {
                 if isSelected {
-                    Capsule().fill(ChatTheme.sidebarAccent)
-                        .frame(width: 20, height: 2)
-                        .offset(y: -1)
-                        .accessibilityHidden(true)
+                    Capsule().fill(.black.opacity(0.54))
+                        .matchedGeometryEffect(id: "selected-workspace-tab", in: selection)
+                        .transition(.identity)
                 }
             }
-            .contentShape(Rectangle())
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
-        .accessibilityValue(value)
+        .accessibilityValue(waiting.map { $0 == 0 ? "All caught up" : "\($0) waiting" } ?? "")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier(identifier)
         .id(target)
