@@ -48,6 +48,7 @@ public struct PermissionRequest: Identifiable, Sendable, Equatable {
 public enum ACPEvent: Sendable, Equatable {
     case message(sessionID: String, messageID: String?, role: ChatRole, text: String)
     case agentActivity(sessionID: String)
+    case turnActivity(sessionID: String, working: Bool)
     case tool(sessionID: String, activity: ToolActivity)
     case plan(sessionID: String, steps: [TurnPlanStep])
     case configOptions(sessionID: String, options: [SessionConfigOption])
@@ -59,7 +60,7 @@ public enum ACPEvent: Sendable, Equatable {
         switch self {
         case .message(let sessionID, _, _, _), .tool(let sessionID, _), .configOptions(let sessionID, _),
              .context(let sessionID, _), .permissionClosed(let sessionID, _), .plan(let sessionID, _),
-             .agentActivity(let sessionID):
+             .agentActivity(let sessionID), .turnActivity(let sessionID, _):
             sessionID
         case .permission(let request):
             request.sessionID
@@ -428,6 +429,9 @@ public actor ACPClient {
 
     private static func event(_ update: JSON, sessionID: String) -> ACPEvent? {
         switch update["sessionUpdate"]?.string {
+        case "session_info_update":
+            guard case .boolean(let working)? = update["_meta"]?["app.riptide.turnWorking"] else { return nil }
+            return .turnActivity(sessionID: sessionID, working: working)
         case "agent_thought_chunk":
             guard update["content"]?["type"] == "text", let text = update["content"]?["text"]?.string,
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }

@@ -18,6 +18,7 @@ struct CodexLiveScreen: View {
     @State private var outputEvents = 0
     @State private var replies: [Reply] = []
     @State private var patch: String?
+    @State private var context: ContextUsage?
     @State private var viewport = TranscriptViewport()
     @State private var editorFocused = false
 
@@ -137,27 +138,17 @@ struct CodexLiveScreen: View {
     }
 
     private func composer(_ session: CodexWorkspaceSession) -> some View {
-        let prompt = session.working ? "Steer this turn" : "Message Codex"
-        let canSubmit = !session.sending && !session.stopping
-        let queue: (() -> Void)? = session.working ? { submitDraft(queue: true) } : nil
-        return MessageComposer(
-            focused: $editorFocused, prompt: prompt, editorIdentifier: "codex-steer-input",
-            editorEnabled: true, chatID: turn?.threadID,
-            canDictate: canSubmit, draft: $draft, attachments: $attachments,
-            acceptsImages: true, attachmentByteLimit: ChatAttachment.codexByteLimit, canAttach: canSubmit,
+        let canSubmit = !session.sending && !session.stopping && !session.configuring
+        return ChatComposer(
+            prompt: session.working ? "Steer this turn" : "Message Codex",
+            chatID: turn?.threadID, fieldID: "codex-steer-input", sendID: "codex-steer-send", draft: $draft, attachments: $attachments,
+            modelPickerVisible: .constant(false), editorFocus: $editorFocused, context: session.context ?? context,
+            canDictate: canSubmit, canSubmit: canSubmit,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
-            dismissKeyboard: { editorFocused = false },
-            canSubmit: canSubmit,
-            submitDraft: { submitDraft(queue: false) },
-            queueDraft: queue
-        ) {
-            EmptyView()
-        } actions: { canSend in
-            ComposerAction(session.working ? "Steer" : "Send", symbol: "arrow.up", disabled: !canSend, queue: queue) {
-                submitDraft(queue: false)
-            }
-            .accessibilityIdentifier("codex-steer-send")
-        }
+            submission: session.working ? .steer : .send,
+            enqueue: session.working ? { submitDraft(queue: true) } : nil,
+            submit: { submitDraft(queue: false) }
+        )
     }
 
     private func watch() async {
@@ -173,6 +164,7 @@ struct CodexLiveScreen: View {
         outputEvents = 0
         replies = []
         patch = nil
+        context = nil
         do {
             let joined = try await peer.attach()
             turn = joined
@@ -194,7 +186,10 @@ struct CodexLiveScreen: View {
                     updateReply(itemID, text: text, appending: false)
                 case .diff(_, let update):
                     patch = update
+                case .context(_, let usage):
+                    context = usage
                 case .completed(_, let outcome):
+                    context = nil
                     status = outcome == "completed" ? "Turn completed" : "Turn \(outcome)"
                     active = false
                     await peer.close()
@@ -223,7 +218,7 @@ struct CodexLiveScreen: View {
 
     private func submitDraft(queue: Bool) {
         let message = ComposerDraft(text: $draft, files: $attachments)
-        guard let session, session.ready, !session.sending, !session.stopping, message.hasContent else { return }
+        guard let session, session.ready, !session.sending, !session.stopping, !session.configuring, message.hasContent else { return }
         editorFocused = false
         if queue {
             session.enqueue(message.text, attachments: message.attachments)

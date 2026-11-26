@@ -2,63 +2,93 @@ import RiptideCore
 import SwiftUI
 
 struct ChatComposer: View {
-    let model: AgentChatModel
-    let chatID: String
+    enum Submission: String {
+        case send = "Send"
+        case steer = "Steer"
+        case queue = "Queue"
+
+        var symbol: String { self == .queue ? "text.append" : "arrow.up" }
+    }
+
+    struct Mention: Identifiable {
+        let handle: String
+        let title: String
+        var id: String { handle }
+    }
+
+    let prompt: String
+    let chatID: String?
+    var fieldID = "chat-composer"
+    var sendID = "send-message"
+    var stopID = "stop-reply"
+    var stopTitle = "Stop reply"
     @Binding var draft: String
     @Binding var attachments: [ChatAttachment]
     @Binding var modelPickerVisible: Bool
     @Binding var editorFocus: Bool
+    var acceptsImages = true
+    var attachmentByteLimit = ChatAttachment.codexByteLimit
+    var settings = ChatComposerSettings()
+    var context: ContextUsage? = nil
+    var ready = true
+    let canDictate: Bool
+    let canSubmit: Bool
     let transcribe: DictationTranscriber?
-    let didSend: () -> Void
-    let submit: (String, [ChatAttachment], (@MainActor () -> Void)?) -> Bool
+    var submission = Submission.send
+    var retrying = false
+    var stopping = false
+    var stop: (() -> Void)? = nil
+    var enqueue: (() -> Void)? = nil
+    var mentions: [Mention] = []
+    var onMention: ((String) -> Void)? = nil
+    let submit: () -> Void
 
     @State private var showContext = false
 
     var body: some View {
-        let working = model.selected.working
-        let queuesAttachments = working && !attachments.isEmpty
-        let prompt = queuesAttachments ? "Queue a follow-up" : working ? "Steer this reply" : "Message \(model.target.name)"
-        let queue: (() -> Void)? = working && !queuesAttachments ? { submitDraft(queue: true) } : nil
-        MessageComposer(
-            focused: $editorFocus,
-            prompt: prompt,
-            editorIdentifier: "chat-composer",
-            editorEnabled: model.selected.loaded,
-            chatID: chatID,
-            canDictate: model.selected.loaded,
-            draft: $draft,
-            attachments: $attachments,
-            acceptsImages: model.selected.acceptsImages,
-            attachmentByteLimit: ChatAttachment.acpByteLimit,
-            canAttach: model.selected.loaded,
-            transcribe: transcribe,
-            dismissKeyboard: {
-                editorFocus = false
-                modelPickerVisible = false
-                showContext = false
-            },
-            canSubmit: canSubmit,
-            submitDraft: { submitDraft(queue: queuesAttachments) },
-            queueDraft: queue
-        ) {
-            if let usage = model.selected.context {
-                contextButton(usage)
+        VStack(spacing: 0) {
+            if !modelPickerVisible, let error = settings.error {
+                Text(error).font(.footnote).foregroundStyle(ChatTheme.warning)
+                    .padding(.horizontal, ChatTheme.gutter)
             }
-            ChatModelControls(model: model, isExpanded: $modelPickerVisible)
-        } actions: { canSend in
-            if working {
-                ComposerAction("Stop reply", symbol: "stop.fill", disabled: model.selected.stopping) {
-                    Task { await model.stop() }
+            MessageComposer(
+                focused: $editorFocus, prompt: prompt, editorIdentifier: fieldID, editorEnabled: ready,
+                chatID: chatID, canDictate: canDictate, draft: $draft, attachments: $attachments,
+                acceptsImages: acceptsImages, attachmentByteLimit: attachmentByteLimit, canAttach: ready,
+                transcribe: transcribe,
+                dismissKeyboard: {
+                    editorFocus = false
+                    modelPickerVisible = false
+                    showContext = false
+                },
+                canSubmit: canSubmit,
+                submitDraft: submitDraft,
+                queueDraft: queueDraft
+            ) {
+                contextButton
+                ChatModelControls(settings: settings, isExpanded: $modelPickerVisible)
+                FastModeButton(settings: settings)
+                if let onMention, !mentions.isEmpty {
+                    Menu {
+                        ForEach(mentions) { mention in
+                            Button(mention.title) { onMention(mention.handle) }
+                        }
+                    } label: {
+                        Label("Mention a bot", systemImage: "at")
+                            .labelStyle(.iconOnly)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(ChatTheme.muted)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(!ready)
+                    .accessibilityIdentifier("chat-composer-mentions")
                 }
-                .accessibilityIdentifier("stop-reply")
+            } actions: { canSend in
+                actions(canSend: canSend)
             }
-            ComposerAction(queuesAttachments ? "Queue" : working ? "Steer" : "Send", symbol: "arrow.up",
-                           disabled: !canSend, queue: queue) {
-                submitDraft(queue: queuesAttachments)
-            }
-            .accessibilityIdentifier("send-message")
         }
-        .onChange(of: model.selectedID) {
+        .onChange(of: chatID) {
             showContext = false
             editorFocus = false
         }
@@ -67,16 +97,18 @@ struct ChatComposer: View {
         }
     }
 
-    private func contextButton(_ usage: ContextUsage) -> some View {
+    private var contextButton: some View {
         Button {
             modelPickerVisible = false
             showContext = true
         } label: {
             ZStack {
                 Circle().strokeBorder(ChatTheme.border, lineWidth: 2)
-                Circle().trim(from: 0, to: usage.fraction)
-                    .stroke(ChatTheme.sidebarAccent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
+                if let context {
+                    Circle().trim(from: 0, to: context.fraction)
+                        .stroke(ChatTheme.sidebarAccent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
             }
             .frame(width: 17, height: 17)
             .frame(width: 44, height: 44)
@@ -84,46 +116,52 @@ struct ChatComposer: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Context window")
-        .accessibilityValue(usage.fraction.formatted(.percent.precision(.fractionLength(0))) + " used")
+        .accessibilityValue(context.map { $0.fraction.formatted(.percent.precision(.fractionLength(0))) + " used" } ?? "Usage unavailable")
         .accessibilityIdentifier("context-usage")
         .popover(isPresented: $showContext, arrowEdge: .bottom) {
-            if let current = model.selected.context {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Context window").font(.headline)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Context window").font(.headline)
+                if let current = context {
                     Text("\(current.used.formatted()) of \(current.capacity.formatted()) tokens used")
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("context-values")
+                } else {
+                    Text("Token usage is unavailable for this chat.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("context-unavailable")
                 }
-                .padding(16)
-                .presentationCompactAdaptation(.popover)
             }
+            .padding(16)
+            .presentationCompactAdaptation(.popover)
         }
     }
 
-    private var canSubmit: Bool {
-        model.selectedID == chatID && model.selected.loaded &&
-            !model.selected.loading && !model.selected.configuring && !model.selected.stopping && !model.selected.steering
+    private var queueDraft: (() -> Void)? {
+        enqueue.map { enqueue in { perform(enqueue) } }
     }
 
-    private func submitDraft(queue: Bool) {
-        let message = ComposerDraft(text: $draft, files: $attachments)
-        guard canSubmit, message.hasContent else { return }
+    private func submitDraft() { perform(submit) }
+
+    private func perform(_ action: () -> Void) {
+        guard canSubmit, ComposerDraft(text: $draft, files: $attachments).hasContent else { return }
         editorFocus = false
-        didSend()
-        if queue || (model.selected.working && !message.attachments.isEmpty) {
-            if model.enqueue(message.text, attachments: message.attachments, in: chatID) { message.clear() }
-        } else if model.selected.working {
-            Task {
-                if await model.steer(message.text, in: chatID) { message.clear() }
-            }
-        } else if message.attachments.isEmpty {
-            if submit(message.text, [], nil) { message.clear() }
-        } else {
-            _ = submit(message.text, message.attachments, message.clear)
-        }
+        modelPickerVisible = false
+        action()
     }
 
+    @ViewBuilder private func actions(canSend: Bool) -> some View {
+        if let stop {
+            ComposerAction(stopTitle, symbol: "stop.fill", disabled: stopping, action: stop)
+                .accessibilityIdentifier(stopID)
+        }
+        let send = retrying ? ("Retry send", "arrow.clockwise") : (submission.rawValue, submission.symbol)
+        ComposerAction(send.0, symbol: send.1,
+                       disabled: !canSend,
+                       queue: queueDraft, action: submitDraft)
+            .accessibilityIdentifier(sendID)
+    }
 }
 
 struct ComposerSurface<Field: View, Options: View, Actions: View>: View {

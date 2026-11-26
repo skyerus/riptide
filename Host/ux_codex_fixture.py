@@ -15,6 +15,14 @@ CHAT = "busy-fixture-thread"
 TURN = "busy-fixture-turn"
 TOKEN = "fixture-" + "x" * 40
 
+MODELS = [
+    {"model": "gpt-6.2-sol", "displayName": "GPT-6.2 Sol", "defaultReasoningEffort": "xhigh",
+     "supportedReasoningEfforts": [{"reasoningEffort": value} for value in ("medium", "high", "xhigh", "ultra")],
+     "serviceTiers": [{"id": "priority", "name": "Fast"}]},
+    {"model": "gpt-6.2-astra", "displayName": "GPT-6.2 Astra", "defaultReasoningEffort": "medium",
+     "supportedReasoningEfforts": [{"reasoningEffort": value} for value in ("medium", "high")]},
+]
+
 
 async def fixture(socket, live=False):
     async def send(body):
@@ -22,6 +30,11 @@ async def fixture(socket, live=False):
 
     async def notify(method, params):
         await send({"method": method, "params": {"threadId": CHAT, **params}})
+
+    async def notify_usage():
+        await notify("thread/tokenUsage/updated", {"turnId": turn_id, "tokenUsage": {
+            "last": {"totalTokens": 8_000}, "modelContextWindow": 32_000,
+        }})
 
     async def user_message(inputs, message_id):
         await notify("item/completed", {"turnId": turn_id, "item": {
@@ -73,6 +86,7 @@ async def fixture(socket, live=False):
 
     thread = {"id": CHAT, "name": "Busy Codex fixture", "cwd": WORKSPACE,
               "status": {"type": "active" if live else "idle"}}
+    thread_settings = {"model": "gpt-6.2-sol", "effort": "xhigh", "serviceTier": None}
     approval = None
     started = live
     turn_number = 1 if live else 0
@@ -104,15 +118,33 @@ async def fixture(socket, live=False):
             elif method == "thread/list":
                 result = {"data": [thread]}
             elif method == "thread/start":
-                result = {"thread": {**thread, "id": "new-fixture-thread", "name": "New Codex fixture"}}
-            elif method in ("thread/read", "thread/resume"):
+                result = {"thread": {**thread, "id": "new-fixture-thread", "name": "New Codex fixture"}, **thread_settings}
+            elif method == "thread/read":
                 result = {"thread": thread}
+            elif method == "thread/resume":
+                result = {"thread": thread, **thread_settings}
+            elif method == "model/list":
+                result = {"data": MODELS}
+            elif method == "thread/settings/update":
+                params = packet.get("params", {})
+                options = {key: value for key, value in params.items() if key != "threadId"}
+                model = next((row for row in MODELS if row["model"] == options.get("model", thread_settings["model"])), None)
+                if (params.get("threadId") != CHAT or not model or options.keys() - thread_settings.keys() or
+                        "effort" in options and {"reasoningEffort": options["effort"]} not in model["supportedReasoningEfforts"] or
+                        "serviceTier" in options and options["serviceTier"] not in ("priority", "default")):
+                    await send({"id": request, "error": {"code": -32602, "message": "Invalid fixture settings."}})
+                    continue
+                thread_settings.update(options)
+                await notify("thread/settings/updated", {"threadSettings": thread_settings})
+                result = {}
             elif method == "thread/turns/list":
                 history = [{"id": turn_id, "status": "inProgress", "items": [{
                     "id": "fixture-original", "type": "userMessage",
                     "content": [{"type": "text", "text": "Review the release draft"}],
                 }]}] if live else []
                 result = {"data": history}
+                if live:
+                    await notify_usage()
             elif method == "turn/start" and not started:
                 started = True
                 turn_number += 1
@@ -120,6 +152,7 @@ async def fixture(socket, live=False):
                 result = {"turn": {"id": turn_id}}
                 inputs = params.get("input", [])
                 await notify("turn/started", {"turn": {"id": turn_id}})
+                await notify_usage()
                 await user_message(inputs, "fixture-user-message")
                 feedback = any("show live feedback" in item.get("text", "") for item in inputs)
                 needs_approval = not any("finish without approval" in item.get("text", "") for item in inputs)

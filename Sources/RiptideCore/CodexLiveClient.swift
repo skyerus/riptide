@@ -51,11 +51,12 @@ public enum CodexLiveEvent: Equatable, Sendable {
     case assistantDelta(turnID: String, itemID: String, text: String)
     case assistantCompleted(turnID: String, itemID: String, text: String)
     case diff(turnID: String, patch: String)
+    case context(turnID: String, usage: ContextUsage?)
     case completed(turnID: String, status: String)
 
     var turnID: String {
         switch self {
-        case .output(let turnID, _), .assistantDelta(let turnID, _, _), .diff(let turnID, _),
+        case .output(let turnID, _), .assistantDelta(let turnID, _, _), .diff(let turnID, _), .context(let turnID, _),
              .assistantCompleted(let turnID, _, _), .completed(let turnID, _): turnID
         }
     }
@@ -123,6 +124,11 @@ public actor CodexLiveClient {
     private var latestCompletedTurn: String?
     private var approvals: [JSON: CodexChatApproval] = [:]
     private var responsesInFlight = Set<JSON>()
+    private var threadSettings: CodexThreadSettings?
+    private var modelCatalog: [CodexCatalogModel] = []
+    private var settingsRevision = 0
+
+    private var configOptions: [SessionConfigOption] { threadSettings?.configOptions(catalog: modelCatalog) ?? [] }
 
     init(transport: any JSONMessageTransport, workspace: String, accountFingerprint: String? = nil) {
         self.transport = transport
@@ -166,6 +172,7 @@ public actor CodexLiveClient {
         guard let thread = result["thread"], thread["cwd"]?.string == workspace,
               let chat = CodexChatSummary(thread) else { throw CodexLiveError.invalidResponse }
         threadID = chat.id
+        threadSettings = CodexThreadSettings(result)
         savedChat = true
         verifiedChat = true
         return chat
@@ -189,7 +196,7 @@ public actor CodexLiveClient {
         if accountFingerprint != nil { _ = try await checkedAccount() }
         savedChat = true
         threadID = id
-        _ = try await resumeSavedThread(id)
+        threadSettings = CodexThreadSettings(try await resumeSavedThread(id))
         let history = try await call("thread/turns/list", [
             "threadId": .string(id), "limit": .integer(30), "itemsView": "full", "sortDirection": "desc"
         ])
@@ -213,6 +220,58 @@ public actor CodexLiveClient {
         }
         return CodexChatSnapshot(turns: transcript, activeTurnID: activeTurnID,
                                  hasOlderTurns: history["nextCursor"]?.string != nil)
+    }
+
+    public func discoverSavedChatConfiguration() async {
+        guard verifiedChat, let settings = threadSettings else { return }
+        emitChat.yield(.configOptions(configOptions))
+        var cursor: String?
+        var seen = Set<String>()
+        var ids = Set<String>()
+        var catalog: [CodexCatalogModel] = []
+        repeat {
+            var params: [String: JSON] = ["includeHidden": .boolean(true), "limit": .integer(100)]
+            if let provider = settings.provider { params["modelProvider"] = .string(provider) }
+            if let cursor { params["cursor"] = .string(cursor) }
+            guard let result = try? await call("model/list", .object(params)),
+                  let models = result["data"]?.array else { return }
+            catalog.append(contentsOf: models.compactMap(CodexCatalogModel.init).filter { ids.insert($0.id).inserted })
+            cursor = result["nextCursor"]?.string
+            if let cursor, !seen.insert(cursor).inserted { return }
+        } while cursor != nil && seen.count < 20
+        modelCatalog = catalog
+        emitChat.yield(.configOptions(configOptions))
+    }
+
+    public func setSavedChatConfigOption(_ id: String, value: String) async throws -> [SessionConfigOption] {
+        guard verifiedChat, let threadID, var settings = threadSettings, !submitting, activeTurnID == nil,
+              let option = configOptions.first(where: { $0.id == id }), option.choices.contains(where: { $0.id == value }) else {
+            throw CodexLiveError.rejected("This setting is unavailable in this chat right now.")
+        }
+        var params: [String: JSON] = ["threadId": .string(threadID)]
+        switch option.category {
+        case .model:
+            guard let nextModel = modelCatalog.first(where: { $0.id == value }) else { throw CodexLiveError.invalidResponse }
+            settings.model = value
+            params["model"] = .string(value)
+            if let effort = nextModel.defaultEffort, !nextModel.efforts.contains(where: { $0.id == settings.effort }) {
+                params["effort"] = .string(effort)
+                settings.effort = effort
+            }
+        case .thoughtLevel:
+            params["effort"] = .string(value)
+            settings.effort = value
+        case .serviceTier:
+            guard let fast = modelCatalog.first(where: { $0.id == settings.model })?.fastTier else { throw CodexLiveError.invalidResponse }
+            let tier = value == "fast" ? fast : "default"
+            params["serviceTier"] = .string(tier)
+            settings.serviceTier = tier
+        }
+        let revision = settingsRevision
+        _ = try await call("thread/settings/update", .object(params))
+        // A settings notification can arrive before the acknowledgment with the server's effective value.
+        if settingsRevision == revision { threadSettings = settings }
+        return configOptions
     }
 
     @discardableResult
@@ -611,6 +670,14 @@ public actor CodexLiveClient {
             if let approval = approvals.removeValue(forKey: id) { emitChat.yield(.approvalResolved(approval.id)) }
             return
         }
+        if method == "thread/settings/updated", let value = params["threadSettings"], let settings = CodexThreadSettings(value) {
+            let previous = configOptions
+            if threadSettings?.model != settings.model { emitChat.yield(.context(nil)) }
+            threadSettings = settings
+            settingsRevision += 1
+            if configOptions != previous { emitChat.yield(.configOptions(configOptions)) }
+            return
+        }
         if method == "turn/started", let id = params["turn"]?["id"]?.string {
             guard id != latestCompletedTurn, id != activeTurnID else { return }
             turnChanged = true
@@ -658,6 +725,10 @@ public actor CodexLiveClient {
         }
         guard let turnID = params["turnId"]?.string else { return nil }
         switch method {
+        case "thread/tokenUsage/updated":
+            guard let usage = params["tokenUsage"], let used = usage["last"]?["totalTokens"]?.integer else { return nil }
+            let context = usage["modelContextWindow"]?.integer.flatMap { ContextUsage(used: used, capacity: $0) }
+            return .context(turnID: turnID, usage: context)
         case "turn/diff/updated":
             return params["diff"]?.string.map { .diff(turnID: turnID, patch: $0) }
         case "item/commandExecution/outputDelta":

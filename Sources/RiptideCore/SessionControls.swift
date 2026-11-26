@@ -4,6 +4,7 @@ public struct SessionConfigOption: Identifiable, Equatable, Sendable {
     public enum Category: String, Sendable {
         case model
         case thoughtLevel = "thought_level"
+        case serviceTier = "service_tier"
     }
 
     public struct Choice: Identifiable, Equatable, Sendable {
@@ -25,11 +26,21 @@ public struct SessionConfigOption: Identifiable, Equatable, Sendable {
 
     public var currentChoice: Choice? { choices.first { $0.id == currentValue } }
 
+    public var fastMode: Bool? {
+        guard category == .serviceTier, standardSpeedID != nil, choices.contains(where: { $0.id == "fast" }) else { return nil }
+        return currentValue == "fast"
+    }
+
+    public var standardSpeedID: String? {
+        choices.first { $0.id == "normal" || $0.id == "default" }?.id
+    }
+
     static func parse(_ options: [JSON]) -> [Self] {
         options.compactMap { option in
             guard option["type"] == "select", let id = option["id"]?.string,
                   let name = option["name"]?.string, let kind = option["category"]?.string,
-                  let category = Category(rawValue: kind), let current = option["currentValue"]?.string,
+                  let category = Category(rawValue: id == "service_tier" && kind == "other" ? id : kind),
+                  let current = option["currentValue"]?.string,
                   let entries = option["options"]?.array else { return nil }
             var values = Set<String>()
             let choices = entries.flatMap { group in
@@ -66,7 +77,7 @@ public struct SessionConfigOption: Identifiable, Equatable, Sendable {
         return displayLabels(name, value: name, category: category).name
     }
 
-    private static func displayLabels(_ name: String, value: String, category: Category) -> (name: String, provider: String?) {
+    static func displayLabels(_ name: String, value: String, category: Category) -> (name: String, provider: String?) {
         switch category {
         case .model:
             if let split = name.range(of: " · ") {
@@ -82,6 +93,8 @@ public struct SessionConfigOption: Identifiable, Equatable, Sendable {
             case "none", "minimal", "low", "medium", "high", "max", "ultra": return (name.capitalized, nil)
             default: return (name, nil)
             }
+        case .serviceTier:
+            return (name, nil)
         }
     }
 

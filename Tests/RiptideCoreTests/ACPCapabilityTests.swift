@@ -90,6 +90,116 @@ struct ACPCapabilityTests {
         await client.close()
     }
 
+    @Test(arguments: [false, true]) func codexRoutesContextUsageToSavedChatsAndDesktopWatchers(watching: Bool) async throws {
+        let thread: JSON = ["id": "selected", "cwd": "/disposable", "status": ["type": "active"]]
+        let transport = ScriptedTransport { request in
+            let method = request["method"]?.string
+            if method == "initialized" { return [] }
+            let id = try #require(request["id"])
+            switch method {
+            case "initialize":
+                return [.reply(id, result: [:])]
+            case "thread/list":
+                return [.reply(id, result: ["data": .array([thread])])]
+            case "thread/read", "thread/resume":
+                return [.reply(id, result: ["thread": thread])]
+            case "thread/turns/list":
+                let usage: JSON = ["last": ["totalTokens": .integer(8_000)], "modelContextWindow": .integer(32_000)]
+                return [.notification("thread/tokenUsage/updated", params: [
+                    "threadId": "unrelated", "turnId": "active", "tokenUsage": .null
+                ]), .notification("thread/tokenUsage/updated", params: [
+                    "threadId": "selected", "turnId": "active", "tokenUsage": usage
+                ]), .reply(id, result: ["data": .array([["id": "active", "status": "inProgress"]])])]
+            default:
+                return [.failure(id, code: -32601, message: "Unexpected request")]
+            }
+        }
+        let client = CodexLiveClient(transport: transport, workspace: "/disposable")
+        let expected = CodexLiveEvent.context(turnID: "active", usage: ContextUsage(used: 8_000, capacity: 32_000))
+        if watching {
+            _ = try await client.attach()
+            var events = client.events.makeAsyncIterator()
+            #expect(try await events.next() == expected)
+        } else {
+            _ = try await client.openSavedChat("selected")
+            var events = client.chatEvents.makeAsyncIterator()
+            if case .live(let context) = try await events.next() { #expect(context == expected) }
+            else { Issue.record("Expected context usage for the selected chat") }
+        }
+        await client.close()
+    }
+
+    @Test func codexComposerUsesNativeThreadSettingsAndModelCapabilities() async throws {
+        let thread: JSON = ["id": "selected", "cwd": "/disposable"]
+        let transport = ScriptedTransport { request in
+            let method = request["method"]?.string
+            if method == "initialized" { return [] }
+            let id = try #require(request["id"])
+            let params = request["params"]
+            switch method {
+            case "initialize":
+                #expect(params?["capabilities"]?["experimentalApi"] == .boolean(true))
+                return [.reply(id, result: [:])]
+            case "thread/read":
+                return [.reply(id, result: ["thread": thread])]
+            case "thread/resume":
+                return [.reply(id, result: ["thread": thread, "model": "selected-model", "modelProvider": "openai",
+                                            "serviceTier": "default", "reasoningEffort": "medium"])]
+            case "thread/turns/list":
+                return [.reply(id, result: ["data": .array([])])]
+            case "model/list":
+                #expect(params?["modelProvider"] == "openai")
+                return [.reply(id, result: ["data": .array([
+                    ["model": "selected-model", "defaultServiceTier": "priority", "supportedReasoningEfforts": .array([
+                        ["reasoningEffort": "medium"], ["reasoningEffort": "high"]
+                    ]), "serviceTiers": .array([["id": "ultrafast", "name": "Ultrafast"], ["id": "priority", "name": "Fast"]])],
+                    ["model": "other-model", "defaultReasoningEffort": "low", "supportedReasoningEfforts": .array([
+                        ["reasoningEffort": "low"]
+                    ])]
+                ])])]
+            case "thread/settings/update":
+                if let tier = params?["serviceTier"]?.string {
+                    #expect(params == ["threadId": "selected", "serviceTier": .string(tier)])
+                    #expect(["priority", "default"].contains(tier))
+                    return [.notification("thread/settings/updated", params: [
+                        "threadId": "selected", "threadSettings": ["model": "selected-model", "modelProvider": "openai",
+                                                                   "serviceTier": .string(tier), "effort": "medium"]
+                    ]), .reply(id, result: [:])]
+                }
+                if params?["model"] != nil {
+                    #expect(params == ["threadId": "selected", "model": "other-model", "effort": "low"])
+                } else {
+                    #expect(params == ["threadId": "selected", "effort": "high"])
+                }
+                return [.reply(id, result: [:])]
+            default:
+                Issue.record("Unexpected Codex request: \(method ?? "missing")")
+                return [.failure(id, code: -32601, message: "Unexpected request")]
+            }
+        }
+        let client = CodexLiveClient(transport: transport, workspace: "/disposable")
+        _ = try await client.openSavedChat("selected")
+        await client.discoverSavedChatConfiguration()
+        var events = client.chatEvents.makeAsyncIterator()
+        _ = try await events.next()
+        guard case .configOptions(let initial) = try await events.next() else {
+            Issue.record("Expected the thread's model, intelligence, and speed settings")
+            return
+        }
+        #expect(initial.first { $0.category == .serviceTier }?.fastMode == false)
+        let fast = try await client.setSavedChatConfigOption("service_tier", value: "fast")
+        #expect(fast.first { $0.category == .serviceTier }?.fastMode == true)
+        let normal = try await client.setSavedChatConfigOption("service_tier", value: "default")
+        #expect(normal.first { $0.category == .serviceTier }?.fastMode == false)
+        let high = try await client.setSavedChatConfigOption("effort", value: "high")
+        #expect(high.first { $0.category == .thoughtLevel }?.currentValue == "high")
+        let changed = try await client.setSavedChatConfigOption("model", value: "other-model")
+        #expect(changed.first { $0.category == .model }?.currentValue == "other-model")
+        #expect(changed.first { $0.category == .thoughtLevel }?.currentValue == "low")
+        #expect(changed.allSatisfy { $0.category != .serviceTier })
+        await client.close()
+    }
+
     @Test func codexInputAndStopAreScopedToTheCurrentRequestAndTurn() async throws {
         let thread: JSON = ["id": "selected", "cwd": "/disposable"]
         let transport = ScriptedTransport { request in

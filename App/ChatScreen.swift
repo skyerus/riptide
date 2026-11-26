@@ -8,7 +8,6 @@ struct ChatScreen: View {
     var initialChatID: String? = nil
     @State private var showChats = false
     @State private var showModelPicker = false
-    @State private var showAdvancedModelPicker = false
     @State private var composerHeight: CGFloat = 0
     @State private var landing = true
     @State private var couldNotOpen = false
@@ -39,7 +38,17 @@ struct ChatScreen: View {
     }
 
     private var pickerIsOpen: Bool {
-        showModelPicker && !resolvingInitialChat && model.selected.hasConfigChoices
+        showModelPicker && !resolvingInitialChat && composerSettings.hasChoices
+    }
+
+    private var composerSettings: ChatComposerSettings {
+        let chatID = model.selectedID
+        let chat = model.selected
+        return .init(options: chat.configOptions, reportedModelName: chat.modelName, configuring: chat.configuring,
+                     working: chat.working, error: chat.configError) { id, value in
+            await model.setConfigOption(id, value: value, sessionID: chatID)
+            return model.selectedID == chatID && model.selected.configOptions.contains { $0.id == id && $0.currentValue == value }
+        }
     }
 
     private var resolvingInitialChat: Bool {
@@ -109,6 +118,9 @@ struct ChatScreen: View {
                         }
                         .accessibilityIdentifier("open-hermes-browser")
                     }
+                    if workspace.supportsHermesGroups(model.target.id) {
+                        Button("Group chats", systemImage: "person.2") { workspace.showSidebar(.groups) }
+                    }
                     Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                 } label: {
                     Label("Chat actions", systemImage: "ellipsis.circle")
@@ -141,19 +153,11 @@ struct ChatScreen: View {
         .sheet(isPresented: $showChats) {
             ChatPicker(model: model, openClaw: voiceRemote?.kind == .openClaw)
         }
-        .sheet(isPresented: $showAdvancedModelPicker) {
-            AdvancedModelPicker(model: model, sessionID: model.selectedID)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(.regularMaterial)
-        }
         .task(id: chatKey) {
             safariApproval.restore(agentID: voiceRemote?.id, chatID: chatKey.chat)
         }
         .onChange(of: model.selectedID) {
             safariApproval.cancelTurn()
-            showModelPicker = false
-            showAdvancedModelPicker = false
         }
         .sheet(isPresented: $pairingVoice) {
             if let voiceRemote, let remoteStore { PairNativeVoiceScreen(remote: voiceRemote, store: remoteStore) }
@@ -254,8 +258,41 @@ struct ChatScreen: View {
         }
     }
 
+    private func submitDraft(_ draft: Binding<String>, attachments: Binding<[ChatAttachment]>,
+                             in chat: WorkspaceChatID, queue: Bool) {
+        let message = ComposerDraft(text: draft, files: attachments)
+        let selected = model.selected
+        guard model.selectedID == chat.chat, selected.loaded, !selected.loading, !selected.configuring,
+              !selected.stopping, !selected.steering, message.hasContent else { return }
+        workspace.rememberReadingOffset(nil, for: chat)
+        viewport.restore(nil)
+        if queue || (selected.working && (!selected.canStop || !message.attachments.isEmpty)) {
+            if model.enqueue(message.text, attachments: message.attachments, in: chat.chat) { message.clear() }
+        } else if selected.working {
+            Task {
+                if await model.steer(message.text, in: chat.chat) { message.clear() }
+            }
+        } else if message.attachments.isEmpty {
+            if sendMessage(message.text, attachments: [], onSent: nil) { message.clear() }
+        } else {
+            _ = sendMessage(message.text, attachments: message.attachments, onSent: message.clear)
+        }
+    }
+
     private var chat: some View {
         let chatKey = self.chatKey
+        let settings = resolvingInitialChat ? ChatComposerSettings() : composerSettings
+        let selected = model.selected
+        let attachments = Binding(get: { workspace.drafts[attachments: chatKey] },
+                                  set: { workspace.drafts[attachments: chatKey] = $0 })
+        let canSteer = selected.canStop && attachments.wrappedValue.isEmpty
+        let submission: ChatComposer.Submission = canSteer ? .steer : selected.working ? .queue : .send
+        let prompt = switch submission {
+        case .send: "Message \(model.target.name)"
+        case .steer: "Steer this reply"
+        case .queue: "Queue a message"
+        }
+        let draft = Binding(get: { workspace.drafts[chatKey] }, set: { workspace.drafts[chatKey] = $0 })
         return ZStack {
             transcript.id(model.selectedID)
                 .opacity(awaitingHistory ? 0 : 1)
@@ -269,7 +306,7 @@ struct ChatScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !resolvingInitialChat {
                 VStack(spacing: 0) {
-                    ComposerQueue(messages: model.selected.queuedMessages, sendingID: model.selected.sendingQueuedID,
+                    ComposerQueue(messages: selected.queuedMessages, sendingID: selected.sendingQueuedID,
                                   paused: model.selected.queuePaused, canResume: model.selected.loaded,
                                   remove: { model.removeQueuedMessage($0, in: chatKey.chat) },
                                   resume: { model.resumeQueue(in: chatKey.chat) })
@@ -290,56 +327,33 @@ struct ChatScreen: View {
                             .accessibilityIdentifier("safari-chat-status")
                     }
                     ChatComposer(
-                        model: model,
+                        prompt: prompt,
                         chatID: chatKey.chat,
-                        draft: Binding(
-                            get: { workspace.drafts[chatKey] },
-                            set: { workspace.drafts[chatKey] = $0 }
-                        ),
-                        attachments: Binding(
-                            get: { workspace.drafts[attachments: chatKey] },
-                            set: { workspace.drafts[attachments: chatKey] = $0 }
-                        ),
+                        draft: draft,
+                        attachments: attachments,
                         modelPickerVisible: $showModelPicker,
                         editorFocus: $composerFocused,
+                        acceptsImages: selected.acceptsImages,
+                        attachmentByteLimit: ChatAttachment.acpByteLimit,
+                        settings: settings,
+                        context: selected.context,
+                        ready: selected.loaded,
+                        canDictate: selected.loaded,
+                        canSubmit: selected.loaded && !selected.loading && !selected.configuring
+                            && !selected.stopping && !selected.steering,
                         transcribe: dictationTranscriber,
-                        didSend: {
-                            showModelPicker = false
-                            workspace.rememberReadingOffset(nil, for: chatKey)
-                            viewport.restore(nil)
-                        },
-                        submit: sendMessage
-                    )
+                        submission: submission, stopping: selected.stopping,
+                        stop: selected.canStop ? { Task { await model.stop() } } : nil,
+                        enqueue: canSteer ? { submitDraft(draft, attachments: attachments, in: chatKey, queue: true) } : nil
+                    ) {
+                        submitDraft(draft, attachments: attachments, in: chatKey, queue: submission == .queue)
+                    }
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
             }
         }
-        .overlay(alignment: .bottom) {
-            if pickerIsOpen {
-                ZStack(alignment: .bottom) {
-                    Button {
-                        showModelPicker = false
-                    } label: {
-                        Color.clear
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Dismiss model controls")
-                    .accessibilityIdentifier("dismiss-model-picker")
-
-                    QuickModelPicker(model: model, sessionID: model.selectedID) {
-                        showModelPicker = false
-                        showAdvancedModelPicker = true
-                    }
-                    .padding(.bottom, 4)
-                }
-                .padding(.bottom, composerHeight)
-                .transition(.opacity)
-                .accessibilityAction(.escape) { showModelPicker = false }
-            }
-        }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: pickerIsOpen)
+        .modifier(ChatModelPicker(settings: settings, composerHeight: composerHeight,
+                                  chatID: chatKey.chat, isExpanded: $showModelPicker))
     }
 
     private func visit() {
