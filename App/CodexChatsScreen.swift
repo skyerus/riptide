@@ -243,7 +243,7 @@ struct CodexSavedChatScreen: View {
                     Text("Showing the latest 30 turns.").font(.caption).foregroundStyle(.secondary)
                 }
                 ForEach(turns) { turn in
-                    ForEach(turn.messages) { transcriptMessage($0) }
+                    ForEach(turn.visibleMessages(isActive: turn.id == activeTurnID)) { transcriptMessage($0) }
                     if showsCompletedToolCalls && turn.id != activeTurnID && !turn.progress.items.isEmpty {
                         CodexActivityList(items: turn.progress.items)
                             .padding(12)

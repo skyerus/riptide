@@ -2,6 +2,29 @@ import XCTest
 
 final class AgentChatsUITests: XCTestCase {
     @MainActor
+    func testHermesAssistantProgressDisappearsWhenTheReplyFinishes() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_FIXTURE_ASSISTANT_PROGRESS"] = "1"
+        app.launch()
+        openMainChat(app, agent: "hermes")
+        send("Check the workspace", in: app)
+
+        let progress = app.staticTexts["Checking the saved settings."]
+        XCTAssertTrue(progress.waitForExistence(timeout: 6))
+        capture(app, as: "Hermes while progress is visible")
+        let final = app.staticTexts["You can come back to this conversation whenever you need it."]
+        XCTAssertTrue(final.waitForExistence(timeout: 15))
+        XCTAssertTrue(progress.waitForNonExistence(timeout: 5))
+        capture(app, as: "Hermes after progress disappears")
+        app.navigationBars.buttons["BackButton"].tap()
+        app.buttons["sidebar-main-chat"].tap()
+        XCTAssertTrue(final.waitForExistence(timeout: 6))
+        XCTAssertFalse(progress.exists)
+    }
+
+    @MainActor
     func testCreatesAndReopensSideChatFromHermesWorkspace() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString

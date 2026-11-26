@@ -1,0 +1,314 @@
+diff --git a/acp_adapter/gateway_reply.py b/acp_adapter/gateway_reply.py
+index c9ef49a..b392b28 100644
+--- a/acp_adapter/gateway_reply.py
++++ b/acp_adapter/gateway_reply.py
+@@ -47,6 +47,7 @@ class GatewayReplyMixin:
+         """Show the settled reply's unseen remainder, then end the turn: its reply's id closes, and a tool
+         call it left open (blocked by a guard, an approval denied) ends ``failed``, as the in-process agent
+         flushed them at turn end. Shared by ``message.complete`` and a retry's terminal receipt."""
++        self._codex_stream_messages.pop(aid, None)
+         remainder = self._final_remainder(aid, payload)
+         if remainder and self._conn:
+             await self._conn.session_update(session_id=editor_id, update=self._chunk(sid, remainder))
+diff --git a/acp_adapter/gateway_server.py b/acp_adapter/gateway_server.py
+index 7ed47c7..e854323 100644
+--- a/acp_adapter/gateway_server.py
++++ b/acp_adapter/gateway_server.py
+@@ -18,6 +18,7 @@ from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+ from hermes_constants import get_hermes_home
+ from acp_adapter.gateway_reply import GatewayReplyMixin, _text
+ from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
++from agent.transports.codex_event_projector import ASSISTANT_PROGRESS
+
+ logger = logging.getLogger(__name__)
+
+@@ -113,6 +114,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         self._form_elicitation = False
+         self._riptide_client = False
+         self._riptide_turns = {}
++        self._assistant_progress = False
++        self._codex_stream_messages = {}
+         from hermes_cli.gateway_mutations import PreparedMutations
+         self._mutations = PreparedMutations()
+         # Session -> title the editor was last shown (``session_info_update`` fires on a change).
+@@ -141,6 +144,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+             self._form_elicitation = client_supports_form_elicitation(params)
+             client_info = params.get("clientInfo") if isinstance(params, dict) else None
+             self._riptide_client = isinstance(client_info, dict) and client_info.get("name") == "riptide"
++            capabilities = params.get("clientCapabilities") if isinstance(params, dict) else None
++            metadata = capabilities.get("_meta") if isinstance(capabilities, dict) else None
++            self._assistant_progress = isinstance(metadata, dict) and metadata.get(ASSISTANT_PROGRESS) is True
+
+     async def initialize(self, **kwargs):
+         from hermes_cli import __version__
+@@ -449,6 +455,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+             # The editor replays the live transcript in stored order, as main's ACP did; archived rows
+             # (summarized away by a compression) are display-only.
+             live = sorted((m for m in snapshot["messages"] if not m.get("archived")), key=lambda m: m.get("row_id") or 0)
++            if self._assistant_progress:
++                live = [message for message in live
++                        if not (isinstance(meta := message.get("display_metadata"), dict)
++                                and meta.get(ASSISTANT_PROGRESS) is True)]
+             for update in _history_replay_updates(live):
+                 await self._conn.session_update(session_id=held_id, update=update)
+         for pending in snapshot.get("prompts", []):
+@@ -1061,10 +1071,21 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+             return
+         if kind == "message.delta":
+             text = _text(payload)
++            item_id = payload.get("codex_item_id") if self._assistant_progress else None
++            previous = self._codex_stream_messages.get(aid)
++            if item_id and previous and previous[0] != item_id:
++                self._close_segment(aid)
++                self._end_message(sid)
+             self._streamed[aid] = self._streamed.get(aid, "") + text
+             if text and self._conn:
+-                await self._conn.session_update(session_id=editor_id, update=self._chunk(sid, text))
++                update = self._chunk(sid, text)
++                if item_id:
++                    self._codex_stream_messages[aid] = (item_id, update.message_id)
++                await self._conn.session_update(session_id=editor_id, update=update)
+         elif kind == "message.interim":
++            if self._assistant_progress and payload.get("codex_item_id"):
++                await self._project_codex_commentary(sid, editor_id, aid, payload)
++                return
+             # Commentary the owner could not stream (``already_streamed`` false) reaches viewers
+             # only here; streamed commentary is already on screen. Either way it is its own segment.
+             self._close_segment(aid)
+@@ -1076,6 +1097,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+                     await self._conn.session_update(session_id=editor_id, update=self._chunk(sid, text + "\n\n"))
+                 self._end_message(sid)
+         elif kind == "message.complete":
++            self._codex_stream_messages.pop(aid, None)
+             if aid in self._settling or aid in self._receipted:
+                 # A retry's terminal receipt claimed this reply; it is shown once, from there.
+                 self._streamed.pop(aid, None)
+@@ -1094,6 +1116,30 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+                 self._settling.discard(aid)
+             await self._finish_riptide_turn(sid, aid)
+
++    async def _project_codex_commentary(self, sid, editor_id, aid, payload):
++        """Reclassify a streamed item by its Codex identity, or publish the completed progress item."""
++        previous = self._codex_stream_messages.get(aid)
++        message_id = None
++        text = _text(payload)
++        if previous and previous[0] == payload["codex_item_id"]:
++            self._codex_stream_messages.pop(aid)
++            message_id = previous[1]
++            streamed = self._streamed.pop(aid, "")
++            # A tool start or replay gap may already have closed this item's streamed segment.
++            if not streamed and (segments := self._segments.get(aid)) and segments[-1].strip() == text.strip():
++                segments.pop()
++            text = text or streamed
++        else:
++            self._close_segment(aid)
++            self._end_message(sid)
++        if text and self._conn:
++            update = self._chunk(sid, text)
++            if message_id is not None:
++                update.message_id = message_id
++            update.field_meta = {ASSISTANT_PROGRESS: True}
++            await self._conn.session_update(session_id=editor_id, update=update)
++        self._end_message(sid)
++
+     async def _gap_guard(self, kind, sid, aid):
+         """What a replay gap changes in the projection; True when the frame is consumed here."""
+         if kind == "session.replay_gap":
+diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
+index 69fe4f8..ec01fc1 100644
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -26,6 +26,9 @@ from agent.stream_diag import buffer_connect_exhausted_notice
+ from agent.usage_anchor import set_usage_anchor
+
+ logger = logging.getLogger(__name__)
++codex_stream_item_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
++    "codex_stream_item_id", default=None,
++)
+ _codex_watchdog_state_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+     "codex_watchdog_state", default=None
+ )
+@@ -445,12 +448,29 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
+         # (which also feeds the interim-visible-text de-dup comparison), even when a caller reaches this
+         # directly (the tool-suppressed content path) rather than through _fire_stream_delta.
+         if text:
+-            agent_cb(attr, f"{attr} raised", args=(text,))
++            item_id = params.get("itemId")
++            streaming_item = item_id if attr == "_fire_stream_delta" and isinstance(item_id, str) else None
++            token = codex_stream_item_id.set(streaming_item)
++            try:
++                agent_cb(attr, f"{attr} raised", args=(text,))
++            finally:
++                codex_stream_item_id.reset(token)
+
+     def _fire_agent_message_completed(item: dict) -> None:
+         text = item.get("text") or ""
++        item_id = item.get("id")
++        progress_cb = getattr(agent, "codex_commentary_callback", None)
++        if (item.get("phase") == "commentary" and isinstance(item_id, str) and item_id
++                and callable(progress_cb)):
++            if not getattr(agent, "_hold_stream", False) and isinstance(text, str):
++                try:
++                    visible = agent._visible_commentary(text)
++                    progress_cb(item_id, visible, agent._interim_content_fully_streamed(visible),
++                                getattr(agent, "show_commentary", True))
++                except Exception:
++                    logger.debug("Codex commentary callback raised", exc_info=True)
+         # display.show_commentary=false keeps mid-turn narration off the interim path too (codex_responses contract).
+-        if isinstance(text, str) and text.strip() and getattr(agent, "show_commentary", True):
++        elif isinstance(text, str) and text.strip() and getattr(agent, "show_commentary", True):
+             agent_cb("_emit_interim_assistant_message", "_emit_interim_assistant_message raised",
+                      args=({"role": "assistant", "content": text},))
+         # Each agentMessage item is its own delivered message: the completed item was just compared
+diff --git a/agent/transports/codex_event_projector.py b/agent/transports/codex_event_projector.py
+index 01291bd..4648964 100644
+--- a/agent/transports/codex_event_projector.py
++++ b/agent/transports/codex_event_projector.py
+@@ -14,6 +14,8 @@ import json
+ from dataclasses import dataclass, field
+ from typing import Any, Callable, Optional
+
++ASSISTANT_PROGRESS = "app.riptide.assistantProgress"
++
+
+ def _deterministic_call_id(item_type: str, item_id: str) -> str:
+     """Stable tool_call id: the codex item id, else a hash so replay keeps prefix caches valid."""
+@@ -75,6 +77,10 @@ class CodexEventProjector:
+
+     def _project_agent_message(self, item: dict) -> ProjectionResult:
+         text = item.get("text") or ""
++        if item.get("phase") == "commentary":
++            return ProjectionResult(messages=[
++                self._assistant_message(text, display_metadata={ASSISTANT_PROGRESS: True})
++            ])
+         return ProjectionResult(messages=[self._assistant_message(text)], final_text=text)
+
+     @staticmethod
+diff --git a/gateway/run_turn_runner.py b/gateway/run_turn_runner.py
+index aa98273..5a11fc6 100644
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -361,12 +361,17 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
+         stream_delta_cb = None
+         local_viewer_route = getattr(ctx.source, "platform", None) == Platform.LOCAL
+         if delta_sinks or self._approval_owner is not None:
++            from agent.codex_runtime import codex_stream_item_id
++
+             def stream_delta_cb(text: Optional[str]) -> None:
+                 if not ctx._run_still_current():
+                     return
+                 delivered = bool(delta_sinks)
+                 if text is not None:
+-                    delivered = self._publish_execution("message.delta", {"text": text}) or delivered
++                    payload = {"text": text}
++                    if local_viewer_route and (item_id := codex_stream_item_id.get()):
++                        payload["codex_item_id"] = item_id
++                    delivered = self._publish_execution("message.delta", payload) or delivered
+                 elif local_viewer_route:
+                     # The segment boundary (main's ``_stream_delta(None)`` closes the reply box
+                     # before tool lines); messaging routes only close their native stream.
+@@ -549,6 +554,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
+         agent.step_callback = ctx._step_callback_sync if (ctx._hooks_ref.loaded_hooks or self._approval_owner is not None) else None
+         agent.stream_delta_callback = stream_delta_cb
+         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
++        agent.codex_commentary_callback = None
++        if ctx.source.platform == Platform.LOCAL and stream_delta_cb is not None:
++            def publish_codex_commentary(item_id, text, already_streamed, show_commentary):
++                if ctx._run_still_current():
++                    self._publish_execution("message.interim", {
++                        "text": text if show_commentary and (want_interim_messages or already_streamed) else "",
++                        "already_streamed": already_streamed, "codex_item_id": item_id,
++                    })
++
++            agent.codex_commentary_callback = publish_codex_commentary
+         from gateway.run_turn_progress import local_viewer_turn
+         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, (
+             self._local_notice_callback_sync if local_viewer_turn(self) else self._notice_callback_sync)
+diff --git a/tests/acp_adapter/test_riptide_assistant_progress.py b/tests/acp_adapter/test_riptide_assistant_progress.py
+new file mode 100644
+index 0000000..1c1c862
+--- /dev/null
++++ b/tests/acp_adapter/test_riptide_assistant_progress.py
+@@ -0,0 +1,82 @@
++"""Codex message identity and phase survive the gateway's ACP projection."""
++
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++
++from acp_adapter.gateway_server import GatewayACPAgent
++from agent.codex_runtime import codex_stream_item_id, make_codex_app_server_event_bridge
++from agent.transports.codex_event_projector import ASSISTANT_PROGRESS, CodexEventProjector
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("stream_progress,tool_before_completion", [(False, False), (True, False), (True, True)])
++async def test_progress_and_identical_final_use_distinct_messages(stream_progress, tool_before_completion):
++    text = "I checked the saved settings."
++    frames = []
++
++    def frame(kind, **payload):
++        frames.append({"type": kind, "session_id": "chat", "admission_id": "turn", "payload": payload})
++
++    codex = SimpleNamespace(
++        _fire_stream_delta=lambda value: frame("message.delta", text=value, codex_item_id=codex_stream_item_id.get()),
++        _visible_commentary=lambda value: value,
++        _interim_content_fully_streamed=lambda _: stream_progress,
++        codex_commentary_callback=lambda item, value, streamed, _enabled: frame(
++            "message.interim", text=value, already_streamed=streamed, codex_item_id=item),
++    )
++    bridge = make_codex_app_server_event_bridge(codex)
++    projector = CodexEventProjector()
++    if stream_progress:
++        bridge({"method": "item/agentMessage/delta", "params": {"itemId": "progress", "delta": text}})
++    if tool_before_completion:
++        frame("tool.start", tool_call_id="tool", tool_name="test tool")
++    commentary = {"method": "item/completed", "params": {"item": {
++        "type": "agentMessage", "id": "progress", "phase": "commentary", "text": text}}}
++    bridge(commentary)
++    progress_result = projector.project(commentary)
++    assert progress_result.final_text is None
++    assert progress_result.messages[0]["display_metadata"] == {ASSISTANT_PROGRESS: True}
++    frame("message.complete", text=text, outcome="completed")
++
++    acp = GatewayACPAgent()
++    acp._conn = AsyncMock()
++    acp._observe_client_message(SimpleNamespace(direction="incoming", message={"method": "initialize", "params": {
++        "clientInfo": {"name": "riptide"}, "clientCapabilities": {"_meta": {ASSISTANT_PROGRESS: True}}
++    }}))
++    for event in frames:
++        await acp._project(event)
++    updates = [call.kwargs["update"] for call in acp._conn.session_update.await_args_list
++               if call.kwargs["update"].session_update == "agent_message_chunk"]
++    assert len(updates) == (3 if stream_progress else 2)
++    progress, final = updates[-2:]
++    assert progress.field_meta == {ASSISTANT_PROGRESS: True}
++    assert final.field_meta is None
++    assert progress.content.text == final.content.text == text
++    assert progress.message_id != final.message_id
++    if stream_progress:
++        assert progress.message_id == updates[0].message_id
++
++
++@pytest.mark.asyncio
++async def test_reopen_keeps_phase_unknown_history_and_final_text():
++    acp = GatewayACPAgent()
++    acp._assistant_progress = True
++    acp._conn = AsyncMock()
++    gateway = AsyncMock()
++    gateway.rpc.return_value = {"messages": [
++        {"row_id": 1, "role": "assistant", "content": "Older saved answer."},
++        {"row_id": 2, "role": "assistant", "content": "Checking settings.",
++         "display_metadata": {ASSISTANT_PROGRESS: True}},
++        {"row_id": 3, "role": "assistant", "content": "Settings checked."},
++    ]}
++    acp._client = AsyncMock(return_value=gateway)
++    acp._attach_info = AsyncMock(return_value={"cwd": "/tmp"})
++    acp._adopt = AsyncMock()
++    acp._notify_unknown = AsyncMock()
++    acp._request_live_reasoning = AsyncMock()
++    acp._session_fields = AsyncMock()
++    await acp._resume("/tmp", "chat", None)
++    updates = [call.kwargs["update"].content.text for call in acp._conn.session_update.await_args_list]
++    assert updates == ["Older saved answer.", "Settings checked."]

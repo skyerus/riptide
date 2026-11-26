@@ -108,6 +108,10 @@ public struct CodexTranscriptTurn: Identifiable, Sendable {
 
     public var replyText: String? { Self.replyText(in: messages) }
 
+    public func visibleMessages(isActive: Bool) -> [CodexChatMessage] {
+        isActive ? messages : messages.filter { $0.phase != .commentary }
+    }
+
     static func replyText(in messages: [CodexChatMessage]) -> String? {
         let replies = messages.lazy.filter { $0.role == .assistant && $0.phase != .commentary && !$0.text.isEmpty }
         return (replies.first { $0.phase == .finalAnswer } ?? replies.first)?.text

@@ -24,7 +24,7 @@ MODELS = [
 ]
 
 
-async def fixture(socket, live=False):
+async def fixture(socket, live=False, watch_progress=False):
     async def send(body):
         await socket.send(json.dumps(body))
 
@@ -44,7 +44,7 @@ async def fixture(socket, live=False):
     async def conclude(text):
         nonlocal started
         await notify("item/completed", {"turnId": turn_id, "item": {
-            "id": "fixture-reply", "type": "agentMessage", "text": text,
+            "id": "fixture-reply", "type": "agentMessage", "phase": "final_answer", "text": text,
         }})
         started = False
         await notify("turn/completed", {"turn": {"id": turn_id, "status": "completed"}})
@@ -145,6 +145,8 @@ async def fixture(socket, live=False):
                 result = {"data": history}
                 if live:
                     await notify_usage()
+                    if watch_progress and params.get("limit") == 3 and approval is None:
+                        approval = asyncio.create_task(show_live_feedback())
             elif method == "turn/start" and not started:
                 started = True
                 turn_number += 1
@@ -172,12 +174,13 @@ async def fixture(socket, live=False):
             approval.cancel()
 
 
-async def run(port_file, tls=None, live=False):
+async def run(port_file, tls=None, live=False, watch_progress=False):
     def authenticate(connection, request):
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return connection.respond(HTTPStatus.UNAUTHORIZED, "Fixture credential required.\n")
 
-    async with serve(partial(fixture, live=live), "127.0.0.1", 0, process_request=authenticate, ssl=tls) as service:
+    handler = partial(fixture, live=live, watch_progress=watch_progress)
+    async with serve(handler, "127.0.0.1", 0, process_request=authenticate, ssl=tls) as service:
         port_file.write_text(str(service.sockets[0].getsockname()[1]), encoding="utf-8")
         await service.serve_forever()
 
@@ -188,6 +191,7 @@ if __name__ == "__main__":
     parser.add_argument("--tls-cert", type=Path)
     parser.add_argument("--tls-key", type=Path)
     parser.add_argument("--live", action="store_true")
+    parser.add_argument("--watch-progress", action="store_true")
     args = parser.parse_args()
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key must be used together")
@@ -195,4 +199,4 @@ if __name__ == "__main__":
     if args.tls_cert:
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(args.tls_cert, args.tls_key)
-    asyncio.run(run(args.port_file, tls, args.live))
+    asyncio.run(run(args.port_file, tls, args.live, args.watch_progress))

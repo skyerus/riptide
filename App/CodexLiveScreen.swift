@@ -16,17 +16,11 @@ struct CodexLiveScreen: View {
     @State private var receipt: String?
     @State private var output = ""
     @State private var outputEvents = 0
-    @State private var replies: [Reply] = []
+    @State private var replies = CodexTranscriptTurn(id: "")
     @State private var patch: String?
     @State private var context: ContextUsage?
     @State private var viewport = TranscriptViewport()
     @State private var editorFocused = false
-
-    private struct Reply: Identifiable {
-        let id: String
-        var text: String
-        var finished: Bool
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -64,13 +58,13 @@ struct CodexLiveScreen: View {
                         .padding(12)
                         .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                     }
-                    ForEach(replies) { reply in
-                        ChatMarkdown(source: reply.text, streaming: active && !reply.finished)
+                    ForEach(replies.visibleMessages(isActive: active)) { reply in
+                        ChatMarkdown(source: reply.text, streaming: active && reply.streaming)
                             .accessibilityIdentifier("codex-assistant-reply")
                     }
                     if let turn, let session {
                         ForEach(session.turns.drop(while: { $0.id != turn.turnID }).dropFirst()) { followUp in
-                            ForEach(followUp.messages) { message in
+                            ForEach(followUp.visibleMessages(isActive: followUp.id == session.activeTurnID)) { message in
                                 if message.role == .user {
                                     TranscriptUserMessage(text: message.text, receipt: message.receipt)
                                 } else {
@@ -162,7 +156,7 @@ struct CodexLiveScreen: View {
         receipt = nil
         output = ""
         outputEvents = 0
-        replies = []
+        replies = CodexTranscriptTurn(id: "")
         patch = nil
         context = nil
         do {
@@ -181,9 +175,9 @@ struct CodexLiveScreen: View {
                     output = String((output + text).suffix(3_000))
                     outputEvents += 1
                 case .assistantDelta(_, let itemID, let text):
-                    updateReply(itemID, text: text, appending: true)
-                case .assistantCompleted(_, let itemID, let text):
-                    updateReply(itemID, text: text, appending: false)
+                    replies.appendReply(text, id: itemID)
+                case .assistantCompleted(_, let message):
+                    replies.upsert(message)
                 case .diff(_, let update):
                     patch = update
                 case .context(_, let usage):
@@ -205,15 +199,6 @@ struct CodexLiveScreen: View {
         }
         active = false
         await peer.close()
-    }
-
-    private func updateReply(_ id: String, text: String, appending: Bool) {
-        if let index = replies.firstIndex(where: { $0.id == id }) {
-            replies[index].text = appending ? replies[index].text + text : text
-            replies[index].finished = !appending
-        } else {
-            replies.append(Reply(id: id, text: text, finished: !appending))
-        }
     }
 
     private func submitDraft(queue: Bool) {

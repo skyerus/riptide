@@ -91,6 +91,8 @@ struct WorkspaceExperienceTests {
         #expect(turn.replyText == "An interim answer.")
         turn.upsert(.init(id: "final", role: .assistant, text: "The final answer.", streaming: false, phase: .finalAnswer))
         #expect(turn.replyText == "The final answer.")
+        #expect(turn.visibleMessages(isActive: true).map(\.id) == ["progress", "partial", "final"])
+        #expect(turn.visibleMessages(isActive: false).map(\.id) == ["partial", "final"])
     }
 
     @Test func appServerStatusDistinguishesInputApprovalAndUnloaded() throws {

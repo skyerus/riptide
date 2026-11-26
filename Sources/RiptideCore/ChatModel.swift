@@ -29,6 +29,7 @@ public struct ChatEntry: Identifiable, Equatable, Sendable {
     public let id = UUID()
     public fileprivate(set) var content: Content
     public fileprivate(set) var receipt: MessageReceipt?
+    public fileprivate(set) var isAssistantProgress = false
 }
 
 public struct Transcript: Equatable, Sendable {
@@ -38,20 +39,25 @@ public struct Transcript: Equatable, Sendable {
     private var openMessage: Int?
     private var latestPromptIndex: Int?
     private var activePromptIndex: Int?
+    private var visibleProgress: Set<UUID> = []
 
     public init() {}
 
     public var latestAssistantEntryID: UUID? {
-        latestAssistantEntry?.id
+        lastMessage(includingProgress: true)?.id
     }
 
     fileprivate var latestAssistantText: String? {
-        guard let latestAssistantEntry, case .message(.assistant, let text) = latestAssistantEntry.content else { return nil }
+        guard let entry = lastMessage(includingProgress: false),
+              case .message(.assistant, let text) = entry.content else { return nil }
         return text
     }
 
-    private var latestAssistantEntry: ChatEntry? {
+    private func lastMessage(includingProgress: Bool) -> ChatEntry? {
         guard let latest = entries.last(where: {
+            if $0.isAssistantProgress {
+                return includingProgress && visibleProgress.contains($0.id)
+            }
             if case .message = $0.content { return true }
             return false
         }), case .message(.assistant, _) = latest.content else { return nil }
@@ -78,6 +84,7 @@ public struct Transcript: Equatable, Sendable {
         let activeStart = activePromptIndex ?? entries.endIndex
         return entries.enumerated().compactMap { index, entry in
             if case .tool = entry.content, !showCompletedToolCalls || index >= activeStart { return nil }
+            if entry.isAssistantProgress, !visibleProgress.contains(entry.id) { return nil }
             return entry
         }
     }
@@ -111,6 +118,7 @@ public struct Transcript: Equatable, Sendable {
 
     fileprivate mutating func finishPrompt() {
         activePromptIndex = nil
+        visibleProgress.removeAll()
     }
 
     fileprivate mutating func addSteering(_ text: String) {
@@ -138,6 +146,19 @@ public struct Transcript: Equatable, Sendable {
                let latestPromptIndex, messageIndex > latestPromptIndex {
                 markPromptSeen()
             }
+        case .assistantProgress(_, let messageID, let text):
+            let index = messageIndices[messageID] ?? entries.endIndex
+            let entry = ChatEntry(content: .message(.assistant, text), isAssistantProgress: true)
+            if index == entries.endIndex {
+                messageIndices[messageID] = index
+                entries.append(entry)
+            } else {
+                entries[index].content = entry.content
+                entries[index].isAssistantProgress = true
+            }
+            openMessage = nil
+            visibleProgress.insert(entries[index].id)
+            if let latestPromptIndex, index > latestPromptIndex, !text.isEmpty { markPromptSeen() }
         case .tool(_, let activity):
             let toolIndex: Int
             if let index = toolIndices[activity.id], case .tool(let previous) = entries[index].content {
@@ -233,6 +254,10 @@ public final class AgentChatModel {
                 else { transcript.finishPrompt() }
             case .message(_, _, .user, _) where submittingPrompt:
                 transcript.acknowledgePrompt()
+            case .assistantProgress where !working:
+                break
+            case .assistantProgress:
+                transcript.apply(event)
             case .message, .tool, .agentActivity:
                 transcript.apply(event)
             case .plan(_, let steps):
@@ -727,8 +752,9 @@ public final class AgentChatModel {
         let sessionID = event.sessionID
         if case .agentActivity = event, chats[sessionID]?.transcript.hasUnseenPrompt != true { return }
         chats[sessionID, default: ChatState()].receive(event)
-        if case .message = event { attachmentDeliveries.removeValue(forKey: event.sessionID)?() }
         switch event {
+        case .message, .assistantProgress:
+            attachmentDeliveries.removeValue(forKey: sessionID)?()
         case .turnActivity:
             recordWorkingState(sessionID)
             drainQueue(in: sessionID)

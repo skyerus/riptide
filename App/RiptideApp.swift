@@ -98,8 +98,10 @@ struct RiptideApp: App {
         let file = directory.appending(path: "\(target.id).json")
         do {
             let pairingDemo = target.id == "hermes" && AgentPairingFixture.isEnabled
+            let progressDemo = ProcessInfo.processInfo.environment["RIPTIDE_FIXTURE_ASSISTANT_PROGRESS"] == "1"
             let transport = try FixtureTransport(target: target, file: file, catalog: catalog,
-                                                historyDelay: historyDelay, pairingDemo: pairingDemo)
+                                                historyDelay: historyDelay, pairingDemo: pairingDemo,
+                                                progressDemo: progressDemo)
             return AgentChatModel(target: target, client: ACPClient(transport: transport))
         } catch {
             return AgentChatModel(target: target, unavailable: "Saved demo chats could not be opened.")
