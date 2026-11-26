@@ -15,6 +15,7 @@ import tempfile
 
 # OpenSSH permits double-quoted option values with backslash-escaped double quotes.
 OPTION = re.compile(r'[A-Za-z0-9-]+(?:="(?:\\"|\\(?!")|[^"\\\r\n])*")?')
+PROFILE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 # Only rewrite a fixed argv command. Shell expansions and compound commands keep their own semantics.
 SHELL_PIECE = re.compile(r'''[ \t\w./@%+=:,-]+|'[^'\r\n]*'|"[^"\\$`\r\n]*"''')
 
@@ -126,3 +127,24 @@ def key_command(source, key):
             and Path(prefix[0]).is_absolute() and Path(prefix[scripts[0]]).is_absolute(),
             "Expected absolute Python, ssh_acp.py and agent paths in the paired key’s forced command.")
     return line.start(1) + command.start(), line.start(1) + command.end(), prefix, scripts[0], agent
+
+
+def hermes_commands(source, hermes):
+    """Yield transfers for fixed, restricted keys running the configured Hermes launcher."""
+    records = set(re.findall(r"(?:^|[ \t])(ssh-ed25519) ([A-Za-z0-9+/=]+)(?=[ \t\r\n]|$)", source, re.M))
+    for key in records:
+        try:
+            start, end, prefix, script, agent = key_command(source, key)
+        except ValueError:
+            matched = [line for line in source.splitlines() if re.search(rf"\s{re.escape(' '.join(key))}(?:\s|$)", line)]
+            if any("ssh_acp.py" in line and str(hermes) in line for line in matched if not line.lstrip().startswith("#")):
+                raise
+            continue
+        if agent in ([str(hermes.with_name("hermes-acp"))], [str(hermes), "acp"]):
+            profile = "default"
+        elif (len(agent) == 4 and agent[0] == str(hermes) and agent[1] in ("-p", "--profile")
+              and PROFILE.fullmatch(agent[2]) and agent[3] == "acp"):
+            profile = agent[2]
+        else:
+            continue
+        yield start, end, prefix, script, agent, profile

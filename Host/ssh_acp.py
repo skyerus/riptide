@@ -230,7 +230,8 @@ def admitted(packet, workspace, pending):
     return True
 
 
-async def serve(workspace, command, browser_mcp=None, attention_socket=None, pairing_config=None, profile_state=None):
+async def serve(workspace, command, browser_mcp=None, attention_socket=None, pairing_config=None,
+                profile_state=None, attention_scope=None):
     loop = asyncio.get_running_loop()
     source = asyncio.StreamReader(limit=MAX_FRAME)
     stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
@@ -282,7 +283,10 @@ async def serve(workspace, command, browser_mcp=None, attention_socket=None, pai
                     if method == "session/prompt" and packet["params"]["sessionId"] in opened:
                         from hermes_attention import exchange
                         try:
-                            await exchange(attention_socket, {"operation": "watch", "chat": packet["params"]["sessionId"]})
+                            request = {"operation": "watch", "chat": packet["params"]["sessionId"]}
+                            if attention_scope is not None:
+                                request["scope"] = attention_scope
+                            await exchange(attention_socket, request)
                         except (OSError, ValueError, TimeoutError):
                             pass  # Alert availability must never interrupt a chat.
                 if connectors and method in ("session/new", "session/load"):
@@ -350,6 +354,7 @@ if __name__ == "__main__":
     parser.add_argument("--codex-dictation-auth", metavar="CODEX_AUTH_FILE")
     parser.add_argument("--hermes-browser-mcp", nargs=2, metavar=("PYTHON", "HERMES_SOURCE"))
     parser.add_argument("--attention-socket", type=Path)
+    parser.add_argument("--attention-profile")
     parser.add_argument("--pairing-config", type=Path)
     parser.add_argument("--agent-profile-state", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -362,19 +367,25 @@ if __name__ == "__main__":
         parser.error("An absolute pairing manifest path is required.")
     if args.attention_socket and not args.attention_socket.is_absolute():
         parser.error("An absolute notification relay socket path is required.")
+    attention_scope = None
+    if args.attention_profile is not None:
+        from ssh_pairing_files import PROFILE
+        if args.attention_socket is None or not PROFILE.fullmatch(args.attention_profile):
+            parser.error("A Hermes profile and private relay socket are required for scoped alerts.")
+        attention_scope = {"profile": args.attention_profile, "workspace": args.workspace}
     if requested == "riptide-pair-hermes":
         if args.pairing_config is None:
             print(json.dumps({"error": "This SSH pairing cannot connect additional Hermes profiles."}))
             sys.exit(1)
         from hermes_pairing import serve as serve_pairing
         sys.exit(serve_pairing(args.pairing_config, Path(__file__).resolve(),
-                               codex_dictation_auth=args.codex_dictation_auth))
+                               codex_dictation_auth=args.codex_dictation_auth, attention_socket=args.attention_socket))
     if requested == "riptide-attention":
         if args.attention_socket is None:
             print('{"ok":false}')
             sys.exit(0)
         from hermes_attention import serve_ssh
-        asyncio.run(serve_ssh(args.attention_socket))
+        asyncio.run(serve_ssh(args.attention_socket, attention_scope))
         sys.exit(0)
     if requested == "riptide-dictation":
         if args.codex_dictation_auth is None:
@@ -425,6 +436,6 @@ if __name__ == "__main__":
         browser_mcp = connector(python, source, home.resolve())
     try:
         asyncio.run(serve(args.workspace, command, browser_mcp, args.attention_socket,
-                          args.pairing_config, args.agent_profile_state))
+                          args.pairing_config, args.agent_profile_state, attention_scope))
     except (OSError, ValueError):
         parser.exit(1, "The ACP transport closed.\n")

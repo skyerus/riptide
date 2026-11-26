@@ -6,12 +6,10 @@ from dataclasses import dataclass
 from io import StringIO
 import os
 from pathlib import Path
-import re
 import stat
 
-from ssh_pairing_files import Edit, read_owned, require
+from ssh_pairing_files import Edit, PROFILE, read_owned, require
 
-PROFILE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 CHROME = Path("/usr/bin/google-chrome-stable")
 SKILL = Path("skills/riptide-browser-handoff/SKILL.md")
 
