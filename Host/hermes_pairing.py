@@ -78,7 +78,7 @@ def register_key(path, public_key, command, profile):
         Edit(path, content, (source + separator + entry + "\n").encode(), mode).apply()
 
 
-def pair(config_path, wrapper, request):
+def pair(config_path, wrapper, request, *, codex_dictation_auth=None):
     require(isinstance(request, dict) and set(request) == {"profile", "publicKey"}, "Invalid pairing request.")
     profile = request["profile"]
     raw_key = request["publicKey"]
@@ -97,10 +97,13 @@ def pair(config_path, wrapper, request):
             "Invalid on-host pairing configuration.")
     hermes = absolute_path(config["hermes"])
     keys = absolute_path(config["authorizedKeys"])
+    options = []
+    if codex_dictation_auth is not None:
+        auth = absolute_path(codex_dictation_auth)
+        options.extend(["--codex-dictation-auth", str(auth)])
     command = [str(hermes), "-p", profile, "acp"]
     key = key_identity(raw_key)
     asyncio.run(verify_chat(command, str(workspace), chat_id))
-    options = []
     if "chrome" in config:
         policy = ChromePolicy.from_config(config["chrome"])
         home = policy.profile_home(profile)
@@ -110,17 +113,17 @@ def pair(config_path, wrapper, request):
             capture_output=True, timeout=10,
         )
         require(provisioning.returncode == 0, "The host could not prepare this profile's Chrome browser.")
-        options = policy.options(home, hermes)
+        options.extend(policy.options(home, hermes))
     register_key(keys, key, [sys.executable, str(wrapper), "--workspace", str(workspace), *options, "--", *command],
                  profile)
     return {"name": name, "workspace": str(workspace), "mainSessionID": chat_id}
 
 
-def serve(config_path, wrapper):
+def serve(config_path, wrapper, *, codex_dictation_auth=None):
     try:
         frame = sys.stdin.buffer.readline(MAX_REQUEST + 1)
         require(len(frame) <= MAX_REQUEST and frame.endswith(b"\n"), "Invalid pairing request.")
-        reply = pair(config_path, wrapper, json.loads(frame))
+        reply = pair(config_path, wrapper, json.loads(frame), codex_dictation_auth=codex_dictation_auth)
     except ValueError as error:
         reply = {"error": str(error)}
     except (KeyError, TypeError, AttributeError, OSError, subprocess.TimeoutExpired):

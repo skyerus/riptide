@@ -38,8 +38,10 @@ for line in sys.stdin:
             "targets": {"accountant": {"name": "Accountant", "workspace": str(self.workspace),
                                        "mainSessionID": self.chat_id}}}))
 
-    def request(self, profile="accountant", key=None, enabled=True):
+    def request(self, profile="accountant", key=None, enabled=True, dictation_auth=None):
         flags = ["--pairing-config", str(self.routes)] if enabled else []
+        if dictation_auth is not None:
+            flags.extend(["--codex-dictation-auth", str(dictation_auth)])
         result = subprocess.run(
             [sys.executable, str(self.wrapper), "--workspace", str(self.workspace),
              *flags, "--", sys.executable],
@@ -68,7 +70,7 @@ for line in sys.stdin:
         self.assertEqual(self.request()[0].returncode, 0)
         self.assertEqual(self.keys.read_text(), authorized)
 
-    def test_future_approved_pairing_uses_its_own_chrome_profile(self):
+    def test_future_approved_pairing_inherits_dictation_and_uses_its_own_chrome_profile(self):
         config = json.loads(self.routes.read_text())
         profile = self.root / "profiles" / "accountant"
         profile.mkdir(parents=True)
@@ -82,16 +84,23 @@ for line in sys.stdin:
         config["chrome"] = {"home": str(self.root), "source": str(self.root), "python": str(browser_python)}
         self.routes.write_text(json.dumps(config))
 
-        self.assertEqual(self.request()[0].returncode, 0)
+        auth = self.root / "codex" / "auth.json"
+        self.assertEqual(self.request(dictation_auth=auth)[0].returncode, 0)
         self.assertEqual(provisioned.read_text(), str(profile))
         authorized = self.keys.read_text()
         prefix, _ = authorized.splitlines()[1].split(" ssh-ed25519 ")
-        self.assertEqual(shlex.split(prefix[len('restrict,command="'):-1]),
+        child = shlex.split(prefix[len('restrict,command="'):-1])
+        self.assertEqual(child,
             [sys.executable, str(self.wrapper), "--workspace", str(self.workspace),
+             "--codex-dictation-auth", str(auth),
              "--hermes-screen", str(profile), str(self.agent),
              "--hermes-browser-mcp", str(browser_python), str(self.root),
              "--", str(self.agent), "-p", "accountant", "acp"])
-        self.assertEqual(self.request()[0].returncode, 0)
+        probe = subprocess.run(child, input="{}\n", text=True, capture_output=True, timeout=8,
+                               env={**os.environ, "SSH_ORIGINAL_COMMAND": "riptide-dictation"})
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        self.assertEqual(json.loads(probe.stdout), {"error": "invalidAudio"})
+        self.assertEqual(self.request(dictation_auth=auth)[0].returncode, 0)
         self.assertEqual(self.keys.read_text(), authorized)
 
     def test_browser_policy_rejects_a_profile_alias(self):
