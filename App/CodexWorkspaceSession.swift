@@ -17,6 +17,8 @@ final class CodexWorkspaceSession {
     private(set) var ready = false
     private(set) var stopping = false
     private(set) var sending = false
+    private(set) var fastMode: Bool?
+    private(set) var changingFastMode = false
     private(set) var issue: String?
     private(set) var hasOlderTurns = false
     private(set) var diff: String?
@@ -58,6 +60,8 @@ final class CodexWorkspaceSession {
                     self?.setChat(created, peer: peer)
                 }
                 self?.connected(peer)
+                let discoverFastMode = Task { await peer.discoverSavedChatFastMode() }
+                defer { discoverFastMode.cancel() }
                 for try await event in peer.chatEvents {
                     guard let self, !Task.isCancelled, self.client === peer else { break }
                     self.apply(event)
@@ -79,6 +83,8 @@ final class CodexWorkspaceSession {
         activeTurnID = nil
         stopping = false
         sending = false
+        fastMode = nil
+        changingFastMode = false
         approvals = []
         responding = []
         publishAttention()
@@ -86,7 +92,7 @@ final class CodexWorkspaceSession {
     }
 
     func send(_ text: String) async -> Bool {
-        guard let client, ready, !sending, !stopping, !text.isEmpty else { return false }
+        guard let client, ready, !sending, !stopping, !changingFastMode, !text.isEmpty else { return false }
         sending = true
         issue = nil
         defer { sending = false }
@@ -96,6 +102,19 @@ final class CodexWorkspaceSession {
         } catch {
             issue = error.localizedDescription
             return false
+        }
+    }
+
+    func toggleFastMode() async {
+        guard let client, let fastMode, ready, !working, !sending, !changingFastMode else { return }
+        changingFastMode = true
+        issue = nil
+        defer { if self.client === client { changingFastMode = false } }
+        do {
+            let selected = try await client.setSavedChatFastMode(!fastMode)
+            if self.client === client { self.fastMode = selected }
+        } catch {
+            if self.client === client { issue = error.localizedDescription }
         }
     }
 
@@ -146,6 +165,8 @@ final class CodexWorkspaceSession {
         ready = false
         activeTurnID = nil
         stopping = false
+        fastMode = nil
+        changingFastMode = false
         approvals = []
         responding = []
         issue = message
@@ -193,6 +214,8 @@ final class CodexWorkspaceSession {
             publishAttention()
         case .progress(let update):
             if let activeTurnID { turns[turnIndex(for: activeTurnID)].apply(update) }
+        case .fastModeChanged(let enabled):
+            fastMode = enabled
         case .issue(let message):
             issue = message
         case .live(let update):

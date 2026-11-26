@@ -2,6 +2,25 @@ import XCTest
 
 final class WorkspaceUXUITests: XCTestCase {
     @MainActor
+    func testCodexFastModeSwitchesBetweenFastAndStandard() throws {
+        continueAfterFailure = false
+        let (app, _) = try openCodexFixture()
+        let fast = app.buttons["codex-fast-mode"]
+        XCTAssertTrue(fast.waitForExistence(timeout: 8))
+        XCTAssertEqual(fast.value as? String, "Off")
+        capture(app, as: "Codex Fast mode off")
+
+        fast.tap()
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "On"), object: fast)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed)
+        capture(app, as: "Codex Fast mode on")
+
+        fast.tap()
+        let disabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Off"), object: fast)
+        XCTAssertEqual(XCTWaiter.wait(for: [disabled], timeout: 5), .completed)
+    }
+
+    @MainActor
     func testHermesDictationCancelAndStopPreserveAnEditableDraft() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString

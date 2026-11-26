@@ -3,6 +3,54 @@ import Testing
 @testable import RiptideCore
 
 struct ACPCapabilityTests {
+    @Test func codexFastModeUsesTheThreadsNativeServiceTier() async throws {
+        let thread: JSON = ["id": "selected", "cwd": "/disposable"]
+        let transport = ScriptedTransport { request in
+            let method = request["method"]?.string
+            if method == "initialized" { return [] }
+            let id = try #require(request["id"])
+            let params = request["params"]
+            switch method {
+            case "initialize":
+                #expect(params?["capabilities"]?["experimentalApi"] == .boolean(true))
+                return [.reply(id, result: [:])]
+            case "thread/read":
+                return [.reply(id, result: ["thread": thread])]
+            case "thread/resume":
+                return [.reply(id, result: ["thread": thread, "model": "selected-model", "serviceTier": "default"])]
+            case "thread/turns/list":
+                return [.reply(id, result: ["data": .array([])])]
+            case "model/list":
+                return [.reply(id, result: ["data": .array([
+                    ["model": "selected-model", "defaultServiceTier": "priority", "serviceTiers": .array([
+                        ["id": "ultrafast", "name": "Ultrafast"], ["id": "priority", "name": "Fast"]
+                    ])]
+                ])])]
+            case "thread/settings/update":
+                let tier = try #require(params?["serviceTier"]?.string)
+                #expect(params == ["threadId": "selected", "serviceTier": .string(tier)])
+                #expect(["priority", "default"].contains(tier))
+                return [.notification("thread/settings/updated", params: [
+                    "threadId": "selected", "threadSettings": ["model": "selected-model", "serviceTier": .string(tier)]
+                ]), .reply(id, result: [:])]
+            default:
+                Issue.record("Unexpected Codex request: \(method ?? "missing")")
+                return [.failure(id, code: -32601, message: "Unexpected request")]
+            }
+        }
+        let client = CodexLiveClient(transport: transport, workspace: "/disposable")
+        _ = try await client.openSavedChat("selected")
+        await client.discoverSavedChatFastMode()
+        var events = client.chatEvents.makeAsyncIterator()
+        guard case .fastModeChanged(false) = try await events.next() else {
+            Issue.record("Expected the thread's explicit Standard setting to override the Fast model default")
+            return
+        }
+        #expect(try await client.setSavedChatFastMode(true) == true)
+        #expect(try await client.setSavedChatFastMode(false) == false)
+        await client.close()
+    }
+
     @Test func codexInputAndStopAreScopedToTheCurrentRequestAndTurn() async throws {
         let thread: JSON = ["id": "selected", "cwd": "/disposable"]
         let transport = ScriptedTransport { request in
