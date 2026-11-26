@@ -1,0 +1,37 @@
+diff --git a/gateway/session_local_mcp.py b/gateway/session_local_mcp.py
+index 9e5dc81..873ee21 100644
+--- a/gateway/session_local_mcp.py
++++ b/gateway/session_local_mcp.py
+@@ -537,8 +537,12 @@ def _riptide_mcp_scope(servers=(), connected=(), profile=None):
+         if name == 'riptide_hermes_browser':
+             if spec['args'][-1] != str(profile):
+                 continue
++            # Let Codex review each input before dispatch, using its configured approval reviewer.
++            # The original editor-owned connector has no trusted input flag.
+             settings.update(tool_timeout_sec=180, default_tools_approval_mode='approve',
+-                            enabled_tools=['computer_use', 'chrome_handoff'])
++                            args=[*spec['args'], '--codex-reviewed-input'],
++                            enabled_tools=['computer_use', 'chrome_input', 'chrome_handoff'])
++            settings['tools.chrome_input.approval_mode'] = 'prompt'
+         if name == 'riptide_agent_profile':
+             settings.update(default_tools_approval_mode='approve', enabled_tools=['set_display_name'])
+         for key, value in settings.items():
+@@ -578,7 +582,7 @@ def answer_riptide_form(params, clarify):
+     if not callable(clarify) or params.get('mode') != 'form':
+         return declined
+     server = params.get('serverName')
+-    fields_by_server = {'riptide_pairing': {'pair'}, 'riptide_hermes_browser': {'browser', 'browser_input'}}
++    fields_by_server = {'riptide_pairing': {'pair'}, 'riptide_hermes_browser': {'browser'}}
+     if server not in fields_by_server or not any(arg.startswith(f'mcp_servers.{server}.command=')
+                                      for arg in current_riptide_mcp_args()):
+         return declined
+@@ -594,8 +598,7 @@ def answer_riptide_form(params, clarify):
+         return declined
+     if field_name == 'pair' and not re.fullmatch(r'Pair Hermes profile: [a-z0-9][a-z0-9_-]{0,63}', choices[0]):
+         return declined
+-    browser_choices = {'browser': 'Browser handoff complete', 'browser_input': 'Allow Chrome input'}
+-    if field_name in browser_choices and choices[0] != browser_choices[field_name]:
++    if field_name == 'browser' and choices[0] != 'Browser handoff complete':
+         return declined
+     try:
+         reply = clarify([{'qid': 'q0', 'question': message, 'choices': choices,

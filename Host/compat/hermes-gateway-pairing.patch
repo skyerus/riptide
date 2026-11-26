@@ -97,7 +97,7 @@ index 3b255e8..7b6e6ba 100644
          return {"action": action, "content": None, "_meta": None}
 
 diff --git a/gateway/session_local_mcp.py b/gateway/session_local_mcp.py
-index b5f6b96..9e5dc81 100644
+index b5f6b96..873ee21 100644
 --- a/gateway/session_local_mcp.py
 +++ b/gateway/session_local_mcp.py
 @@ -13,11 +13,14 @@ Inside an execution it never changes.
@@ -132,7 +132,7 @@ index b5f6b96..9e5dc81 100644
          configs[name] = config
      return configs
 
-@@ -494,17 +500,111 @@ async def prepare_branch_editor(authority, ref, servers, gate):
+@@ -494,17 +500,114 @@ async def prepare_branch_editor(authority, ref, servers, gate):
              'config_secret_ref': policy.config_secret_ref}, servers
 
 
@@ -173,8 +173,12 @@ index b5f6b96..9e5dc81 100644
 +        if name == 'riptide_hermes_browser':
 +            if spec['args'][-1] != str(profile):
 +                continue
++            # Let Codex review each input before dispatch, using its configured approval reviewer.
++            # The original editor-owned connector has no trusted input flag.
 +            settings.update(tool_timeout_sec=180, default_tools_approval_mode='approve',
-+                            enabled_tools=['computer_use', 'chrome_handoff'])
++                            args=[*spec['args'], '--codex-reviewed-input'],
++                            enabled_tools=['computer_use', 'chrome_input', 'chrome_handoff'])
++            settings['tools.chrome_input.approval_mode'] = 'prompt'
 +        if name == 'riptide_agent_profile':
 +            settings.update(default_tools_approval_mode='approve', enabled_tools=['set_display_name'])
 +        for key, value in settings.items():
@@ -217,7 +221,7 @@ index b5f6b96..9e5dc81 100644
 +    if not callable(clarify) or params.get('mode') != 'form':
 +        return declined
 +    server = params.get('serverName')
-+    fields_by_server = {'riptide_pairing': {'pair'}, 'riptide_hermes_browser': {'browser', 'browser_input'}}
++    fields_by_server = {'riptide_pairing': {'pair'}, 'riptide_hermes_browser': {'browser'}}
 +    if server not in fields_by_server or not any(arg.startswith(f'mcp_servers.{server}.command=')
 +                                     for arg in current_riptide_mcp_args()):
 +        return declined
@@ -233,8 +237,7 @@ index b5f6b96..9e5dc81 100644
 +        return declined
 +    if field_name == 'pair' and not re.fullmatch(r'Pair Hermes profile: [a-z0-9][a-z0-9_-]{0,63}', choices[0]):
 +        return declined
-+    browser_choices = {'browser': 'Browser handoff complete', 'browser_input': 'Allow Chrome input'}
-+    if field_name in browser_choices and choices[0] != browser_choices[field_name]:
++    if field_name == 'browser' and choices[0] != 'Browser handoff complete':
 +        return declined
 +    try:
 +        reply = clarify([{'qid': 'q0', 'question': message, 'choices': choices,

@@ -94,7 +94,7 @@ def verify(argv):
                                 input=json.dumps(frame) + "\n", text=True, capture_output=True, timeout=12)
         require(result.returncode == 0, "The staged Chrome connector could not start.")
         tools = json.loads(result.stdout).get("result", {}).get("tools", [])
-        require({"computer_use", "chrome_handoff"} <= {tool.get("name") for tool in tools},
+        require({"computer_use", "chrome_input", "chrome_handoff"} <= {tool.get("name") for tool in tools},
                 "The staged Chrome connector is missing required tools.")
     if "--pairing-config" in argv:
         prefix = argv[:argv.index("--")]
