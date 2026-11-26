@@ -5,7 +5,9 @@ description: Give the user temporary control of the current Hermes browser when 
 
 # Browser handoff
 
-Use the native Hermes browser tool to open the requested site's genuine sign-in page in the current profile's headed browser. Keep the tab open so the user and the agent work in the same browser session.
+If the Riptide Chrome connector is available, open the requested site's genuine sign-in page with `chrome_open`, then call `chrome_handoff` with that tab ID and a short reason. After handback, use `chrome_snapshot` on the same tab. If the user opened a new tab, use `chrome_tabs` to find it.
+
+On a native Hermes session, use the native browser tool to open the site in the current profile's headed browser. Keep the tab open so the user and the agent work in the same browser session.
 
 When the user is chatting from Riptide, use the native `clarify` tool with a short question naming the site and the action the user needs to complete. Supply exactly one choice, `Browser handoff complete`. Riptide shows that clarification with **Open Hermes browser** and returns the choice when the user hands back control and continues. If the clarification is skipped, report where you stopped. If `clarify` is unavailable, ask the user to choose **Open Hermes browser** in the chat actions menu and to hand back control when finished.
 

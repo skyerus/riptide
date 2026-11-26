@@ -45,7 +45,8 @@ class SSHReleaseTests(unittest.TestCase):
         argv = [sys.executable, "-B", str(old), "--workspace", "/work tree", "--hermes-screen",
                 "/profile", "/bin/hermes", "--safari", "/relay/browser.sock", "device", "--", "/bin/agent"]
         keys = home / "authorized_keys"
-        original = f'from="192.0.2.1",restrict,command="{shlex.join(argv)}" {public_key}\r\n# keep\r\n'
+        original_command = shlex.join(argv)
+        original = f'from="192.0.2.1",restrict,command="{original_command}" {public_key}\r\n# keep\r\n'
         keys.write_bytes(original.encode())
         keys.chmod(0o600)
 
@@ -70,6 +71,14 @@ class SSHReleaseTests(unittest.TestCase):
         boundary = argv.index("--")
         argv[boundary:boundary] = ["--hermes-groups", "/profile", "/bin/hermes"]
         self.assertEqual([call.args[0] for call in verify.call_args_list], [argv, argv])
+
+        with patch("update_ssh_release.verify") as verify, redirect_stdout(io.StringIO()):
+            update(keys, fingerprint, releases, previous, revision, browser_mcp=(Path(sys.executable), home))
+            update(keys, fingerprint, releases, previous, revision, browser_mcp=(Path(sys.executable), home))
+        boundary = argv.index("--")
+        argv[boundary:boundary] = ["--hermes-browser-mcp", sys.executable, str(home)]
+        self.assertEqual([call.args[0] for call in verify.call_args_list], [argv, argv])
+        self.assertEqual(keys.read_bytes(), original.replace(original_command, shlex.join(argv)).encode())
 
     def test_versioned_update_can_enable_pairing_for_only_the_selected_key(self):
         home = Path(self.enterContext(tempfile.TemporaryDirectory()))
