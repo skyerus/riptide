@@ -43,13 +43,60 @@ struct ChatMarkdown: View {
 private struct FormattedMarkdown: View, Equatable {
     let source: String
     let streaming: Bool
+    @Environment(\.openURL) private var openURL
+    @State private var selection: ChatSourceSelection?
+    @State private var pendingURL: URL?
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.source == rhs.source && lhs.streaming == rhs.streaming
+    }
 
     var body: some View {
-        MarkdownBlocks(
-            blocks: Array(Document(parsing: source).children),
-            sourceLines: source.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline),
-            streaming: streaming
-        )
+        let blocks = Array(Document(parsing: source).children)
+        let footer = streaming ? nil : ChatSourceFooter(blocks: blocks)
+        VStack(alignment: .leading, spacing: ChatSourceSpacing.footer) {
+            MarkdownBlocks(
+                blocks: Array(blocks.dropLast(footer?.blockCount ?? 0)),
+                sourceLines: source.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline),
+                streaming: streaming,
+                footer: footer
+            )
+            .environment(\.openURL, OpenURLAction { url in
+                guard url.scheme == "riptide-citation" else {
+                    openURL(url)
+                    return .handled
+                }
+                let numbers = url.lastPathComponent.split(separator: ",").compactMap { Int($0) }
+                guard let sources = footer?.sources(numbered: numbers), !sources.isEmpty else { return .discarded }
+                selection = ChatSourceSelection(sources: sources)
+                return .handled
+            })
+
+            if let footer {
+                Button {
+                    selection = ChatSourceSelection(sources: footer.sources)
+                } label: {
+                    Label("Sources", systemImage: "link")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .controlSize(.small)
+                .tint(.secondary)
+                .accessibilityIdentifier("chat-sources")
+            }
+        }
+        .sheet(item: $selection, onDismiss: {
+            guard let pendingURL else { return }
+            self.pendingURL = nil
+            openURL(pendingURL)
+        }) { selection in
+            ChatSourcesSheet(sources: selection.sources) { url in
+                pendingURL = url
+                self.selection = nil
+            }
+        }
     }
 }
 
@@ -57,9 +104,10 @@ private struct MarkdownBlocks: View {
     let blocks: [any Markup]
     let sourceLines: [Substring]
     let streaming: Bool
+    let footer: ChatSourceFooter?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: ChatSourceSpacing.paragraph) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 if let table = block as? Markdown.Table {
                     tableView(table)
@@ -99,7 +147,7 @@ private struct MarkdownBlocks: View {
     }
 
     private func nested(_ block: any Markup) -> MarkdownBlocks {
-        MarkdownBlocks(blocks: Array(block.children), sourceLines: sourceLines, streaming: streaming)
+        MarkdownBlocks(blocks: Array(block.children), sourceLines: sourceLines, streaming: streaming, footer: footer)
     }
 
     private func list(_ block: any Markup, start: Int?) -> some View {
@@ -183,16 +231,20 @@ private struct MarkdownBlocks: View {
     }
 
     private func content(of markup: any Markup) -> String {
-        markup.children.map { $0.format() }.joined()
+        Paragraph(markup.children.compactMap { $0 as? any InlineMarkup })
+            .format().trimmingCharacters(in: .newlines)
     }
 
-    private func inline(_ value: String) -> SwiftUI.Text {
-        if let rich = try? AttributedString(
+    @ViewBuilder
+    private func inline(_ value: String) -> some View {
+        let rich = (try? AttributedString(
             markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            SwiftUI.Text(ChatLinks.styled(rich))
+        )) ?? AttributedString(value)
+        let styled = ChatLinks.styled(rich)
+        if let footer {
+            footer.citing(styled).textRenderer(ChatCitationRenderer())
         } else {
-            SwiftUI.Text(ChatLinks.styled(AttributedString(value)))
+            SwiftUI.Text(styled)
         }
     }
 }
