@@ -145,6 +145,28 @@ Hermes' native runtime uses MCP form elicitation. For Hermes chats running throu
 
 For a gateway-managed Hermes chat, [the reconnect status patch](Host/compat/hermes-acp-turn-status.patch) lets Riptide recover the **Working** indicator from the same chat when SSH reconnects. Apply the patch from the Riptide release to the Hermes source at revision `8fc0374447313e276f6b9a2764bfc750190c966a`. Run `git apply --check /path/to/riptide/Host/compat/hermes-acp-turn-status.patch` before applying it with `git apply`. The next SSH connection starts a fresh ACP process and picks up the patch. Use `git apply -R` with the same patch to roll back. The patch can be applied alongside the Hermes Safari and ACP steering compatibility patches.
 
+### Codex approvals for Hermes profiles
+
+To use Codex's sandbox and **Approve for me** on a Hermes host, set these defaults in the host's Codex `config.toml`.
+
+```toml
+default_permissions = ":workspace"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+```
+
+Run the deployment script from the exact Riptide release as the owner of the Hermes profiles. Use Python 3.11 or newer with `ruamel.yaml` from the Hermes environment. Run once to inspect the plan, then add `--apply`. The script preserves each configured launcher and lets profiles without one inherit the default profile's launcher. Hermes copies the model block when it seeds or clones a profile, so new profiles inherit the runtime and launcher.
+
+```sh
+python -B Host/configure_hermes_codex.py \
+  --hermes-home /absolute/hermes/default-profile \
+  --codex-config /absolute/codex/config.toml \
+  --codex-bin /absolute/path/to/codex
+systemctl reload hermes-gateway.service
+```
+
+Reload the gateway after applying the configuration so existing sessions rebuild with the selected runtime. For a service configured to drain before reload, wait for it to return to ready before checking the paired chats. Codex handles shell and file tools, including auto-review for eligible permission requests. Riptide's pairing and Safari handoff continue through their scoped MCP adapters.
+
 ### Hermes browser handoff over SSH
 
 Configure native [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) in the Hermes profile that owns the chat. Install its listed Linux packages, set `browser.headed` and `bot_desktop.auto_start` to `true`, and install the `websockets` Python package for the interpreter in the forced command. Install `Host/hermes_screen.py` and `Host/hermes_mobile.py` beside the updated `Host/ssh_acp.py` at the same trusted path. Add `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` before `--` in the authorized key’s fixed command. Give this option only to devices trusted to control that profile’s native desktop.
