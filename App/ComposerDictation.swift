@@ -37,8 +37,8 @@ struct MessageComposer<Options: View, Actions: View>: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ComposerAttachmentStrip(attachments: $attachments)
                     ComposerEditor(text: $draft, focused: $focused, prompt: prompt,
-                                   identifier: editorIdentifier, enabled: editorEnabled) { provider in
-                        if canAttach { clipboard.append(provider) }
+                                   identifier: editorIdentifier, enabled: editorEnabled) { providers in
+                        if canAttach { clipboard.append(contentsOf: providers) }
                     }
                     .overlay(alignment: .topLeading) {
                         if draft.isEmpty {

@@ -11,17 +11,27 @@ final class WorkspaceUXUITests: XCTestCase {
         let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 8))
 
-        UIPasteboard.general.string = "Please review"
         editor.tap()
-        editor.typeKey("v", modifierFlags: .command)
-        XCTAssertEqual(editor.value as? String, "Please review")
+        func pasteFromEditMenu() {
+            editor.press(forDuration: 0.65)
+            let paste = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label == %@", "Paste")).firstMatch
+            XCTAssertTrue(paste.waitForExistence(timeout: 5), app.debugDescription)
+            paste.tap()
+        }
+
+        UIPasteboard.general.string = "Please review"
+        pasteFromEditMenu()
+        let textPasted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Please review"),
+                                                   object: editor)
+        XCTAssertEqual(XCTWaiter.wait(for: [textPasted], timeout: 5), .completed, app.debugDescription)
 
         let image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
             UIColor.systemTeal.setFill()
             context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
         }
         UIPasteboard.general.image = image
-        editor.typeKey("v", modifierFlags: .command)
+        pasteFromEditMenu()
         XCTAssertTrue(app.buttons["remove-attachment"].firstMatch.waitForExistence(timeout: 8))
 
         let document = NSItemProvider()
@@ -31,7 +41,7 @@ final class WorkspaceUXUITests: XCTestCase {
             return nil
         }
         UIPasteboard.general.setItemProviders([document], localOnly: true, expirationDate: nil)
-        editor.typeKey("v", modifierFlags: .command)
+        pasteFromEditMenu()
         let file = app.staticTexts["Fixture report.pdf"]
         XCTAssertTrue(file.waitForExistence(timeout: 8), app.debugDescription)
         XCTAssertEqual(app.buttons.matching(identifier: "remove-attachment").count, 2)

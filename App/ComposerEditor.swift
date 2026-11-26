@@ -8,10 +8,10 @@ struct ComposerEditor: UIViewRepresentable {
     let prompt: String
     let identifier: String
     let enabled: Bool
-    let pasteAttachments: (NSItemProvider) -> Void
+    let pasteAttachments: ([NSItemProvider]) -> Void
 
-    func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
+    func makeUIView(context: Context) -> PasteTextView {
+        let view = PasteTextView()
         view.backgroundColor = .clear
         view.textColor = UIColor(ChatTheme.ink)
         view.tintColor = UIColor(ChatTheme.ink)
@@ -23,14 +23,13 @@ struct ComposerEditor: UIViewRepresentable {
         view.accessibilityIdentifier = identifier
         view.accessibilityLabel = prompt
         view.delegate = context.coordinator
-        view.pasteDelegate = context.coordinator
-        view.pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.item.identifier])
         return view
     }
 
-    func updateUIView(_ view: UITextView, context: Context) {
+    func updateUIView(_ view: PasteTextView, context: Context) {
         let coordinator = context.coordinator
         coordinator.editor = self
+        view.pasteAttachments = pasteAttachments
         if view.text != text, view.markedTextRange == nil { view.text = text }
         view.isEditable = enabled
         guard view.isFirstResponder != (enabled && focused) else { return }
@@ -44,7 +43,7 @@ struct ComposerEditor: UIViewRepresentable {
         }
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PasteTextView, context: Context) -> CGSize? {
         guard let width = proposal.width, let lineHeight = uiView.font?.lineHeight else { return nil }
         let measured = uiView.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
         return CGSize(width: width, height: min(ceil(lineHeight * 6), max(ceil(lineHeight), measured.height)))
@@ -52,7 +51,7 @@ struct ComposerEditor: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(editor: self) }
 
-    final class Coordinator: NSObject, UITextViewDelegate, UITextPasteDelegate {
+    final class Coordinator: NSObject, UITextViewDelegate {
         var editor: ComposerEditor
 
         init(editor: ComposerEditor) { self.editor = editor }
@@ -66,22 +65,58 @@ struct ComposerEditor: UIViewRepresentable {
 
         func textViewDidEndEditing(_ textView: UITextView) { editor.focused = false }
 
-        func textPasteConfigurationSupporting(_ supporting: any UITextPasteConfigurationSupporting,
-                                              transform item: any UITextPasteItem) {
-            let provider = item.itemProvider
-            if ClipboardAttachment.type(in: provider) != nil {
-                editor.pasteAttachments(provider)
-                item.setNoResult()
-            } else {
-                item.setDefaultResult()
+        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
+                      suggestedActions: [UIMenuElement]) -> UIMenu? {
+            guard textView.isEditable, ClipboardAttachment.isOnPasteboard,
+                  !suggestedActions.contains(where: Self.isPasteAction) else { return nil }
+            let paste = UIAction(title: "Paste", image: UIImage(systemName: "doc.on.clipboard")) { [weak textView] _ in
+                textView?.paste(nil)
             }
+            return UIMenu(children: [paste] + suggestedActions)
+        }
+
+        private static func isPasteAction(_ element: UIMenuElement) -> Bool {
+            if let command = element as? UICommand { return command.action == #selector(UIResponder.paste(_:)) }
+            if let menu = element as? UIMenu { return menu.children.contains(where: isPasteAction) }
+            return false
+        }
+    }
+
+    final class PasteTextView: UITextView {
+        var pasteAttachments: (([NSItemProvider]) -> Void)?
+
+        override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+            if action == #selector(paste(_:)), isEditable, ClipboardAttachment.isOnPasteboard { return true }
+            return super.canPerformAction(action, withSender: sender)
+        }
+
+        override func paste(_ sender: Any?) {
+            guard isEditable else { return }
+            let clipboard = UIPasteboard.general
+            guard ClipboardAttachment.isOnPasteboard || clipboard.numberOfItems > 1 else { return super.paste(sender) }
+
+            let providers = clipboard.itemProviders
+            let attachments = providers.filter { ClipboardAttachment.type(in: $0) != nil }
+            guard !attachments.isEmpty else { return super.paste(sender) }
+            pasteAttachments?(attachments)
+
+            let textItems = providers.filter { ClipboardAttachment.type(in: $0) == nil }
+            if !textItems.isEmpty { super.paste(itemProviders: textItems) }
         }
     }
 }
 
+@MainActor
 enum ClipboardAttachment {
-    static func type(in provider: NSItemProvider) -> UTType? {
-        let types = provider.registeredTypeIdentifiers.compactMap(UTType.init)
+    static var isOnPasteboard: Bool {
+        let clipboard = UIPasteboard.general
+        return clipboard.hasImages || type(from: clipboard.types) != nil
+    }
+
+    static func type(in provider: NSItemProvider) -> UTType? { type(from: provider.registeredTypeIdentifiers) }
+
+    private static func type(from identifiers: [String]) -> UTType? {
+        let types = identifiers.compactMap(UTType.init)
         if let image = types.first(where: { $0.conforms(to: .image) }) { return image }
         let file = types.first { $0.conforms(to: .data) && !$0.conforms(to: .text) && !$0.conforms(to: .url) }
         if types.contains(.fileURL) { return file == nil || file == .data ? .fileURL : file }
