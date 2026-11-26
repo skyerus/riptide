@@ -40,7 +40,7 @@ struct HermesScreen: View {
                                             ProgressView()
                                         } else {
                                             ContentUnavailableView(
-                                                "Browser is closed", systemImage: "safari",
+                                                "Browser is closed", systemImage: "globe",
                                                 description: Text("Tap Take over to open Hermes’s browser.")
                                             )
                                         }
