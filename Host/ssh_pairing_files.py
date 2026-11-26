@@ -2,7 +2,6 @@
 """Read and update owner-controlled files and restricted SSH key commands."""
 
 from dataclasses import dataclass
-import hashlib
 import os
 from pathlib import Path
 import re
@@ -34,24 +33,12 @@ def read_owned(path):
     return path.read_bytes(), mode
 
 
-def private_directory(path):
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    info = path.lstat()
-    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077,
-            f"Use a directory owned by this user with mode 0700 at {path}.")
-
-
 @dataclass
 class Edit:
     path: Path
     before: bytes | None
     after: bytes
     mode: int
-
-    @classmethod
-    def prepare(cls, path, after, mode=0o600):
-        before, current_mode = read_owned(path)
-        return cls(path, before, after, current_mode if before is not None else mode)
 
     def replace(self, expected, content):
         require(read_owned(self.path)[0] == expected, f"{self.path} changed during the update. Retry.")
@@ -83,8 +70,7 @@ def key_identity(public_key):
     valid = subprocess.run(["ssh-keygen", "-lf", "-"], input=" ".join(key) + "\n",
                            text=True, capture_output=True)
     require(valid.returncode == 0, "The Riptide SSH public key is invalid.")
-    # This ID is routing metadata, stable across reinstalls and different for every key.
-    return key, hashlib.sha256(key[1].encode()).hexdigest()[:32]
+    return key
 
 
 def key_command(source, key):

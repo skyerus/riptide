@@ -109,7 +109,7 @@ def pair(config_path, wrapper, request):
     hermes = absolute_path(config["hermes"])
     keys = absolute_path(config["authorizedKeys"])
     command = [str(hermes), "-p", profile, "acp"]
-    key, _ = key_identity(raw_key)
+    key = key_identity(raw_key)
     asyncio.run(verify_chat(command, str(workspace), chat_id))
     register_key(keys, key, [sys.executable, str(wrapper), "--workspace", str(workspace), "--", *command], profile)
     return {"name": name, "workspace": str(workspace), "mainSessionID": chat_id}
