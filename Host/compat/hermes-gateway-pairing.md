@@ -1,14 +1,14 @@
-# Riptide pairing in gateway-managed Hermes chats
+# Riptide tools in gateway-managed Hermes chats
 
-The Riptide SSH release attaches a standard MCP stdio server when the device's forced command has `--pairing-config`. Hermes' native runtime uses the gateway's existing tool and form handling. The Codex App Server adapter forwards the same scoped server and presents its pairing form through the live ACP approval channel. Both routes use the **Connect agent** card available since iOS build 15.
+The Riptide SSH release attaches the configured pairing, agent display name, and Chrome tools to the trusted ACP connection. The gateway forwards those tools to the chat’s Codex App Server and brings a tool’s consent or handoff form back to the same chat. Chrome access requires an exact match to the chat’s Hermes profile.
 
-The Codex runtime must allow interactive MCP form requests. The adapter targets Hermes `8fc0374447313e276f6b9a2764bfc750190c966a` and applies on top of [the existing Safari gateway patch](hermes-gateway-safari.md). With the Safari patch present, verify and apply the pairing patch from the Hermes checkout.
+The patches target Hermes revision `8fc0374447313e276f6b9a2764bfc750190c966a`. On a clean checkout of that revision, run:
 
 ```sh
-git apply --check /absolute/riptide/Host/compat/hermes-gateway-pairing.patch
-git apply /absolute/riptide/Host/compat/hermes-gateway-pairing.patch
+git apply --check /absolute/riptide/Host/compat/hermes-gateway-pairing.patch /absolute/riptide/Host/compat/hermes-native-chrome.patch /absolute/riptide/Host/compat/hermes-codex-computer-use-images.patch
+git apply /absolute/riptide/Host/compat/hermes-gateway-pairing.patch /absolute/riptide/Host/compat/hermes-native-chrome.patch /absolute/riptide/Host/compat/hermes-codex-computer-use-images.patch
 ```
 
-Stage the matching Riptide Host release and use `Host/update_ssh_release.py` with the paired key's existing manifest. Reload the Hermes gateway and reopen the Riptide chat after its current turn finishes so Hermes can bind the refreshed tools. Ask to connect a configured profile in each runtime, and check that Skip leaves the profile unpaired and that Connect agent opens its main chat from Agents.
+For hosts running the earlier Riptide Safari, pairing, agent-name and draft VPS Chrome patches together, apply `hermes-gateway-retire-safari.patch` `hermes-native-chrome.patch`, and `hermes-codex-computer-use-images.patch` in place. For other combinations, reverse the installed versions of the connector patches and apply the consolidated pairing patch. Check each patch with `git apply --check` first.
 
-To roll back, restore the prior SSH release, reverse the pairing patch with `git apply -R` and reload the gateway.
+Stage the matching Riptide Host release, configure the trusted pairing and reconnect after reloading the gateway. For installed Safari connectors, update all affected SSH keys to remove their legacy options, then run `Host/deploy/retire-hermes-safari.py` using Hermes’s Python environment to restore the original Codex executable and remove the obsolete MCP entries from the affected profiles. Disable the obsolete relay services after verifying the migrated chats. Keep the previous versioned release and config backups for rollback.

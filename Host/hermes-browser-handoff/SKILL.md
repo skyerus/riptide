@@ -1,12 +1,12 @@
 ---
 name: riptide-browser-handoff
-description: Give the user temporary control of the current Hermes browser when they ask to sign in or a browser task reaches a login or two-factor step.
+description: Browse in the shared Hermes Chrome window and hand it to the user for sign-in, verification, or other manual steps.
 ---
 
-# Browser handoff
+# Chrome handoff
 
-Use the native Hermes browser tool to open the requested site's genuine sign-in page in the current profile's headed browser. Keep the tab open so the user and the agent work in the same browser session.
+Use the paired `computer_use` tool to capture and operate Chrome on the Hermes desktop. Use Chrome’s address bar to navigate, and capture the window again before acting on its new state.
 
-When the user is chatting from Riptide, use the native `clarify` tool with a short question naming the site and the action the user needs to complete. Supply exactly one choice, `Browser handoff complete`. Riptide shows that clarification with **Open Hermes browser** and returns the choice when the user hands back control and continues. If the clarification is skipped, report where you stopped. If `clarify` is unavailable, ask the user to choose **Open Hermes browser** in the chat actions menu and to hand back control when finished.
+When a task reaches a password, two-factor code, or other manual step, use `chrome_handoff` in Riptide. Name the site and the step. The user can select **Open Hermes browser**, tap **Take over**, complete the step in Chrome, and tap **Hand back**. Wait for the result, then capture the same window and continue. If the handoff is cancelled, report where you stopped.
 
-The user enters credentials and two-factor codes directly in the site. Keep credentials out of chat, tool inputs, and stored notes. After handback, inspect the same tab, verify the account or workspace if relevant, and continue the requested task.
+The user enters credentials directly in Chrome. Keep credentials out of chat, tool inputs, and stored notes.

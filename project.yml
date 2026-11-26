@@ -27,8 +27,6 @@ targets:
         buildPhase: resources
     dependencies:
       - package: RiptideCore
-      - target: RiptideSafari
-        embed: true
       - package: SwiftMarkdown
         product: Markdown
       - package: WebRTC
@@ -53,24 +51,6 @@ targets:
         Release:
           RIPTIDE_PUSH_ENTITLEMENTS: App/RiptidePush.entitlements
           RIPTIDE_PUSH_ENVIRONMENT: production
-  RiptideSafari:
-    type: app-extension
-    platform: iOS
-    sources:
-      - path: SafariExtension
-        excludes: [Info.plist, RiptideSafari.entitlements]
-    dependencies:
-      - package: RiptideCore
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.riptide.client.safari
-        INFOPLIST_FILE: SafariExtension/Info.plist
-        GENERATE_INFOPLIST_FILE: YES
-        APPLICATION_EXTENSION_API_ONLY: YES
-        CODE_SIGN_ENTITLEMENTS: SafariExtension/RiptideSafari.entitlements
-        TARGETED_DEVICE_FAMILY: "1"
-        SKIP_INSTALL: YES
-        SWIFT_VERSION: "6.0"
   RiptideUITests:
     type: bundle.ui-testing
     platform: iOS

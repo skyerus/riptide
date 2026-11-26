@@ -9,15 +9,12 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import subprocess
 import sys
 import time
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import websockets
-
-from hermes_mobile import MobileView
 
 
 MAX_LINE = 128 * 1024
@@ -116,25 +113,10 @@ class BrowserWindow:
             raise ScreenError("Hermes has no browser launcher for this profile.")
         return launcher
 
-    def debug_profile(self):
-        try:
-            for line in self.launcher().read_text().splitlines():
-                if line.startswith("Exec="):
-                    argv = shlex.split(line.removeprefix("Exec=").replace(r"\\", "\\"))
-                    profiles = [Path(arg.removeprefix("--user-data-dir="))
-                                for arg in argv if arg.startswith("--user-data-dir=")]
-                    if len(profiles) == 1 and profiles[0].is_absolute():
-                        return profiles[0]
-        except (ScreenError, OSError, ValueError):
-            return None
-
-    def process_id(self):
-        active = self.active_browser()
-        if active:
-            property_value = self.properties("-id", hex(active[0]), "_NET_WM_PID")
-            match = re.fullmatch(r"_NET_WM_PID\(CARDINAL\) = (\d+)\s*", property_value)
-            if match:
-                return int(match[1])
+    def process_id(self, window):
+        property_value = self.properties("-id", hex(window), "_NET_WM_PID")
+        match = re.fullmatch(r"_NET_WM_PID\(CARDINAL\) = (\d+)\s*", property_value)
+        return int(match[1]) if match else None
 
     def is_maximized(self):
         active = self.active_browser()
@@ -241,7 +223,6 @@ class Display:
         self.stream = None
         self.home = home
         self.browser = None
-        self.mobile = MobileView()
 
     async def call(self, method, **params):
         self.request_id += 1
@@ -297,12 +278,8 @@ class Display:
                     await self.frame_browser(self.browser.maximize)
                     if not await self.wait_for_browser(self.browser.is_maximized, 2):
                         raise ScreenError("Hermes could not fit the browser to this screen.")
-                    pid = await self.frame_browser(self.browser.process_id)
-                    profile = await self.frame_browser(self.browser.debug_profile)
-                    mobile = profile is not None and pid is not None and await self.mobile.start(pid, profile)
-                    report("fitted", mobile=mobile)
+                    report("fitted")
             elif command == {"command": "release"}:
-                await self.mobile.close()
                 await self.restore_browser()
                 result = await self.call("display.lease.release", viewer_id=self.viewer)
                 report("released", in_use=result["lease"]["holder"] == "human",
@@ -373,7 +350,6 @@ async def serve(hermes, home):
                 for task in done:
                     task.result()
             finally:
-                await display.mobile.close()
                 if display.browser.window is not None:
                     try:
                         async with asyncio.timeout(2):

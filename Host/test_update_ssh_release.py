@@ -8,8 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from install_safari import HOST, PAYLOAD
-from update_ssh_release import stage, update, verify
+from update_ssh_release import HOST, PAYLOAD, stage, update, verify
 
 
 class SSHReleaseTests(unittest.TestCase):
@@ -58,8 +57,11 @@ class SSHReleaseTests(unittest.TestCase):
             update(keys, fingerprint, releases, previous, revision)
             update(keys, fingerprint, releases, previous, revision)
         argv[2] = str(new)
+        index = argv.index("--safari")
+        del argv[index:index + 3]
         self.assertEqual([call.args[0] for call in verify.call_args_list], [argv, argv])
-        self.assertEqual(keys.read_bytes(), original.replace(str(old), str(new)).encode())
+        expected = original.replace(str(old), str(new)).replace(" --safari /relay/browser.sock device", "")
+        self.assertEqual(keys.read_bytes(), expected.encode())
         self.assertEqual(keys.stat().st_mode & 0o777, 0o600)
         for name in PAYLOAD:
             self.assertEqual((new.parent / name).read_bytes(), (HOST / name).read_bytes())
@@ -94,6 +96,28 @@ class SSHReleaseTests(unittest.TestCase):
         self.assertLess(command.index("--pairing-config"), command.index("--"))
         self.assertTrue(keys.read_text().endswith("# do not change\n"))
 
+
+    def test_new_screen_and_computer_use_are_enabled_together_for_the_selected_key(self):
+        home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        phone = home / "phone"
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(phone)], check=True)
+        public_key = phone.with_suffix(".pub").read_text().strip()
+        fingerprint = subprocess.check_output(["ssh-keygen", "-lf", str(phone.with_suffix(".pub"))],
+                                              text=True).split()[1]
+        releases = home / "releases"
+        releases.mkdir()
+        previous, revision = "a" * 40, "b" * 40
+        old = releases / previous / "Host" / "ssh_acp.py"
+        command = [sys.executable, str(old), "--workspace", "/work", "--", "/bin/agent"]
+        keys = home / "authorized_keys"
+        keys.write_text(f'restrict,command="{shlex.join(command)}" {public_key}\n')
+        expected = ["--hermes-screen", str(home.resolve()), sys.executable,
+                    "--hermes-browser-mcp", sys.executable, str(home)]
+        with patch("update_ssh_release.verify") as verified, redirect_stdout(io.StringIO()):
+            for _ in range(2):
+                update(keys, fingerprint, releases, previous, revision,
+                       browser_mcp=(Path(sys.executable), home), hermes_screen=(home, Path(sys.executable)))
+        self.assertEqual([call.args[0][4:-2] for call in verified.call_args_list], [expected, expected])
 
     def test_versioned_update_enables_name_tool_for_a_pairing_without_a_screen(self):
         home = Path(self.enterContext(tempfile.TemporaryDirectory()))

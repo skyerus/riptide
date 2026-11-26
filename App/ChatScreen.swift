@@ -22,7 +22,6 @@ struct ChatScreen: View {
     @State private var connectingHermes: UUID?
     @State private var hermesPairingAttempt: HermesPairingAttempt?
     @State private var composerFocused = false
-    @State private var safariApproval = SafariChatApproval()
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -162,12 +161,6 @@ struct ChatScreen: View {
         .sheet(isPresented: $showChats) {
             ChatPicker(model: model, openClaw: voiceRemote?.kind == .openClaw)
         }
-        .task(id: chatKey) {
-            safariApproval.restore(agentID: voiceRemote?.id, chatID: chatKey.chat)
-        }
-        .onChange(of: model.selectedID) {
-            safariApproval.cancelTurn()
-        }
         .sheet(isPresented: $pairingVoice) {
             if let voiceRemote, let remoteStore { PairNativeVoiceScreen(remote: voiceRemote, store: remoteStore) }
         }
@@ -230,46 +223,8 @@ struct ChatScreen: View {
         .task(id: disconnectedChat) {
             if let disconnectedChat { await model.open(disconnectedChat.chat) }
         }
-        .onChange(of: scenePhase) {
-            if scenePhase != .active { safariApproval.cancelTurn() }
-        }
         .onDisappear {
-            safariApproval.cancelTurn()
             workspace.leave(chatKey)
-        }
-    }
-
-    private var safariAgent: SafariSSHAgent? {
-        guard let profile = voiceRemote, let credential = remoteStore?.bearer(for: profile) else { return nil }
-        return SafariSSHAgent(profile: profile, credential: credential)
-    }
-
-    private func openAgentLink(_ url: URL) {
-        guard url.scheme?.lowercased() == "https", let agent = safariAgent else {
-            openURL(url)
-            return
-        }
-        let chatID = model.selectedID
-        Task {
-            let launch = await safariApproval.launchURL(for: url, agent: agent, chatID: chatID) {
-                model.selectedID == chatID
-            }
-            guard model.selectedID == chatID else { return }
-            openURL(launch ?? url)
-        }
-    }
-
-    private func sendMessage(_ text: String, attachments: [ChatAttachment], onSent: (@MainActor () -> Void)?) -> Bool {
-        guard safariApproval.pending != nil, let agent = safariAgent else {
-            return model.submit(text, attachments: attachments, onSent: onSent)
-        }
-        let chatID = model.selectedID
-        return model.submit(text, attachments: attachments, onSent: onSent) {
-            await safariApproval.prepareTurn(agent: agent, chatID: chatID, stillInChat: {
-                model.selectedID == chatID && !model.selected.stopping
-            }, turnWorking: {
-                model.selected.working
-            }, resume: { openURL($0) })
         }
     }
 
@@ -287,9 +242,9 @@ struct ChatScreen: View {
                 if await model.steer(message.text, in: chat.chat) { message.clear() }
             }
         } else if message.attachments.isEmpty {
-            if sendMessage(message.text, attachments: [], onSent: nil) { message.clear() }
+            if model.submit(message.text) { message.clear() }
         } else {
-            _ = sendMessage(message.text, attachments: message.attachments, onSent: message.clear)
+            _ = model.submit(message.text, attachments: message.attachments, onSent: message.clear)
         }
     }
 
@@ -331,14 +286,6 @@ struct ChatScreen: View {
                             .padding(.horizontal, 16)
                             .padding(.top, 4)
                             .accessibilityIdentifier("chat-steering-status")
-                    }
-                    if let error = safariApproval.errorMessage {
-                        Text(error)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 4)
-                            .accessibilityIdentifier("safari-chat-status")
                     }
                     ChatComposer(
                         prompt: prompt,
@@ -432,7 +379,7 @@ struct ChatScreen: View {
                             source: text,
                             streaming: model.selected.working && !transcriptEndsWithRunningTool &&
                                 model.selected.transcript.latestAssistantEntryID == entry.id,
-                            openLink: openAgentLink
+                            openLink: { openURL($0) }
                         )
                     case .tool(let activity):
                         toolRow(activity)

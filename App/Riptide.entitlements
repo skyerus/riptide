@@ -5,7 +5,6 @@
     <key>keychain-access-groups</key>
     <array>
         <string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-        <string>$(AppIdentifierPrefix)app.riptide.client.safari-pairing</string>
     </array>
 </dict>
 </plist>

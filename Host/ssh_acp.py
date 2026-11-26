@@ -230,7 +230,7 @@ def admitted(packet, workspace, pending):
     return True
 
 
-async def serve(workspace, command, safari_mcp=None, attention_socket=None, pairing_config=None, profile_state=None):
+async def serve(workspace, command, browser_mcp=None, attention_socket=None, pairing_config=None, profile_state=None):
     loop = asyncio.get_running_loop()
     source = asyncio.StreamReader(limit=MAX_FRAME)
     stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
@@ -242,7 +242,7 @@ async def serve(workspace, command, safari_mcp=None, attention_socket=None, pair
     except BaseException:
         stdin.close()
         raise
-    connectors = [safari_mcp] if safari_mcp else []
+    connectors = [browser_mcp] if browser_mcp else []
     if pairing_config is not None:
         connectors.append({
             "name": "riptide_pairing", "command": sys.executable,
@@ -342,38 +342,13 @@ async def serve(workspace, command, safari_mcp=None, attention_socket=None, pair
                 await agent.wait()
 
 
-async def serve_safari(socket_path, device):
-    from safari_bridge import MAX_BODY, RelayError, browser_call
-
-    loop = asyncio.get_running_loop()
-    source = asyncio.StreamReader(limit=MAX_BODY)
-    stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
-    try:
-        while line := await asyncio.wait_for(source.readline(), 45):
-            request = json.loads(line)
-            if not isinstance(request, dict) or set(request) != {"operation", "body"} or not isinstance(
-                    request["operation"], str) or not isinstance(request["body"], dict):
-                raise ValueError("Invalid Safari request.")
-            try:
-                body = await asyncio.to_thread(
-                    browser_call, Path(socket_path), device, request["operation"], request["body"])
-                response = {"status": 200, "body": body}
-            except RelayError as exc:
-                response = {"status": exc.status, "body": {"error": str(exc)}}
-            sys.stdout.buffer.write(json.dumps(response, ensure_ascii=False, allow_nan=False).encode() + b"\n")
-            sys.stdout.buffer.flush()
-    finally:
-        stdin.close()
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Narrow a dedicated OpenSSH key to Riptide’s ACP client.")
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--hermes-groups", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
     parser.add_argument("--hermes-screen", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
     parser.add_argument("--codex-dictation-auth", metavar="CODEX_AUTH_FILE")
-    parser.add_argument("--safari", nargs=2, metavar=("BROWSER_SOCKET", "DEVICE_ID"))
-    parser.add_argument("--safari-mcp-python", metavar="PYTHON")
+    parser.add_argument("--hermes-browser-mcp", nargs=2, metavar=("PYTHON", "HERMES_SOURCE"))
     parser.add_argument("--attention-socket", type=Path)
     parser.add_argument("--pairing-config", type=Path)
     parser.add_argument("--agent-profile-state", type=Path)
@@ -409,20 +384,6 @@ if __name__ == "__main__":
         from codex_dictation import serve_ssh
         asyncio.run(serve_ssh(args.codex_dictation_auth))
         sys.exit(0)
-    if requested == "riptide-safari":
-        if args.safari is None:
-            print(json.dumps({"status": 403, "body": {"error": "This SSH key has no Safari relay enabled."}}))
-            sys.exit(1)
-        socket_path, device = args.safari
-        if not os.path.isabs(socket_path):
-            parser.error("An absolute Safari relay socket is required.")
-        try:
-            asyncio.run(serve_safari(socket_path, device))
-        except (TimeoutError, asyncio.TimeoutError):
-            pass
-        except (OSError, ValueError):
-            parser.exit(1, "The Safari transport closed.\n")
-        sys.exit(0)
     if requested == "riptide-hermes-groups":
         if args.hermes_groups is None:
             print(json.dumps({"error": {"code": -32601, "message": "Group chats are not enabled for this SSH pairing."}}))
@@ -451,21 +412,18 @@ if __name__ == "__main__":
         except OSError:
             parser.exit(1, "The private file transport closed.\n")
         sys.exit(0)
-    safari_mcp = None
-    if args.safari_mcp_python:
-        socket_path = Path(args.safari[0]) if args.safari else None
-        if socket_path is None or not socket_path.is_absolute() or socket_path.name != "browser.sock":
-            parser.error("--safari-mcp-python requires --safari with an absolute browser.sock path.")
-        if not os.path.isabs(args.safari_mcp_python):
-            parser.error("An absolute Safari MCP Python path is required.")
-        safari_mcp = {
-            "name": "riptide_safari",
-            "command": args.safari_mcp_python,
-            "args": [str(Path(__file__).resolve().with_name("safari_mcp.py")), "--state-dir", str(socket_path.parent)],
-            "env": [],
-        }
+    browser_mcp = None
+    if args.hermes_browser_mcp:
+        python, source = map(Path, args.hermes_browser_mcp)
+        if args.hermes_screen is None or not python.is_absolute() or not source.is_absolute() or not source.is_dir():
+            parser.error("The Chrome connector requires --hermes-screen and the absolute Hermes Python and source paths.")
+        home = Path(args.hermes_screen[0])
+        if not home.is_absolute() or not home.is_dir():
+            parser.error("Use an existing absolute Hermes screen profile.")
+        from hermes_browser_mcp import connector
+        browser_mcp = connector(python, source, home.resolve())
     try:
-        asyncio.run(serve(args.workspace, command, safari_mcp, args.attention_socket,
+        asyncio.run(serve(args.workspace, command, browser_mcp, args.attention_socket,
                           args.pairing_config, args.agent_profile_state))
     except (OSError, ValueError):
         parser.exit(1, "The ACP transport closed.\n")

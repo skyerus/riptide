@@ -1,9 +1,15 @@
 """Minimal JSON-RPC stdio transport for Riptide host tools."""
 
+from dataclasses import dataclass
 import json
 from uuid import uuid4
 
 MAX_FRAME = 64 * 1024
+
+
+@dataclass
+class ToolContent:
+    content: list[dict]
 
 
 class MCPServer:
@@ -59,7 +65,10 @@ class MCPServer:
         elif method == "tools/call" and not pending:
             elicit = (lambda form: self.elicit(request_id, form)) if self.can_elicit else None
             reply = self.call_tool(params.get("name"), params.get("arguments", {}), elicit)
-            result = {"content": [{"type": "text", "text": json.dumps(reply)}], "isError": "error" in reply}
+            if isinstance(reply, ToolContent):
+                result = {"content": reply.content, "isError": False}
+            else:
+                result = {"content": [{"type": "text", "text": json.dumps(reply)}], "isError": "error" in reply}
         else:
             self.send({"id": request_id, "error": {"code": -32601, "message": "Method unavailable"}})
             return
