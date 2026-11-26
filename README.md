@@ -58,6 +58,8 @@ For local UX testing, the simulator suite can seed 14 workspaces, 288 extra chat
 
 To test successful first pairing, run the same fixture with `--tls-cert` and `--tls-key` for `127.0.0.1`, trust its development CA on a test simulator, and pass the port as `TEST_RUNNER_RIPTIDE_PAIR_FIXTURE_PORT`. Use a signed simulator build with Keychain access; the test exercises normal authenticated pairing.
 
+The agent rename UI test uses `python Host/test_agent_profile.py --cert <localhost-cert> --key <localhost-key> --port-file <file>`. Use a certificate for `127.0.0.1` trusted by the simulator and pass the port as `TEST_RUNNER_RIPTIDE_PROFILE_FIXTURE_PORT`. Start a fresh fixture for each run.
+
 ## Rich replies
 
 Send `formatting demo` to a fixture agent for streamed Markdown, a Mermaid diagram, syntax-highlighted code, and a numbered diff. The live Codex screen uses the same renderer and displays native turn diffs under **Changes**.
@@ -96,6 +98,16 @@ restrict,command="/usr/bin/python3 /usr/local/libexec/riptide/ssh_acp.py --works
 Use absolute paths for the regular agent account, workspace, and native ACP launcher. The key disallows SSH shell access, terminal allocation, and port forwarding. The launcher limits chat to the paired workspace and refuses client-supplied MCP servers and approval-policy changes. Use a trusted device and the least-privilege agent account available, since prompts reach the real agent with its configured tools. Removing the key on the host revokes access. The private key stays in the device’s Keychain. Voice keeps its separate native endpoint.
 
 Fast mode over Hermes SSH requires a Hermes gateway that advertises the ACP `service_tier` option and the Riptide SSH wrapper from this release. Apply the wrapper to an existing versioned pairing with the [SSH release updater](Host/update_ssh_release.py).
+
+### Rename a paired agent from chat
+
+In a paired ACP chat, say “Change your name to Harbor.” The `set_display_name` tool updates that agent’s label in Riptide, including its chat header and entry under **Agents**. Riptide saves the new label on the device when it receives the update. The same pairing keeps its chats, photo, and favorites.
+
+With the updated iPhone app and host payload, create a directory owned by the agent’s host account with mode `0700`. Use a distinct absolute state file inside it for each agent, such as `/home/agent/.local/state/riptide-profiles/harbor.json`. Keep the same file across releases. The tool creates the file on its first successful call.
+
+- **SSH** — Add `--agent-profile-state /absolute/path/to/agent.json` before the `--` separator in the paired key’s fixed `ssh_acp.py` command. For an existing versioned pairing, pass the same option to `Host/update_ssh_release.py`. Repeat for each agent you want to enable, with its own file.
+- **Private WebSocket ACP** — Pass `--agent-profile-state /absolute/path/to/agent.json` to `Host/acp_bridge.py` before the fixed agent command.
+- **Hermes using Codex App Server** — Apply [the agent profile adapter](Host/compat/hermes-gateway-agent-profile.patch) on top of [the Hermes gateway pairing adapter](Host/compat/hermes-gateway-pairing.md). Reconnect the chat after enabling the feature. The native Hermes MCP route uses the shared tool directly.
 
 ### Hermes group chats over SSH
 

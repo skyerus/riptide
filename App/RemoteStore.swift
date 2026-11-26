@@ -67,12 +67,22 @@ final class RemoteStore {
         if paired.sshHostFingerprint != nil { try? shareSafariPairings(profiles) }
     }
 
+    func updateDisplayName(_ name: String, for id: UUID) {
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+        var updated = profiles
+        updated[index].updateDisplayName(name)
+        guard updated[index].name != profiles[index].name, let metadata = try? JSONEncoder().encode(updated) else { return }
+        defaults.set(metadata, forKey: metadataKey)
+        profiles = updated
+        if updated[index].sshHostFingerprint != nil { try? shareSafariPairings(updated) }
+    }
+
     func bearer(for profile: RemoteProfile) -> String? { KeychainToken.read(profile.id) }
 
     func voice(for profile: RemoteProfile) -> NativeVoiceProfile? { voices[profile.id] }
 
     func pairVoice(_ voice: NativeVoiceProfile, token: String, talkToken: String? = nil, for profile: RemoteProfile) async throws {
-        guard profile.kind == voice.kind, profiles.contains(profile), RemoteProfile.validBearer(token),
+        guard profile.kind == voice.kind, profiles.contains(where: { $0.id == profile.id }), RemoteProfile.validBearer(token),
               let chatHost = URL(string: profile.address)?.host?.lowercased(),
               URL(string: voice.address)?.host?.lowercased() == chatHost else {
             throw PairingFailure.invalid
@@ -101,7 +111,7 @@ final class RemoteStore {
             throw PairingFailure.invalid
         }
         try Task.checkCancellation()
-        guard profiles.contains(profile) else { throw PairingFailure.invalid }
+        guard profiles.contains(where: { $0.id == profile.id }) else { throw PairingFailure.invalid }
         var updated = voices
         updated[profile.id] = voice
         let metadata = try JSONEncoder().encode(updated)

@@ -93,3 +93,23 @@ class SSHReleaseTests(unittest.TestCase):
         self.assertEqual(command[command.index("--pairing-config") + 1], str(config))
         self.assertLess(command.index("--pairing-config"), command.index("--"))
         self.assertTrue(keys.read_text().endswith("# do not change\n"))
+
+
+    def test_versioned_update_enables_name_tool_for_a_pairing_without_a_screen(self):
+        home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        phone = home / "phone"
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(phone)], check=True)
+        public_key = phone.with_suffix(".pub").read_text().strip()
+        fingerprint = subprocess.check_output(["ssh-keygen", "-lf", str(phone.with_suffix(".pub"))],
+                                              text=True).split()[1]
+        releases = home / "releases"
+        releases.mkdir()
+        old = releases / ("a" * 40) / "Host" / "ssh_acp.py"
+        argv = [sys.executable, str(old), "--workspace", str(home), "--", sys.executable]
+        keys = home / "authorized_keys"
+        keys.write_text(f'restrict,command="{shlex.join(argv)}" {public_key}\n')
+        state = home / "name.json"
+        with redirect_stdout(io.StringIO()):
+            update(keys, fingerprint, releases, "a" * 40, "b" * 40, agent_profile_state=state)
+        self.assertIn(f"--agent-profile-state {state} --", keys.read_text())
+        self.assertFalse(state.exists(), "Release verification must leave the state untouched.")

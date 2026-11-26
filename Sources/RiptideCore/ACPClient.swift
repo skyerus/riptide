@@ -93,6 +93,7 @@ public actor ACPClient {
     private let emit: AsyncStream<ACPEvent>.Continuation
     private let transport: any ACPTransport
     private let restrictedSSH: Bool
+    private let onDisplayName: (@MainActor @Sendable (String) -> Void)?
     private var reader: Task<Void, Never>?
     private var initialization: Task<JSON, any Error>?
     private var nextID = 0
@@ -106,9 +107,11 @@ public actor ACPClient {
     private var loadedSessions = Set<String>()
     private var newVoiceSessionKeys: [String: String]?
 
-    public init(transport: any ACPTransport, restrictedSSH: Bool = false) {
+    public init(transport: any ACPTransport, restrictedSSH: Bool = false,
+                onDisplayName: (@MainActor @Sendable (String) -> Void)? = nil) {
         self.transport = transport
         self.restrictedSSH = restrictedSSH
+        self.onDisplayName = onDisplayName
         (events, emit) = AsyncStream.makeStream()
     }
 
@@ -405,6 +408,9 @@ public actor ACPClient {
                 } else {
                     try? await send(.failure(id, code: -32601, message: "Unsupported client request"))
                 }
+            } else if method == "_riptide/agent/profile", initialization != nil,
+                      let proposed = params["name"]?.string, let name = RemoteProfile.validDisplayName(proposed) {
+                await onDisplayName?(name)
             } else if method == "session/update", let sessionID = params["sessionId"]?.string, let update = params["update"] {
                 if update["sessionUpdate"] == "session_info_update", let key = update["_meta"]?["sessionKey"]?.string,
                    let count = newVoiceSessionKeys?.count, count < 24, key.utf8.count <= 512 {

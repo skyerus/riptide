@@ -1,0 +1,21 @@
+diff --git a/gateway/session_local_mcp.py b/gateway/session_local_mcp.py
+--- a/gateway/session_local_mcp.py
++++ b/gateway/session_local_mcp.py
+@@ -512,6 +512,8 @@
+         return name
+     if name == 'riptide_pairing' and signature == ('agent_pairing_mcp.py', '--config'):
+         return name
++    if name == 'riptide_agent_profile' and signature == ('agent_profile.py', '--state'):
++        return name
+     return None
+
+
+@@ -529,6 +531,8 @@
+             # The pairing form itself stays interactive even under Codex's approval settings.
+             settings.update(tool_timeout_sec=180, default_tools_approval_mode='approve',
+                             enabled_tools=['list_pairable_agents', 'request_agent_pairing'])
++        if name == 'riptide_agent_profile':
++            settings.update(default_tools_approval_mode='approve', enabled_tools=['set_display_name'])
+         for key, value in settings.items():
+             arguments.extend(('-c', f'mcp_servers.{name}.{key}={_json(value)}'))
+     token = _RIPTIDE_MCP_ARGS.set(tuple(arguments))

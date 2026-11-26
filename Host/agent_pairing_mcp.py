@@ -2,17 +2,17 @@
 
 import argparse
 import json
+from functools import partial
 from pathlib import Path
 import sys
-from uuid import uuid4
 
 from hermes_pairing import PROFILE
 from install_safari import read_owned
+from mcp_stdio import MCPServer
 
 SERVER = "riptide_pairing"
 LIST = "list_pairable_agents"
 REQUEST = "request_agent_pairing"
-MAX_FRAME = 64 * 1024
 TOOLS = [
     {
         "name": LIST,
@@ -55,6 +55,8 @@ def pairing_form(profile, name):
 
 
 def call_tool(config, name, arguments, elicit):
+    if name == REQUEST and elicit is None:
+        return {"error": "This chat does not support pairing approval."}
     try:
         configured = targets(config)
     except (OSError, ValueError, TypeError, AttributeError, KeyError):
@@ -78,76 +80,10 @@ def call_tool(config, name, arguments, elicit):
     return {"profile": profile, "status": status}
 
 
-class PairingServer:
-    def __init__(self, config, reader, writer):
-        self.config = config
-        self.reader = reader
-        self.writer = writer
-        self.can_elicit = False
-
-    def send(self, frame):
-        self.writer.write(json.dumps({"jsonrpc": "2.0", **frame}).encode() + b"\n")
-        self.writer.flush()
-
-    def read(self):
-        line = self.reader.readline(MAX_FRAME)
-        return json.loads(line) if line.endswith(b"\n") else None
-
-    def elicit(self, tool_request_id, form):
-        request_id = "pairing-" + uuid4().hex
-        self.send({"id": request_id, "method": "elicitation/create", "params": form})
-        while request := self.read():
-            if "method" not in request and request.get("id") == request_id:
-                result = request.get("result")
-                return result if isinstance(result, dict) else None
-            if (request.get("method") == "notifications/cancelled"
-                    and request.get("params", {}).get("requestId") == tool_request_id):
-                self.send({"method": "notifications/cancelled", "params": {"requestId": request_id}})
-                return None
-            # A host can ping or discover tools while waiting for a human.
-            self.receive(request, pending=True)
-        return None
-
-    def receive(self, request, pending=False):
-        method = request.get("method")
-        if method is None or "id" not in request:
-            return
-        request_id = request["id"]
-        params = request.get("params", {})
-        if method == "initialize" and not pending:
-            version = params.get("protocolVersion")
-            if version not in ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"):
-                version = "2025-06-18"
-            self.can_elicit = (version >= "2025-06-18"
-                               and "elicitation" in params.get("capabilities", {}))
-            result = {"protocolVersion": version, "capabilities": {"tools": {}},
-                      "serverInfo": {"name": SERVER, "version": "1.0.0"}}
-        elif method == "ping":
-            result = {}
-        elif method == "tools/list":
-            result = {"tools": TOOLS}
-        elif method == "tools/call" and not pending:
-            tool = params.get("name")
-            if tool == REQUEST and not self.can_elicit:
-                reply = {"error": "This chat does not support pairing approval."}
-            else:
-                reply = call_tool(self.config, tool, params.get("arguments", {}),
-                                  lambda form: self.elicit(request_id, form))
-            result = {"content": [{"type": "text", "text": json.dumps(reply)}], "isError": "error" in reply}
-        else:
-            self.send({"id": request_id, "error": {"code": -32601, "message": "Method unavailable"}})
-            return
-        self.send({"id": request_id, "result": result})
-
-    def serve(self):
-        while request := self.read():
-            self.receive(request)
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
     if not args.config.is_absolute():
         parser.error("Use an absolute pairing manifest path.")
-    PairingServer(args.config, sys.stdin.buffer, sys.stdout.buffer).serve()
+    MCPServer(SERVER, TOOLS, partial(call_tool, args.config), sys.stdin.buffer, sys.stdout.buffer).serve()
