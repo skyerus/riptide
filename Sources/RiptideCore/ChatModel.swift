@@ -6,6 +6,13 @@ public enum MessageReceipt: String, Equatable, Sendable {
     case seen = "Seen"
 }
 
+public struct QueuedChatMessage: Identifiable, Sendable {
+    public let id = UUID()
+    public let text: String
+
+    public init(text: String) { self.text = text }
+}
+
 public struct ChatEntry: Identifiable, Equatable, Sendable {
     public enum Content: Equatable, Sendable {
         case message(ChatRole, String)
@@ -90,6 +97,12 @@ public struct Transcript: Equatable, Sendable {
         activePromptIndex = nil
     }
 
+    fileprivate mutating func addSteering(_ text: String) {
+        openMessage = nil
+        latestPromptIndex = entries.count
+        entries.append(ChatEntry(content: .message(.user, text), receipt: .delivered))
+    }
+
     public mutating func apply(_ event: ACPEvent) {
         switch event {
         case .message(_, let messageID, let role, let text):
@@ -150,6 +163,7 @@ public final class AgentChatModel {
     @ObservationIgnored private var makeClient: (@Sendable () -> ACPClient)?
     @ObservationIgnored private var observer: Task<Void, Never>?
     @ObservationIgnored private var mainPreload: Task<Void, Never>?
+    @ObservationIgnored private var prompts: [String: Task<Void, Never>] = [:]
 
     public struct CompletedReply: Equatable, Sendable {
         public let date: Date
@@ -169,6 +183,11 @@ public final class AgentChatModel {
         public fileprivate(set) var connectionLost = false
         public fileprivate(set) var working = false
         public fileprivate(set) var stopping = false
+        fileprivate var preparingPrompt = false
+        public fileprivate(set) var steering = false
+        public fileprivate(set) var steeringError: String?
+        public fileprivate(set) var queuedMessages: [QueuedChatMessage] = []
+        public fileprivate(set) var queuePaused = false
         public fileprivate(set) var error: String?
         public fileprivate(set) var notice: String?
         public fileprivate(set) var plan: [TurnPlanStep] = []
@@ -378,14 +397,23 @@ public final class AgentChatModel {
         }
     }
 
-    public func submit(_ rawText: String, beforePrompt: (@MainActor () async -> Void)? = nil) {
+    @discardableResult
+    public func submit(_ rawText: String, beforePrompt: (@MainActor () async -> Void)? = nil) -> Bool {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sessionID = selectedID
-        guard let client = preparePrompt(text, for: sessionID) else { return }
-        Task {
-            defer { finishPrompt(sessionID, from: client) }
+        return startPrompt(text, in: selectedID, beforePrompt: beforePrompt)
+    }
+
+    @discardableResult
+    private func startPrompt(_ text: String, in sessionID: String,
+                             beforePrompt: (@MainActor () async -> Void)? = nil) -> Bool {
+        guard let client = preparePrompt(text, for: sessionID) else { return false }
+        chats[sessionID]?.preparingPrompt = beforePrompt != nil
+        prompts[sessionID] = Task {
+            var completed = false
+            defer { finishPrompt(sessionID, from: client, advanceQueue: completed) }
             await beforePrompt?()
             guard self.client === client else { return }
+            chats[sessionID]?.preparingPrompt = false
             if chats[sessionID]?.stopping == true {
                 chats[sessionID]?.notice = "Reply stopped."
                 return
@@ -396,6 +424,7 @@ public final class AgentChatModel {
                 chats[sessionID]?.transcript.acknowledgePrompt()
                 switch reason {
                 case "end_turn":
+                    completed = true
                     chats[sessionID]?.transcript.markPromptSeen()
                     if let reply = chats[sessionID]?.transcript.latestAssistantText {
                         completedReplies[sessionID] = CompletedReply(date: .now, preview: WorkspaceAttention.preview(reply))
@@ -408,17 +437,79 @@ public final class AgentChatModel {
                 if self.client === client { chats[sessionID]?.error = error.localizedDescription }
             }
         }
+        return true
+    }
+
+    public func steer(_ rawText: String, in sessionID: String) async -> Bool {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let client, let chat = chats[sessionID], sessionID == selectedID, !text.isEmpty,
+              chat.loaded, !chat.loading, !chat.configuring, !chat.stopping, !chat.steering else { return false }
+        if !chat.working { return startPrompt(text, in: sessionID) }
+        if chat.preparingPrompt {
+            chats[sessionID]?.steeringError = "This reply is still starting. Try again in a moment."
+            return false
+        }
+        let prompt = prompts[sessionID]
+        chats[sessionID]?.steering = true
+        chats[sessionID]?.steeringError = nil
+        defer {
+            if self.client === client {
+                chats[sessionID]?.steering = false
+                drainQueue(in: sessionID)
+            }
+        }
+        do {
+            let steered = try await client.steer(text, sessionID: sessionID)
+            guard self.client === client else { return false }
+            if steered {
+                chats[sessionID]?.transcript.addSteering(text)
+                return true
+            }
+            await prompt?.value
+            guard self.client === client, !Task.isCancelled else { return false }
+            return startPrompt(text, in: sessionID)
+        } catch {
+            if self.client === client { chats[sessionID]?.steeringError = error.localizedDescription }
+            return false
+        }
+    }
+
+    public func enqueue(_ rawText: String, in sessionID: String) -> Bool {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, chats[sessionID]?.loaded == true else { return false }
+        chats[sessionID]?.queuedMessages.append(QueuedChatMessage(text: text))
+        chats[sessionID]?.steeringError = nil
+        drainQueue(in: sessionID)
+        return true
+    }
+
+    public func removeQueuedMessage(_ id: UUID, in sessionID: String) {
+        chats[sessionID]?.queuedMessages.removeAll { $0.id == id }
+        if chats[sessionID]?.queuedMessages.isEmpty == true { chats[sessionID]?.queuePaused = false }
+    }
+
+    public func resumeQueue(in sessionID: String) {
+        chats[sessionID]?.queuePaused = false
+        drainQueue(in: sessionID)
+    }
+
+    private func drainQueue(in sessionID: String) {
+        guard let chat = chats[sessionID], !chat.steering, !chat.queuePaused,
+              let message = chat.queuedMessages.first, startPrompt(message.text, in: sessionID) else { return }
+        removeQueuedMessage(message.id, in: sessionID)
     }
 
     public func submitHermesVoice(_ rawText: String, in sessionID: String) async throws -> String {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let client = preparePrompt(text, for: sessionID) else {
+        guard sessionID == selectedID, let client = preparePrompt(text, for: sessionID) else {
             throw ACPError.rejected("This chat is already working or no longer open.")
         }
-        defer { finishPrompt(sessionID, from: client) }
+        var completed = false
+        defer { finishPrompt(sessionID, from: client, advanceQueue: completed) }
         do {
             let reply = try await client.promptForVoice(text, sessionID: sessionID)
             chats[sessionID]?.transcript.acknowledgePrompt()
+            completed = !reply.isEmpty
             return reply
         } catch {
             if !Task.isCancelled { chats[sessionID]?.error = error.localizedDescription }
@@ -440,8 +531,8 @@ public final class AgentChatModel {
     }
 
     private func preparePrompt(_ text: String, for sessionID: String) -> ACPClient? {
-        guard let client, sessionID == selectedID, !text.isEmpty, selected.loaded, !selected.loading,
-              !selected.working, !selected.configuring else { return nil }
+        guard let client, let chat = chats[sessionID], !text.isEmpty, chat.loaded, !chat.loading,
+              !chat.working, !chat.configuring else { return nil }
         if let index = sessions.firstIndex(where: { $0.id == sessionID && $0.title == "Untitled chat" }) {
             let row = sessions[index]
             sessions[index] = SessionSummary(id: sessionID, title: String(text.prefix(48)), cwd: row.cwd,
@@ -453,16 +544,23 @@ public final class AgentChatModel {
         workingChats.insert(sessionID)
         chats[sessionID]?.plan = []
         chats[sessionID]?.error = nil
+        chats[sessionID]?.steeringError = nil
         chats[sessionID]?.notice = nil
         return client
     }
 
-    private func finishPrompt(_ sessionID: String, from client: ACPClient) {
+    private func finishPrompt(_ sessionID: String, from client: ACPClient, advanceQueue: Bool) {
         guard self.client === client else { return }
+        prompts[sessionID] = nil
         chats[sessionID]?.transcript.finishPrompt()
         chats[sessionID]?.working = false
         workingChats.remove(sessionID)
         chats[sessionID]?.stopping = false
+        if advanceQueue {
+            drainQueue(in: sessionID)
+        } else if chats[sessionID]?.queuedMessages.isEmpty == false {
+            chats[sessionID]?.queuePaused = true
+        }
     }
 
     public func stop() async {
@@ -502,6 +600,7 @@ public final class AgentChatModel {
             self.client = nil
             self.pendingApprovalSince.removeAll()
             self.workingChats.removeAll()
+            self.prompts.removeAll()
             self.newlyCreatedOpenClawKeys.removeAll()
             self.observer = nil
             for id in Array(self.chats.keys) {
@@ -517,6 +616,9 @@ public final class AgentChatModel {
                 chat.loaded = false
                 chat.working = false
                 chat.stopping = false
+                chat.preparingPrompt = false
+                chat.steering = false
+                chat.queuePaused = !chat.queuedMessages.isEmpty
                 chat.permissions = []
                 self.chats[id] = chat
             }

@@ -186,7 +186,13 @@ struct ACPCapabilityTests {
                 return [.reply(id, result: [:])]
             case "turn/steer":
                 #expect(params?["expectedTurnId"] == "running")
+                if params?["input"]?.array?.first?["text"] == "send at completion" {
+                    return [.failure(id, code: -32600, message: "no active turn to steer")]
+                }
                 return [.reply(id, result: ["turnId": "running"])]
+            case "turn/start":
+                #expect(params?["input"]?.array?.first?["text"] == "send at completion")
+                return [.reply(id, result: ["turn": ["id": "next"]])]
             default:
                 Issue.record("Unexpected chat or call method: \(method ?? "missing")")
                 return [.failure(id, code: -32601, message: "Unexpected request")]
@@ -218,7 +224,11 @@ struct ACPCapabilityTests {
         } else {
             Issue.record("Expected the host to clear the declined approval")
         }
-        try await client.sendToSavedChat("keep going")
+        await #expect(throws: CodexLiveError.self) {
+            try await client.sendToSavedChat("start too soon", startOnly: true)
+        }
+        #expect(try await client.sendToSavedChat("keep going") == .steered(turnID: "running"))
+        #expect(try await client.sendToSavedChat("send at completion") == .started(turnID: "next"))
         await client.close()
     }
 
