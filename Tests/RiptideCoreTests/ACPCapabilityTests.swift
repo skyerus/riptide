@@ -767,6 +767,36 @@ struct ACPCapabilityTests {
         }
     }
 
+    @Test @MainActor func createsAndKeepsAnUnlistedNewChatWithoutOpeningMain() async throws {
+        let transport = ScriptedTransport { request in
+            let id = try #require(request["id"])
+            switch request["method"]?.string {
+            case "initialize":
+                return [.reply(id, result: ["protocolVersion": .integer(1), "agentCapabilities": [
+                    "loadSession": .boolean(true), "sessionCapabilities": ["list": [:]]
+                ]])]
+            case "session/list":
+                return [.reply(id, result: ["sessions": .array([
+                    ["sessionId": "saved", "cwd": "/paired", "title": "Host-created chat"],
+                    ["sessionId": "other", "cwd": "/elsewhere", "title": "Other workspace"]
+                ])])]
+            case "session/new":
+                #expect(request["params"]?["cwd"] == "/paired")
+                return [.reply(id, result: ["sessionId": "new"])]
+            default:
+                Issue.record("Unexpected ACP call")
+                return []
+            }
+        }
+        let target = AgentTarget(id: "target", name: "Hermes", mainSessionID: "main", cwd: "/paired")
+        let model = AgentChatModel(target: target, connect: { ACPClient(transport: transport) })
+        #expect(await model.createChat())
+        #expect(model.selectedID == "new")
+        #expect(model.selected.loaded)
+        await model.refreshSessions()
+        #expect(model.sessions.map(\.id) == ["saved", "new"])
+    }
+
     @Test @MainActor func unavailableMainDoesNotSilentlyCreateAnotherSession() async {
         let transport = ScriptedTransport { request in
             let id = try #require(request["id"])

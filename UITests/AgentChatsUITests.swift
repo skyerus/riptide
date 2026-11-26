@@ -2,6 +2,34 @@ import XCTest
 
 final class AgentChatsUITests: XCTestCase {
     @MainActor
+    func testCreatesAndReopensSideChatFromHermesWorkspace() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        continueAfterFailure = false
+        app.launch()
+
+        app.openAgentWorkspace("hermes")
+        let newChat = app.buttons["workspace-new-chat"]
+        XCTAssertTrue(newChat.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["sidebar-main-chat"].isHittable)
+        newChat.tap()
+        XCTAssertTrue(app.staticTexts["empty-chat"].waitForExistence(timeout: 5))
+        XCTAssertEqual(title(app).label, "Untitled chat")
+        capture(app, as: "New Hermes side chat")
+
+        send("Launch checklist", in: app)
+        XCTAssertTrue(app.staticTexts["Saved separately"].waitForExistence(timeout: 8))
+        app.navigationBars.buttons["BackButton"].tap()
+        let sideChat = app.buttons.containing(.staticText, identifier: "Launch checklist").firstMatch
+        XCTAssertTrue(sideChat.waitForExistence(timeout: 5))
+        XCTAssertTrue(newChat.isHittable)
+        capture(app, as: "Hermes workspace with New chat and saved side chat")
+        sideChat.tap()
+        XCTAssertTrue(app.staticTexts["Saved separately"].waitForExistence(timeout: 5))
+        XCTAssertEqual(title(app).label, "Launch checklist")
+    }
+
+    @MainActor
     func testColdMainChatShowsSkeletonUntilHistoryArrives() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString

@@ -667,8 +667,9 @@ final class WorkspaceState {
         return found
     }
 
-    private func recordReply(_ chat: WorkspaceChatID, title: String, date: Date, reply: String?) -> WorkspaceAttention? {
-        guard let agent = agent(chat.workspace), agent.connector != "Demo",
+    private func recordReply(_ chat: WorkspaceChatID, title: String, date: Date, reply: String) -> WorkspaceAttention? {
+        guard !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let agent = agent(chat.workspace), agent.connector != "Demo",
               !(sceneIsActive && visibleChat == chat && !showingSwitcher && !showingAlerts) else { return nil }
         let entry = WorkspaceAttention(chat: chat, title: String(title.prefix(180)), reason: .reply, date: date,
                                        replyText: reply)

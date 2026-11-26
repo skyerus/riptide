@@ -57,7 +57,8 @@ async def serve_ssh(socket):
 def attention(event):
     kind, payload = event.get("type"), event.get("payload", {})
     if kind == "message.complete" and payload.get("status") == "complete":
-        return "reply", payload.get("admission_id"), "active", reply_preview(payload.get("text"))
+        admission = payload.get("admission_id") or event.get("admission_id")
+        return "reply", admission, "active", reply_preview(payload.get("text"))
     if kind in ("approval.request", "approval.settled", "clarify.request", "clarify.settled"):
         control, stage = kind.split(".")
         return ("approval" if control == "approval" else "input", payload.get("prompt_id"),
@@ -134,9 +135,12 @@ class HermesAttention:
                         event = frame.get("params", {})
                         if event.get("session_id") != session:
                             continue
-                        if event.get("replay_epoch") == epoch and event.get("seq", 0) <= sequence:
-                            continue
-                        await self.publish(chat, event)
+                        event_epoch, event_sequence = event.get("replay_epoch"), event.get("seq")
+                        if isinstance(event_epoch, str) and type(event_sequence) is int:
+                            if event_epoch == epoch and event_sequence <= sequence:
+                                continue
+                            epoch, sequence = event_epoch, event_sequence
+                        await self.publish(chat, event, gateway)
         except TimeoutError:
             pass
         except Exception as error:
@@ -147,18 +151,42 @@ class HermesAttention:
                 ready.set_result(False)
             self.watches.pop(chat, None)
 
-    async def publish(self, chat, event):
+    async def publish(self, chat, event, gateway):
         notification = attention(event)
         if not notification:
             return
         reason, event_id, disposition, preview = notification
         if not valid(event_id, r"[A-Za-z0-9._:-]{1,160}"):
             return
+        if reason == "reply" and preview is None:
+            preview = await self.stored_reply_preview(gateway, event)
+            if preview is None:
+                return
         async with self.state_lock:
             workspaces = {row["workspace"] for row in self.state.devices.values()}
             for workspace in workspaces:
                 self.state.publish({"workspace": workspace, "chat": chat, "reason": reason,
                                     "eventID": event_id, "state": disposition, "preview": preview})
+
+    @staticmethod
+    async def stored_reply_preview(gateway, event):
+        # A final delivered during streaming can have an empty completion body.
+        # The receipt names its exact stored row. Never fall back to an older assistant message.
+        receipt = event["payload"].get("persisted_turn") or {}
+        row_id = receipt.get("final_assistant_row_id")
+        if type(row_id) is not int or row_id <= 0:
+            return None
+        try:
+            async with asyncio.timeout(3):
+                page = await gateway.rpc("session.transcript", session_id=event["session_id"],
+                                         order="latest", limit=20, inline_images=False)
+        except Exception as error:
+            LOG.warning("Hermes notification reply lookup failed (%s)", type(error).__name__)
+            return None
+        for row in page.get("rows", []):
+            if row.get("row_id") == row_id and row.get("role") == "assistant":
+                return reply_preview(row.get("text"))
+        return None
 
     async def flush(self):
         while True:

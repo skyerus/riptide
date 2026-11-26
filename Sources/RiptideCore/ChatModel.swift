@@ -169,17 +169,19 @@ public final class AgentChatModel {
     public private(set) var pendingApprovalSince: [String: Date] = [:]
     public private(set) var workingChats = Set<String>()
     private var newlyCreatedOpenClawKeys: [String: String] = [:]
+    private var unlistedNewChats = Set<String>()
     @ObservationIgnored private var client: ACPClient?
     @ObservationIgnored private var makeClient: (@Sendable () -> ACPClient)?
     @ObservationIgnored private var observer: Task<Void, Never>?
     @ObservationIgnored private var liveEventsDuringLoad: [String: [ACPEvent]] = [:]
     @ObservationIgnored private var mainPreload: Task<Void, Never>?
+    @ObservationIgnored private var catalogRefresh: (maximumPages: Int?, task: Task<Void, Never>)?
     @ObservationIgnored private var attachmentDeliveries: [String: @MainActor () -> Void] = [:]
     @ObservationIgnored private var prompts: [String: Task<Void, Never>] = [:]
 
     public struct CompletedReply: Equatable, Sendable {
         public let date: Date
-        public let preview: String?
+        public let preview: String
     }
 
     public struct ChatState {
@@ -334,21 +336,36 @@ public final class AgentChatModel {
     }
 
     public func refreshSessions(maximumPages: Int? = nil) async {
-        guard !refreshingList else { return }
+        guard !Task.isCancelled else { return }
+        if let refresh = catalogRefresh {
+            await refresh.task.value
+            if maximumPages == nil, refresh.maximumPages != nil { await refreshSessions() }
+            return
+        }
+        refreshingList = true
+        let task = Task {
+            defer {
+                catalogRefresh = nil
+                refreshingList = false
+            }
+            await readSessions(maximumPages: maximumPages)
+        }
+        catalogRefresh = (maximumPages, task)
+        await task.value
+    }
+
+    private func readSessions(maximumPages: Int?) async {
         let existing = client
         guard let lookup = existing ?? makeClient?() else { listError = selected.error; return }
-        refreshingList = true
         listError = nil
-        defer { refreshingList = false }
         do {
             let listed = try await lookup.sessions(maximumPages: maximumPages)
-            try Task.checkCancellation()
             let scoped = makeClient == nil ? listed : listed.filter { $0.cwd == target.cwd }
-            if maximumPages != nil {
-                let indexed = Set(scoped.map(\.id))
-                sessions = scoped + sessions.filter { !indexed.contains($0.id) }
-            } else {
-                sessions = scoped
+            let indexed = Set(scoped.map(\.id))
+            unlistedNewChats.subtract(indexed)
+            // Some connectors only list a new chat once it has a message.
+            sessions = scoped + sessions.filter {
+                !indexed.contains($0.id) && (maximumPages != nil || unlistedNewChats.contains($0.id))
             }
         }
         catch { if !Task.isCancelled { listError = error.localizedDescription } }
@@ -380,7 +397,9 @@ public final class AgentChatModel {
 
     @discardableResult
     public func createChat(openClaw: Bool = false) async -> Bool {
-        guard let client, !creatingChat else { return false }
+        guard !creatingChat else { return false }
+        if client == nil { client = makeClient?() }
+        guard let client else { listError = selected.error; return false }
         observe(client)
         creatingChat = true
         listError = nil
@@ -389,7 +408,7 @@ public final class AgentChatModel {
             let selectedBeforeCreation = selectedID
             let nativeKey: String?
             if openClaw {
-                let currentKey = try await openClawVoiceSessionKey(for: selectedBeforeCreation)
+                let currentKey = try await openClawSessionKey(for: selectedBeforeCreation, using: client)
                 let parts = currentKey.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
                 guard parts.count == 3, !parts[1].isEmpty,
                       parts[1].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-_".contains($0)) }) else {
@@ -399,11 +418,14 @@ public final class AgentChatModel {
             } else {
                 nativeKey = nil
             }
+            guard self.client === client, selectedID == selectedBeforeCreation else { return false }
             let opened = try await client.newSession(cwd: target.cwd, nativeSessionKey: nativeKey)
             guard self.client === client else { throw ACPError.disconnected }
             let sessionID = opened.id
             markLoaded(opened)
             newlyCreatedOpenClawKeys[sessionID] = opened.nativeSessionKey
+            unlistedNewChats.insert(sessionID)
+            sessions.removeAll { $0.id == sessionID }
             sessions.insert(SessionSummary(id: sessionID, title: "Untitled chat", cwd: target.cwd,
                                            nativeSessionKey: opened.nativeSessionKey), at: 0)
             guard selectedID == selectedBeforeCreation else { return false }
@@ -466,8 +488,9 @@ public final class AgentChatModel {
                 case "end_turn":
                     completed = true
                     chats[sessionID]?.transcript.markPromptSeen()
-                    if let reply = chats[sessionID]?.transcript.latestAssistantText {
-                        completedReplies[sessionID] = CompletedReply(date: .now, preview: WorkspaceAttention.preview(reply))
+                    if let reply = chats[sessionID]?.transcript.latestAssistantText,
+                       let preview = WorkspaceAttention.preview(reply) {
+                        completedReplies[sessionID] = CompletedReply(date: .now, preview: preview)
                     }
                 case "cancelled": chats[sessionID]?.notice = "Reply stopped."
                 case "max_tokens": chats[sessionID]?.notice = "The agent reached its reply limit."
@@ -569,9 +592,15 @@ public final class AgentChatModel {
 
     public func openClawVoiceSessionKey(for sessionID: String) async throws -> String {
         guard let client, selectedID == sessionID, selected.loaded else { throw ACPError.disconnected }
+        let key = try await openClawSessionKey(for: sessionID, using: client)
+        guard selectedID == sessionID, selected.loaded else { throw ACPError.disconnected }
+        return key
+    }
+
+    private func openClawSessionKey(for sessionID: String, using client: ACPClient) async throws -> String {
         if let bound = newlyCreatedOpenClawKeys[sessionID] { return bound }
         let refreshed = try await client.sessions()
-        guard selectedID == sessionID, self.client === client,
+        guard self.client === client,
               let listed = refreshed.first(where: { $0.id == sessionID && $0.cwd == target.cwd }),
               let key = listed.nativeSessionKey ?? (listed.id.hasPrefix("agent:") ? listed.id : nil),
               key.hasPrefix("agent:") else {

@@ -130,10 +130,10 @@ final class WorkspaceUXUITests: XCTestCase {
 
         verifyMenu("Attachments in a saved Codex chat")
         app.navigationBars.buttons["BackButton"].tap()
-        let actions = app.buttons["Codex actions"]
-        XCTAssertTrue(actions.waitForExistence(timeout: 5))
-        actions.tap()
-        app.buttons["New chat"].tap()
+        let newChat = app.buttons["workspace-new-chat"]
+        XCTAssertTrue(newChat.waitForExistence(timeout: 5))
+        capture(app, as: "Codex workspace with New chat")
+        newChat.tap()
         XCTAssertTrue(app.staticTexts["New Codex fixture"].waitForExistence(timeout: 8))
         verifyMenu("Attachments in a new Codex chat")
         app.navigationBars.buttons["BackButton"].tap()
