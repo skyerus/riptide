@@ -114,6 +114,40 @@ final class AgentChatsUITests: XCTestCase {
     }
 
     @MainActor
+    func testReplyGroupsInlineCitationsAndListsAllSources() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        continueAfterFailure = false
+        app.launch()
+        openMainChat(app)
+        send("Gmail OAuth sources demo", in: app)
+
+        let sources = app.buttons["chat-sources"]
+        XCTAssertTrue(sources.waitForExistence(timeout: 12))
+        let citation = app.links["riptide-citation://sources/2,3"]
+        XCTAssertTrue(citation.exists)
+        let reply = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "One OAuth client")).firstMatch
+        XCTAssertTrue(reply.exists)
+        XCTAssertGreaterThan(citation.frame.minX, reply.frame.minX + 8, "The citation should stay with the claim.")
+        capture(app, as: "Inline web citations and Sources")
+
+        citation.tap()
+        let consent = app.buttons.matching(identifier: "chat-source")
+            .matching(NSPredicate(format: "label CONTAINS %@", "Consent screen setup")).firstMatch
+        XCTAssertTrue(consent.waitForExistence(timeout: 4))
+        XCTAssertEqual(app.buttons.matching(identifier: "chat-source").count, 2)
+        app.buttons["Done"].tap()
+
+        sources.tap()
+        XCTAssertTrue(consent.waitForExistence(timeout: 4))
+        XCTAssertEqual(app.buttons.matching(identifier: "chat-source").count, 3)
+        let gmail = app.buttons.matching(identifier: "chat-source")
+            .matching(NSPredicate(format: "label CONTAINS %@", "Gmail API overview")).firstMatch
+        XCTAssertTrue(gmail.isHittable)
+        capture(app, as: "Web sources sheet")
+    }
+
+    @MainActor
     func testRichReplyRendersDiagramCodeAndDiff() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
