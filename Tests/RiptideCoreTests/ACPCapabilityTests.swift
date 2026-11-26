@@ -724,7 +724,8 @@ struct ACPCapabilityTests {
         await client.close()
     }
 
-    @Test @MainActor func openClawSeparateCallNeedsTheHostToEchoTheNewAgentScopedKey() async throws {
+    @Test(arguments: [false, true])
+    @MainActor func openClawNewChatNeedsTheHostToEchoTheNewAgentScopedKey(hasOpenedMain: Bool) async throws {
         for reportsFreshKey in [true, false] {
             let transport = ScriptedTransport { request in
                 let id = try #require(request["id"])
@@ -753,8 +754,8 @@ struct ACPCapabilityTests {
             }
             let client = ACPClient(transport: transport)
             let model = AgentChatModel(target: AgentTarget(id: "target", name: "OpenClaw", mainSessionID: "current", cwd: "/demo"),
-                                       client: client)
-            await model.showMain()
+                                       connect: { client })
+            if hasOpenedMain { await model.showMain() }
             #expect(await model.createChat(openClaw: true) == reportsFreshKey)
             if reportsFreshKey {
                 #expect(model.selectedID == "new")
