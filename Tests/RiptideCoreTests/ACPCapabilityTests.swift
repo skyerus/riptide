@@ -3,6 +3,45 @@ import Testing
 @testable import RiptideCore
 
 struct ACPCapabilityTests {
+    @Test(arguments: [false, true]) func codexRoutesContextUsageToSavedChatsAndDesktopWatchers(watching: Bool) async throws {
+        let thread: JSON = ["id": "selected", "cwd": "/disposable", "status": ["type": "active"]]
+        let transport = ScriptedTransport { request in
+            let method = request["method"]?.string
+            if method == "initialized" { return [] }
+            let id = try #require(request["id"])
+            switch method {
+            case "initialize":
+                return [.reply(id, result: [:])]
+            case "thread/list":
+                return [.reply(id, result: ["data": .array([thread])])]
+            case "thread/read", "thread/resume":
+                return [.reply(id, result: ["thread": thread])]
+            case "thread/turns/list":
+                let usage: JSON = ["last": ["totalTokens": .integer(8_000)], "modelContextWindow": .integer(32_000)]
+                return [.notification("thread/tokenUsage/updated", params: [
+                    "threadId": "unrelated", "turnId": "active", "tokenUsage": .null
+                ]), .notification("thread/tokenUsage/updated", params: [
+                    "threadId": "selected", "turnId": "active", "tokenUsage": usage
+                ]), .reply(id, result: ["data": .array([["id": "active", "status": "inProgress"]])])]
+            default:
+                return [.failure(id, code: -32601, message: "Unexpected request")]
+            }
+        }
+        let client = CodexLiveClient(transport: transport, workspace: "/disposable")
+        let expected = CodexLiveEvent.context(turnID: "active", usage: ContextUsage(used: 8_000, capacity: 32_000))
+        if watching {
+            _ = try await client.attach()
+            var events = client.events.makeAsyncIterator()
+            #expect(try await events.next() == expected)
+        } else {
+            _ = try await client.openSavedChat("selected")
+            var events = client.chatEvents.makeAsyncIterator()
+            if case .live(let context) = try await events.next() { #expect(context == expected) }
+            else { Issue.record("Expected context usage for the selected chat") }
+        }
+        await client.close()
+    }
+
     @Test func codexComposerUsesNativeThreadSettingsAndModelCapabilities() async throws {
         let thread: JSON = ["id": "selected", "cwd": "/disposable"]
         let transport = ScriptedTransport { request in
