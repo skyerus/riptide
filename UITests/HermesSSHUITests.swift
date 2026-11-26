@@ -27,21 +27,14 @@ final class HermesSSHUITests: XCTestCase {
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"), object: composer)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 25), .completed)
         composer.tap()
-        composer.typeText("Riptide browser handoff verification. Use computer_use to navigate Chrome to \(fixtureURL). "
+        composer.typeText("Riptide browser handoff verification. Use computer_use to capture and chrome_input to navigate Chrome to \(fixtureURL). "
             + "Capture the fixture, focus its test input, and call chrome_handoff so I can type the test value. "
             + "After I hand back, capture the same Chrome window and reply with 'The browser received ' plus the visible input value. "
             + "Use only the paired Chrome tools.")
         app.buttons["send-message"].tap()
         let request = app.buttons["hermes-browser-request"]
-        let allowInput = app.buttons.matching(NSPredicate(format: "label == %@", "Allow Chrome input")).firstMatch
-        let deadline = Date().addingTimeInterval(135)
-        while Date() < deadline && !request.exists {
-            if allowInput.waitForExistence(timeout: 1), allowInput.isHittable {
-                allowInput.tap()
-                _ = allowInput.waitForNonExistence(timeout: 3)
-            }
-        }
-        XCTAssertTrue(request.exists)
+        XCTAssertTrue(request.waitForExistence(timeout: 135))
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@", "Allow Chrome input")).firstMatch.exists)
         request.tap()
         let takeover = app.buttons["hermes-take-over"]
         let streaming = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"), object: takeover)
