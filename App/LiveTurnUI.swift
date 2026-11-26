@@ -99,9 +99,7 @@ private struct TranscriptViewportModifier: ViewModifier {
                 viewport.position.scrollTo(y: offset)
                 pendingReadingOffset = nil
             }
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentSize.height - geometry.visibleRect.maxY <= 112
-            } action: { _, atBottom in
+            .onScrollGeometryChange(for: Bool.self, of: Self.isAtLatest) { _, atBottom in
                 viewport.follow.geometryChanged(nearBottom: atBottom)
             }
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
@@ -115,8 +113,7 @@ private struct TranscriptViewportModifier: ViewModifier {
                 let interaction: TranscriptFollow.Interaction = scrolling ? .scrolling : fingerDown ? .touching : .idle
                 let previous = viewport.follow.interaction
                 let geometry = context.geometry
-                let nearBottom = geometry.contentSize.height - geometry.visibleRect.maxY <= 112
-                viewport.follow.phaseChanged(interaction, nearBottom: nearBottom)
+                viewport.follow.phaseChanged(interaction, nearBottom: Self.isAtLatest(geometry))
                 if previous == .idle && interaction != .idle {
                     pendingReadingOffset = nil
                     viewport.position = ScrollPosition()
@@ -151,8 +148,18 @@ private struct TranscriptViewportModifier: ViewModifier {
             }
     }
 
+    private nonisolated static func isAtLatest(_ geometry: ScrollGeometry) -> Bool {
+        let bottom = max(-geometry.contentInsets.top, bottomOffset(geometry))
+        // Allow rounding at the bottom while preserving even a short scroll into history.
+        return geometry.contentOffset.y >= bottom - 1
+    }
+
     private nonisolated static func liveOffset(_ geometry: ScrollGeometry) -> CGFloat {
-        max(0, geometry.contentSize.height - geometry.containerSize.height + geometry.contentInsets.bottom)
+        max(0, bottomOffset(geometry))
+    }
+
+    private nonisolated static func bottomOffset(_ geometry: ScrollGeometry) -> CGFloat {
+        geometry.contentSize.height - geometry.containerSize.height + geometry.contentInsets.bottom
     }
 }
 

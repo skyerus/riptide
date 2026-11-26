@@ -15,8 +15,16 @@ struct ChatComposer: View {
 
     var body: some View {
         let working = model.selected.working
-        let prompt = working ? "Steer this reply" : "Message \(model.target.name)"
-        let queue: (() -> Void)? = working ? { submitDraft(queue: true) } : nil
+        let canSteer = model.selected.canStop
+        let queueOnly = working && !canSteer
+        let (prompt, action, symbol) = if canSteer {
+            ("Steer this reply", "Steer", "arrow.up")
+        } else if queueOnly {
+            ("Queue a message", "Queue", "text.append")
+        } else {
+            ("Message \(model.target.name)", "Send", "arrow.up")
+        }
+        let queue: (() -> Void)? = canSteer ? { submitDraft(queue: true) } : nil
         DictatingComposer(
             focused: editorFocus.wrappedValue,
             showsOptions: model.selected.context != nil || model.selected.hasConfigChoices
@@ -31,7 +39,7 @@ struct ChatComposer: View {
                 showContext = false
             },
             canSubmit: canSubmit,
-            submitDraft: { submitDraft(queue: false) },
+            submitDraft: { submitDraft(queue: queueOnly) },
             queueDraft: queue
         ) {
             TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
@@ -45,16 +53,16 @@ struct ChatComposer: View {
             }
             ChatModelControls(model: model, isExpanded: $modelPickerVisible)
         } actions: {
-            if working {
+            if canSteer {
                 ComposerAction("Stop reply", symbol: "stop.fill", disabled: model.selected.stopping) {
                     Task { await model.stop() }
                 }
                 .accessibilityIdentifier("stop-reply")
             }
-            ComposerAction(working ? "Steer" : "Send", symbol: "arrow.up",
+            ComposerAction(action, symbol: symbol,
                            disabled: !canSubmit || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                            queue: queue) {
-                submitDraft(queue: false)
+                submitDraft(queue: queueOnly)
             }
             .accessibilityIdentifier("send-message")
         }

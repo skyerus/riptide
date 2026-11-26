@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import RiptideCore
 
@@ -141,6 +142,57 @@ struct ChatTests {
         #expect(model.selected.transcript.latestAssistantEntryID != nil)
     }
 
+    @Test(arguments: [false, true])
+    func reconnectRestoresAnActiveHermesTurnWithoutResubmitting(queueFollowUp: Bool) async throws {
+        let target = AgentTarget.demos[1]
+        let initial = TurnActivityTransport(sessionID: target.mainSessionID, reopened: false)
+        let resumed = TurnActivityTransport(sessionID: target.mainSessionID, reopened: true)
+        let first = ACPClient(transport: initial)
+        let second = ACPClient(transport: resumed)
+        let clients = Mutex([first, second])
+        let model = AgentChatModel(target: target, connect: { clients.withLock { $0.removeFirst() } })
+
+        await model.showMain()
+        model.submit("Review the project")
+        try await waitUntil { await initial.promptCount == 1 }
+        #expect(model.selected.canStop)
+        await first.close()
+        try await waitUntil { model.selected.connectionLost }
+        #expect(!model.selected.working)
+
+        await model.showMain()
+        #expect(!model.selected.connectionLost)
+        #expect(model.selected.working)
+        #expect(!model.selected.canStop)
+        #expect(model.workingChats == [target.mainSessionID])
+        #expect(model.selected.transcript.entries.map(\.content) == [.message(.user, "Review the project")])
+        #expect(!model.submit("Do not send a second message"))
+        #expect(!(await model.steer("Do not steer this turn", in: target.mainSessionID)))
+        if queueFollowUp {
+            #expect(model.enqueue("Queued follow-up", in: target.mainSessionID))
+            #expect(model.selected.queuedMessages.map(\.text) == ["Queued follow-up"])
+        }
+        await model.stop()
+        #expect(await resumed.promptCount == 0)
+        #expect(await resumed.cancelCount == 0)
+
+        try await resumed.reportTool()
+        try await waitUntil { model.selected.transcript.activeToolCalls.first?.title == "Review context" }
+        try await resumed.complete()
+        if queueFollowUp {
+            try await waitUntil { await resumed.promptCount == 1 }
+            #expect(model.selected.queuedMessages.isEmpty)
+            #expect(model.selected.transcript.entries.suffix(2).map(\.content) == [
+                .message(.assistant, "The review is ready."), .message(.user, "Queued follow-up")
+            ])
+        } else {
+            try await waitUntil { !model.selected.working }
+            #expect(model.workingChats.isEmpty)
+            #expect(model.selected.transcript.entries.last?.content == .message(.assistant, "The review is ready."))
+        }
+        await second.close()
+    }
+
     @Test func canDenyPermissionAndOnlyUpdatesItsOriginalConversation() async throws {
         let model = try makeModel()
         await model.showMain()
@@ -273,5 +325,69 @@ private actor GatedHistoryTransport: ACPTransport {
         released = true
         for task in waiting { task.resume() }
         waiting.removeAll()
+    }
+}
+
+private actor TurnActivityTransport: ACPTransport {
+    nonisolated let incoming: AsyncThrowingStream<Data, any Error>
+    private let output: AsyncThrowingStream<Data, any Error>.Continuation
+    private let sessionID: String
+    private let reopened: Bool
+    private(set) var promptCount = 0
+    private(set) var cancelCount = 0
+
+    init(sessionID: String, reopened: Bool) {
+        (incoming, output) = AsyncThrowingStream.makeStream()
+        self.sessionID = sessionID
+        self.reopened = reopened
+    }
+
+    func send(_ data: Data) async throws {
+        let packet = try JSONDecoder().decode(JSON.self, from: data)
+        let id = packet["id"] ?? .null
+        switch packet["method"]?.string {
+        case "initialize":
+            try emit(.reply(id, result: [
+                "protocolVersion": .integer(1), "agentCapabilities": ["loadSession": .boolean(true)]
+            ]))
+        case "session/load":
+            if reopened {
+                try update(["sessionUpdate": "user_message_chunk", "messageId": "prompt",
+                            "content": ["type": "text", "text": "Review the project"]])
+                try reportActivity(true)
+            }
+            try emit(.reply(id, result: [:]))
+        case "session/prompt":
+            promptCount += 1
+            try reportActivity(true)
+        case "session/cancel":
+            cancelCount += 1
+        default:
+            break
+        }
+    }
+
+    func reportTool() throws {
+        try update(["sessionUpdate": "tool_call", "toolCallId": "tool",
+                    "title": "Review context", "status": "in_progress"])
+    }
+
+    func complete() throws {
+        try update(["sessionUpdate": "tool_call_update", "toolCallId": "tool", "status": "completed"])
+        try update(["sessionUpdate": "agent_message_chunk", "messageId": "reply",
+                    "content": ["type": "text", "text": "The review is ready."]])
+        try reportActivity(false)
+    }
+
+    private func reportActivity(_ working: Bool) throws {
+        try update(["sessionUpdate": "session_info_update", "_meta": ["app.riptide.turnWorking": .boolean(working)]])
+    }
+
+    private func update(_ update: JSON) throws {
+        try emit(.notification("session/update", params: ["sessionId": .string(sessionID), "update": update]))
+    }
+
+    private func emit(_ packet: JSON) throws {
+        output.yield(try JSONEncoder().encode(packet))
     }
 }

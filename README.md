@@ -121,6 +121,8 @@ Use the precise directory and ID returned by `hermes -p bookkeeper acp`'s `sessi
 
 Install `Host/hermes-pairing/SKILL.md` under the source profile's `skills/riptide-hermes-pairing/` and enable native `clarify` there. Then ask that agent to connect the configured profile and tap **Connect agent** in chat.
 
+For a gateway-managed Hermes chat, [the reconnect status patch](Host/compat/hermes-acp-turn-status.patch) lets Riptide recover the **Working** indicator from the same chat when SSH reconnects. Apply the patch from the Riptide release to the Hermes source at revision `8fc0374447313e276f6b9a2764bfc750190c966a`. Run `git apply --check /path/to/riptide/Host/compat/hermes-acp-turn-status.patch` before applying it with `git apply`. The next SSH connection starts a fresh ACP process and picks up the patch. Use `git apply -R` with the same patch to roll back. The patch can be applied alongside the Hermes Safari and ACP steering compatibility patches.
+
 ### Hermes browser handoff over SSH
 
 Configure native [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) in the Hermes profile that owns the chat. Install its listed Linux packages, set `browser.headed` and `bot_desktop.auto_start` to `true`, and install the `websockets` Python package for the interpreter in the forced command. Install `Host/hermes_screen.py` and `Host/hermes_mobile.py` beside the updated `Host/ssh_acp.py` at the same trusted path. Add `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` before `--` in the authorized key’s fixed command. Give this option only to devices trusted to control that profile’s native desktop.
