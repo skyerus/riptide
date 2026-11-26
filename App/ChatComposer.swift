@@ -5,62 +5,62 @@ struct ChatComposer: View {
     let model: AgentChatModel
     let chatID: String
     @Binding var draft: String
+    @Binding var attachments: [ChatAttachment]
     @Binding var modelPickerVisible: Bool
-    var editorFocus: FocusState<Bool>.Binding
+    @Binding var editorFocus: Bool
     let transcribe: DictationTranscriber?
     let didSend: () -> Void
-    let submit: (String) -> Bool
+    let submit: (String, [ChatAttachment], (@MainActor () -> Void)?) -> Bool
 
     @State private var showContext = false
 
     var body: some View {
         let working = model.selected.working
-        let prompt = working ? "Steer this reply" : "Message \(model.target.name)"
-        let queue: (() -> Void)? = working ? { submitDraft(queue: true) } : nil
-        DictatingComposer(
-            focused: editorFocus.wrappedValue,
-            showsOptions: model.selected.context != nil || model.selected.hasConfigChoices
-                || model.selected.modelName != nil,
+        let queuesAttachments = working && !attachments.isEmpty
+        let prompt = queuesAttachments ? "Queue a follow-up" : working ? "Steer this reply" : "Message \(model.target.name)"
+        let queue: (() -> Void)? = working && !queuesAttachments ? { submitDraft(queue: true) } : nil
+        MessageComposer(
+            focused: $editorFocus,
+            prompt: prompt,
+            editorIdentifier: "chat-composer",
+            editorEnabled: model.selected.loaded,
             chatID: chatID,
             canDictate: model.selected.loaded,
             draft: $draft,
+            attachments: $attachments,
+            acceptsImages: model.selected.acceptsImages,
+            attachmentByteLimit: ChatAttachment.acpByteLimit,
+            canAttach: model.selected.loaded,
             transcribe: transcribe,
             dismissKeyboard: {
-                editorFocus.wrappedValue = false
+                editorFocus = false
                 modelPickerVisible = false
                 showContext = false
             },
             canSubmit: canSubmit,
-            submitDraft: { submitDraft(queue: false) },
+            submitDraft: { submitDraft(queue: queuesAttachments) },
             queueDraft: queue
         ) {
-            TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
-                .lineLimit(1...6)
-                .focused(editorFocus)
-                .disabled(!model.selected.loaded)
-                .accessibilityIdentifier("chat-composer")
-        } options: {
             if let usage = model.selected.context {
                 contextButton(usage)
             }
             ChatModelControls(model: model, isExpanded: $modelPickerVisible)
-        } actions: {
+        } actions: { canSend in
             if working {
                 ComposerAction("Stop reply", symbol: "stop.fill", disabled: model.selected.stopping) {
                     Task { await model.stop() }
                 }
                 .accessibilityIdentifier("stop-reply")
             }
-            ComposerAction(working ? "Steer" : "Send", symbol: "arrow.up",
-                           disabled: !canSubmit || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                           queue: queue) {
-                submitDraft(queue: false)
+            ComposerAction(queuesAttachments ? "Queue" : working ? "Steer" : "Send", symbol: "arrow.up",
+                           disabled: !canSend, queue: queue) {
+                submitDraft(queue: queuesAttachments)
             }
             .accessibilityIdentifier("send-message")
         }
         .onChange(of: model.selectedID) {
             showContext = false
-            editorFocus.wrappedValue = false
+            editorFocus = false
         }
         .onChange(of: modelPickerVisible) {
             if modelPickerVisible { showContext = false }
@@ -107,24 +107,23 @@ struct ChatComposer: View {
     }
 
     private func submitDraft(queue: Bool) {
-        let editor = $draft
-        let text = editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canSubmit, !text.isEmpty else { return }
-        editorFocus.wrappedValue = false
+        let message = ComposerDraft(text: $draft, files: $attachments)
+        guard canSubmit, message.hasContent else { return }
+        editorFocus = false
         didSend()
-        if queue {
-            if model.enqueue(text, in: chatID) { editor.wrappedValue = "" }
+        if queue || (model.selected.working && !message.attachments.isEmpty) {
+            if model.enqueue(message.text, attachments: message.attachments, in: chatID) { message.clear() }
         } else if model.selected.working {
             Task {
-                if await model.steer(text, in: chatID),
-                   editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
-                    editor.wrappedValue = ""
-                }
+                if await model.steer(message.text, in: chatID) { message.clear() }
             }
-        } else if submit(text) {
-            editor.wrappedValue = ""
+        } else if message.attachments.isEmpty {
+            if submit(message.text, [], nil) { message.clear() }
+        } else {
+            _ = submit(message.text, message.attachments, message.clear)
         }
     }
+
 }
 
 struct ComposerSurface<Field: View, Options: View, Actions: View>: View {
@@ -277,7 +276,7 @@ struct ComposerQueue: View {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(messages) { message in
                                 HStack(spacing: 12) {
-                                    Text(message.text).lineLimit(3)
+                                    Text(message.displayText).lineLimit(3)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                     if sendingID == message.id {
                                         ProgressView()

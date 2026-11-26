@@ -97,7 +97,9 @@ public actor FixtureTransport: ACPTransport {
             case "initialize":
                 emit(.reply(id, result: [
                     "protocolVersion": .integer(1),
-                    "agentCapabilities": ["loadSession": .boolean(true), "sessionCapabilities": ["list": [:]]]
+                    "agentCapabilities": ["loadSession": .boolean(true), "sessionCapabilities": ["list": [:]],
+                                          "promptCapabilities": ["image": .boolean(true)],
+                                          "_meta": ["riptide.app/attachments": .integer(1)]]
                 ]))
             case "session/list":
                 emit(.reply(id, result: ["sessions": .array(sessions.map { session in
@@ -150,6 +152,13 @@ public actor FixtureTransport: ACPTransport {
                 } else {
                     emit(.reply(id, result: ["status": "idle"]))
                 }
+            case "riptide/stageAttachments":
+                let paths: [JSON] = (params["files"]?.array ?? []).compactMap { file in
+                    guard let name = file["name"]?.string, let encoded = file["dataBase64"]?.string,
+                          Data(base64Encoded: encoded) != nil else { return nil }
+                    return .string("/fixture/attachments/\(name)")
+                }
+                emit(.reply(id, result: ["paths": .array(paths)]))
             case "session/prompt":
                 guard turns[sessionID] == nil, let index = index(of: sessionID),
                       let text = params["prompt"]?.array?.first?["text"]?.string else {

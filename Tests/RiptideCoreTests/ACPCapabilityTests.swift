@@ -3,6 +3,93 @@ import Testing
 @testable import RiptideCore
 
 struct ACPCapabilityTests {
+    @Test func codexStagesFilesAndSendsPhotosAsVisionInput() async throws {
+        let thread: JSON = ["id": "selected", "cwd": "/disposable"]
+        let photo = ChatAttachment(name: "Photo.png", data: Data([1, 2, 3]), imageMIMEType: "image/png")
+        let document = ChatAttachment(name: "Report.pdf", data: Data([37, 80, 68, 70]))
+        let transport = ScriptedTransport { request in
+            let method = request["method"]?.string
+            if method == "initialized" { return [] }
+            let id = try #require(request["id"])
+            let params = request["params"]
+            switch method {
+            case "initialize":
+                return [.reply(id, result: ["codexHome": "/test-codex-home"])]
+            case "thread/read", "thread/resume":
+                return [.reply(id, result: ["thread": thread])]
+            case "thread/turns/list":
+                return [.reply(id, result: ["data": .array([])])]
+            case "fs/createDirectory":
+                #expect(params?["path"]?.string?.hasPrefix("/test-codex-home/attachments/") == true)
+                return [.reply(id, result: [:])]
+            case "fs/writeFile":
+                let path = try #require(params?["path"]?.string)
+                #expect(path.hasPrefix("/test-codex-home/attachments/"))
+                if path.hasSuffix("/1-Photo.png") {
+                    #expect(params?["dataBase64"]?.string == photo.data.base64EncodedString())
+                } else {
+                    #expect(path.hasSuffix("/2-Report.pdf"))
+                    #expect(params?["dataBase64"]?.string == document.data.base64EncodedString())
+                }
+                return [.reply(id, result: [:])]
+            case "turn/start":
+                #expect(params?["threadId"] == "selected")
+                let input = try #require(params?["input"]?.array)
+                #expect(input.count == 2)
+                #expect(input.first?["type"] == "localImage")
+                #expect(input.first?["path"]?.string?.hasSuffix("/1-Photo.png") == true)
+                #expect(input.last?["text"]?.string?.hasSuffix("/2-Report.pdf") == true)
+                #expect(input.last?["text"]?.string?.contains("Attached file: Report.pdf") == true)
+                let message = CodexChatMessage(["id": "message", "type": "userMessage", "content": .array(input)])
+                #expect(message?.text.hasPrefix("Attached image: Photo.png") == true)
+                return [.reply(id, result: ["turn": ["id": "new-turn"]])]
+            default:
+                Issue.record("Unexpected attachment RPC: \(method ?? "missing")")
+                return [.failure(id, code: -32601, message: "Unexpected request")]
+            }
+        }
+        let client = CodexLiveClient(transport: transport, workspace: "/disposable")
+        _ = try await client.openSavedChat("selected")
+        try await client.sendToSavedChat("", attachments: [photo, document])
+        await client.close()
+    }
+
+    @Test func acpStagesBinaryFilesAndSendsImageContentBlocks() async throws {
+        let photo = ChatAttachment(name: "Photo.jpg", data: Data([1, 2, 3]), imageMIMEType: "image/jpeg")
+        let document = ChatAttachment(name: "Report.pdf", data: Data([37, 80, 68, 70]))
+        let transport = ScriptedTransport { request in
+            let id = try #require(request["id"])
+            let params = request["params"]
+            switch request["method"]?.string {
+            case "initialize":
+                return [.reply(id, result: ["protocolVersion": .integer(1), "agentCapabilities": [
+                    "promptCapabilities": ["image": .boolean(true)],
+                    "_meta": ["riptide.app/attachments": .integer(1)],
+                ]])]
+            case "riptide/stageAttachments":
+                #expect(params?["files"]?.array == [[
+                    "name": "Report.pdf", "dataBase64": .string(document.data.base64EncodedString()),
+                ]])
+                return [.reply(id, result: ["paths": .array(["/tmp/private/1-Report.pdf"])])]
+            case "session/prompt":
+                #expect(params?["sessionId"] == "selected")
+                #expect(params?["prompt"]?.array == [
+                    ["type": "text", "text": "Review these"],
+                    ["type": "text", "text": "Attached file: Report.pdf\nHost path: /tmp/private/1-Report.pdf"],
+                    ["type": "text", "text": "Attached image: Photo.jpg"],
+                    ["type": "image", "mimeType": "image/jpeg", "data": .string(photo.data.base64EncodedString())],
+                ])
+                return [.reply(id, result: ["stopReason": "end_turn"])]
+            default:
+                Issue.record("Unexpected ACP attachment RPC")
+                return [.failure(id, code: -32601, message: "Unexpected request")]
+            }
+        }
+        let client = ACPClient(transport: transport, restrictedSSH: true)
+        #expect(try await client.prompt("Review these", sessionID: "selected", attachments: [photo, document]) == "end_turn")
+        await client.close()
+    }
+
     @Test func codexInputAndStopAreScopedToTheCurrentRequestAndTurn() async throws {
         let thread: JSON = ["id": "selected", "cwd": "/disposable"]
         let transport = ScriptedTransport { request in
@@ -315,6 +402,7 @@ struct ACPCapabilityTests {
     }
 
     @Test func directCodexWatchesAndSteersTheSameNativeTurn() async throws {
+        let attachment = ChatAttachment(name: "notes.txt", data: Data("Fixture notes".utf8))
         let transport = ScriptedTransport { request in
             let method = request["method"]?.string
             if method == "initialized" { return [] }
@@ -322,6 +410,12 @@ struct ACPCapabilityTests {
             let params = request["params"]
             switch method {
             case "initialize":
+                return [.reply(id, result: ["codexHome": "/test-codex-home"])]
+            case "fs/createDirectory":
+                return [.reply(id, result: [:])]
+            case "fs/writeFile":
+                #expect(params?["path"]?.string?.hasSuffix("/1-notes.txt") == true)
+                #expect(params?["dataBase64"]?.string == attachment.data.base64EncodedString())
                 return [.reply(id, result: [:])]
             case "thread/list":
                 #expect(params?["cwd"] == "/disposable")
@@ -353,6 +447,7 @@ struct ACPCapabilityTests {
                 #expect(params?["threadId"] == "live")
                 #expect(params?["expectedTurnId"] == "running")
                 #expect(params?["input"]?.array?.first?["text"] == "change course")
+                #expect(params?["input"]?.array?.last?["text"]?.string?.hasSuffix("/1-notes.txt") == true)
                 return [
                     .reply(id, result: ["turnId": "running"]),
                     .notification("turn/completed", params: [
@@ -370,7 +465,7 @@ struct ACPCapabilityTests {
         var iterator = client.events.makeAsyncIterator()
         #expect(try await iterator.next() == .output(turnID: "running", text: "first live update"))
         #expect(try await iterator.next() == .diff(turnID: "running", patch: "-before\n+after"))
-        #expect(try await client.steer("change course", expected: turn) == "running")
+        #expect(try await client.steer("change course", expected: turn, attachments: [attachment]) == "running")
         #expect(try await iterator.next() == .completed(turnID: "running", status: "completed"))
         await #expect(throws: CodexLiveError.noActiveTurn) {
             try await client.steer("too late", expected: turn)

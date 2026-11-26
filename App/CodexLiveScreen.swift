@@ -12,13 +12,14 @@ struct CodexLiveScreen: View {
     @State private var failure: String?
     @State private var attempt = 0
     @State private var draft = ""
+    @State private var attachments: [ChatAttachment] = []
     @State private var receipt: String?
     @State private var output = ""
     @State private var outputEvents = 0
     @State private var replies: [Reply] = []
     @State private var patch: String?
     @State private var viewport = TranscriptViewport()
-    @FocusState private var editorFocused: Bool
+    @State private var editorFocused = false
 
     private struct Reply: Identifiable {
         let id: String
@@ -138,25 +139,21 @@ struct CodexLiveScreen: View {
     private func composer(_ session: CodexWorkspaceSession) -> some View {
         let prompt = session.working ? "Steer this turn" : "Message Codex"
         let canSubmit = !session.sending && !session.stopping
-        let disabled = !canSubmit || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let queue: (() -> Void)? = session.working ? { submitDraft(queue: true) } : nil
-        return DictatingComposer(
-            focused: editorFocused, showsOptions: false, chatID: turn?.threadID,
-            canDictate: canSubmit, draft: $draft,
+        return MessageComposer(
+            focused: $editorFocused, prompt: prompt, editorIdentifier: "codex-steer-input",
+            editorEnabled: true, chatID: turn?.threadID,
+            canDictate: canSubmit, draft: $draft, attachments: $attachments,
+            acceptsImages: true, attachmentByteLimit: ChatAttachment.codexByteLimit, canAttach: canSubmit,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
             dismissKeyboard: { editorFocused = false },
             canSubmit: canSubmit,
             submitDraft: { submitDraft(queue: false) },
             queueDraft: queue
         ) {
-            TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
-                .lineLimit(1...6)
-                .focused($editorFocused)
-                .accessibilityIdentifier("codex-steer-input")
-        } options: {
             EmptyView()
-        } actions: {
-            ComposerAction(session.working ? "Steer" : "Send", symbol: "arrow.up", disabled: disabled, queue: queue) {
+        } actions: { canSend in
+            ComposerAction(session.working ? "Steer" : "Send", symbol: "arrow.up", disabled: !canSend, queue: queue) {
                 submitDraft(queue: false)
             }
             .accessibilityIdentifier("codex-steer-send")
@@ -225,17 +222,17 @@ struct CodexLiveScreen: View {
     }
 
     private func submitDraft(queue: Bool) {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let session, session.ready, !session.sending, !session.stopping, !text.isEmpty else { return }
+        let message = ComposerDraft(text: $draft, files: $attachments)
+        guard let session, session.ready, !session.sending, !session.stopping, message.hasContent else { return }
         editorFocused = false
         if queue {
-            session.enqueue(text)
-            draft = ""
+            session.enqueue(message.text, attachments: message.attachments)
+            message.clear()
         } else {
             Task {
-                guard let delivery = await session.send(text) else { return }
+                guard let delivery = await session.send(message.text, attachments: message.attachments) else { return }
                 if case .steered(let id) = delivery { receipt = "Steering accepted · Turn \(id.suffix(8))" }
-                if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
+                message.clear()
             }
         }
     }

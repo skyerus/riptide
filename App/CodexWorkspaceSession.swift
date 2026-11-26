@@ -93,9 +93,9 @@ final class CodexWorkspaceSession {
         if let old { Task { await old.close() } }
     }
 
-    func enqueue(_ text: String) {
+    func enqueue(_ text: String, attachments: [ChatAttachment] = []) {
         sendIssue = nil
-        queuedMessages.append(QueuedChatMessage(text: text))
+        queuedMessages.append(QueuedChatMessage(text: text, attachments: attachments))
         drainQueue()
     }
 
@@ -114,13 +114,13 @@ final class CodexWorkspaceSession {
         guard ready, !working, !sending, !stopping, !queuePaused, !queuedMessages.isEmpty else { return }
         Task {
             guard !working, !queuePaused, let message = queuedMessages.first else { return }
-            await send(message.text, queuedID: message.id)
+            await send(message.text, attachments: message.attachments, queuedID: message.id)
         }
     }
 
     @discardableResult
-    func send(_ text: String, queuedID: UUID? = nil) async -> CodexMessageDelivery? {
-        guard let client, ready, !sending, !stopping, !text.isEmpty else { return nil }
+    func send(_ text: String, attachments: [ChatAttachment] = [], queuedID: UUID? = nil) async -> CodexMessageDelivery? {
+        guard let client, ready, !sending, !stopping, !text.isEmpty || !attachments.isEmpty else { return nil }
         sending = true
         sendingQueuedID = queuedID
         sendIssue = nil
@@ -133,7 +133,7 @@ final class CodexWorkspaceSession {
         }
         do {
             let previousTurnID = activeTurnID
-            let delivery = try await client.sendToSavedChat(text, startOnly: queuedID != nil)
+            let delivery = try await client.sendToSavedChat(text, attachments: attachments, startOnly: queuedID != nil)
             guard self.client === client else { return nil }
             if case .started(let id) = delivery, activeTurnID == nil || activeTurnID == previousTurnID,
                lastCompletedTurnID != id {

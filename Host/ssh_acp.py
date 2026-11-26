@@ -1,11 +1,17 @@
 import argparse
 import asyncio
+import base64
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import sys
+import tempfile
 
 MAX_FRAME = 2 * 1024 * 1024
+MAX_ATTACHMENT_BYTES = 1024 * 1024
+STAGE_ATTACHMENTS = "riptide/stageAttachments"
 REQUESTS = {
     "initialize": {"protocolVersion", "clientCapabilities", "clientInfo"},
     "session/list": {"cursor", "cwd"},
@@ -20,6 +26,80 @@ REQUESTS = {
 
 def rpc_id(value):
     return type(value) in (int, str)
+
+
+def advertise_attachments(packet):
+    result = packet.get("result")
+    if not isinstance(result, dict) or result.get("protocolVersion") != 1:
+        return
+    capabilities = result.get("agentCapabilities")
+    if not isinstance(capabilities, dict):
+        capabilities = result["agentCapabilities"] = {}
+    metadata = capabilities.get("_meta")
+    if not isinstance(metadata, dict):
+        metadata = capabilities["_meta"] = {}
+    metadata["riptide.app/attachments"] = 1
+    return True
+
+
+def stage_attachments(packet):
+    response = {"jsonrpc": "2.0", "id": packet.get("id")}
+    directory = None
+    try:
+        if set(packet) != {"jsonrpc", "id", "method", "params"} or not rpc_id(response["id"]):
+            raise ValueError
+        params = packet["params"]
+        if not isinstance(params, dict) or set(params) != {"files"}:
+            raise ValueError
+        files = params["files"]
+        if not isinstance(files, list) or not 1 <= len(files) <= 4:
+            raise ValueError
+        decoded = []
+        total = 0
+        for item in files:
+            if not isinstance(item, dict) or set(item) != {"name", "dataBase64"}:
+                raise ValueError
+            name, encoded = item["name"], item["dataBase64"]
+            if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", name)
+                    or name in (".", "..") or not isinstance(encoded, str)):
+                raise ValueError
+            data = base64.b64decode(encoded, validate=True)
+            total += len(data)
+            if total > MAX_ATTACHMENT_BYTES:
+                raise ValueError
+            decoded.append((name, data))
+        # A private random directory lets follow-up turns read the files after reconnect.
+        directory = Path(tempfile.mkdtemp(prefix="riptide-attachments-"))
+        paths = []
+        for index, (name, data) in enumerate(decoded, start=1):
+            path = directory / f"{index}-{name}"
+            with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
+                file.write(data)
+            paths.append(str(path))
+        response["result"] = {"paths": paths}
+    except (ValueError, OSError):
+        if directory is not None:
+            shutil.rmtree(directory, ignore_errors=True)
+        response["error"] = {"code": -32602, "message": "The host couldn’t stage these attachments (1 MB total)."}
+    return response
+
+
+def prompt_block(block):
+    if not isinstance(block, dict):
+        return False
+    if block.get("type") == "text":
+        return set(block) == {"type", "text"} and isinstance(block["text"], str)
+    if (block.get("type") != "image" or set(block) != {"type", "mimeType", "data"}
+            or not isinstance(block["data"], str)):
+        return False
+    if block["mimeType"] not in ("image/jpeg", "image/png"):
+        return False
+    try:
+        data = base64.b64decode(block["data"], validate=True)
+    except ValueError:
+        return False
+    signature = b"\xff\xd8\xff" if block["mimeType"] == "image/jpeg" else b"\x89PNG\r\n\x1a\n"
+    return len(data) <= MAX_ATTACHMENT_BYTES and data.startswith(signature)
 
 
 def admitted(packet, workspace, pending):
@@ -57,10 +137,7 @@ def admitted(packet, workspace, pending):
         return isinstance(text, str) and bool(text.strip()) and len(text) <= 65_536
     if method == "session/prompt":
         blocks = params.get("prompt")
-        return isinstance(blocks, list) and bool(blocks) and all(
-            isinstance(block, dict) and set(block) == {"type", "text"}
-            and block["type"] == "text" and isinstance(block["text"], str) for block in blocks
-        )
+        return isinstance(blocks, list) and bool(blocks) and all(map(prompt_block, blocks))
     return True
 
 
@@ -79,17 +156,25 @@ async def serve(workspace, command, safari_mcp=None, attention_socket=None):
     pending = set()
     openings = {}
     opened = set()
+    initialize_id = None
+    initialized = False
 
     def write(message):
         sys.stdout.buffer.write(message)
         sys.stdout.buffer.flush()
 
     async def to_agent():
+        nonlocal initialize_id
         while line := await source.readline():
             packet = json.loads(line)
-            if admitted(packet, workspace, pending):
+            method = packet.get("method") if isinstance(packet, dict) else None
+            if method == STAGE_ATTACHMENTS and initialized and packet.get("jsonrpc") == "2.0":
+                reply = stage_attachments(packet)
+                write(json.dumps(reply).encode() + b"\n")
+            elif admitted(packet, workspace, pending):
+                if method == "initialize":
+                    initialize_id = packet["id"]
                 if attention_socket:
-                    method = packet.get("method")
                     if method in ("session/new", "session/load") and len(openings) < 128:
                         openings[packet["id"]] = packet["params"].get("sessionId")
                     if method == "session/prompt" and packet["params"]["sessionId"] in opened:
@@ -111,9 +196,13 @@ async def serve(workspace, command, safari_mcp=None, attention_socket=None):
                 }).encode() + b"\n")
 
     async def from_agent():
+        nonlocal initialized
         while line := await agent.stdout.readline():
             packet = json.loads(line)
             request_id = packet.get("id")
+            if rpc_id(request_id) and "method" not in packet and request_id == initialize_id:
+                initialized = advertise_attachments(packet)
+                line = json.dumps(packet).encode() + b"\n"
             if rpc_id(request_id) and "method" not in packet and request_id in openings:
                 held_id = openings.pop(request_id)
                 if isinstance(packet.get("result"), dict):

@@ -34,6 +34,24 @@ struct ChatTests {
         #expect(sent == ["Show an approval", "Focus on the draft", "Follow up separately"])
     }
 
+    @Test func attachmentOnlyFollowUpWaitsForTheOriginalReply() async throws {
+        let model = try makeModel()
+        await model.showMain()
+        let main = model.selectedID
+        #expect(model.submit("Show an approval"))
+        try await waitUntil { !model.selected.permissions.isEmpty }
+
+        let report = ChatAttachment(name: "Report.pdf", data: Data("%PDF-1.4".utf8))
+        #expect(model.enqueue("", attachments: [report], in: main))
+        #expect(model.selected.queuedMessages.first?.attachments == [report])
+        #expect(!model.selected.transcript.entries.contains { $0.content == .message(.user, "Attached: Report.pdf") })
+
+        let permission = try #require(model.selected.permissions.first)
+        await model.answer(permission, optionID: nil)
+        try await waitUntil { !model.selected.working && model.selected.queuedMessages.isEmpty }
+        #expect(model.selected.transcript.entries.contains { $0.content == .message(.user, "Attached: Report.pdf") })
+    }
+
     @Test func openingMainJoinsAnInFlightPreloadWithoutChangingTheCurrentChatEarly() async throws {
         let fixture = try FixtureTransport(target: target, catalog: ["Side chat"])
         let transport = GatedHistoryTransport(fixture: fixture, mainID: target.mainSessionID)

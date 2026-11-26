@@ -91,6 +91,7 @@ public actor ACPClient {
     public nonisolated let events: AsyncStream<ACPEvent>
     private let emit: AsyncStream<ACPEvent>.Continuation
     private let transport: any ACPTransport
+    private let restrictedSSH: Bool
     private var reader: Task<Void, Never>?
     private var initialization: Task<JSON, any Error>?
     private var nextID = 0
@@ -104,8 +105,9 @@ public actor ACPClient {
     private var loadedSessions = Set<String>()
     private var newVoiceSessionKeys: [String: String]?
 
-    public init(transport: any ACPTransport) {
+    public init(transport: any ACPTransport, restrictedSSH: Bool = false) {
         self.transport = transport
+        self.restrictedSSH = restrictedSSH
         (events, emit) = AsyncStream.makeStream()
     }
 
@@ -152,7 +154,7 @@ public actor ACPClient {
     }
 
     public func newSession(cwd: String, nativeSessionKey: String? = nil) async throws -> OpenedSession {
-        _ = try await initialize()
+        let capabilities = try await initialize()
         guard newVoiceSessionKeys == nil else { throw ACPError.rejected("Another chat is opening.") }
         var params: [String: JSON] = ["cwd": .string(cwd), "mcpServers": .array([])]
         if let nativeSessionKey {
@@ -169,7 +171,8 @@ public actor ACPClient {
         loadedSessions.insert(id)
         return OpenedSession(id: id, configOptions: response["configOptions"]?.array.map(SessionConfigOption.parse),
                              events: [], nativeSessionKey: nativeSessionKey,
-                             reportedModelName: SessionConfigOption.reportedModelName(in: response))
+                             reportedModelName: SessionConfigOption.reportedModelName(in: response),
+                             acceptsImages: acceptsImages(capabilities))
     }
 
     public func load(sessionID: String, cwd: String) async throws -> OpenedSession {
@@ -183,7 +186,8 @@ public actor ACPClient {
         loadedSessions.insert(sessionID)
         return OpenedSession(id: sessionID, configOptions: response["configOptions"]?.array.map(SessionConfigOption.parse),
                              events: replaying[sessionID] ?? [],
-                             reportedModelName: SessionConfigOption.reportedModelName(in: response))
+                             reportedModelName: SessionConfigOption.reportedModelName(in: response),
+                             acceptsImages: acceptsImages(capabilities))
     }
 
     public func setConfigOption(sessionID: String, configID: String, value: String) async throws -> [SessionConfigOption] {
@@ -195,8 +199,8 @@ public actor ACPClient {
         return SessionConfigOption.parse(options)
     }
 
-    public func prompt(_ text: String, sessionID: String) async throws -> String {
-        try await runPrompt(text, sessionID: sessionID, collectReply: false).reason
+    public func prompt(_ text: String, sessionID: String, attachments: [ChatAttachment] = []) async throws -> String {
+        try await runPrompt(text, sessionID: sessionID, collectReply: false, attachments: attachments).reason
     }
 
     public func promptForVoice(_ text: String, sessionID: String) async throws -> String {
@@ -223,8 +227,9 @@ public actor ACPClient {
         }
     }
 
-    private func runPrompt(_ text: String, sessionID: String, collectReply: Bool) async throws -> (reason: String, reply: String) {
-        _ = try await initialize()
+    private func runPrompt(_ text: String, sessionID: String, collectReply: Bool,
+                           attachments: [ChatAttachment] = []) async throws -> (reason: String, reply: String) {
+        let capabilities = try await initialize()
         guard activePrompts.insert(sessionID).inserted else {
             throw ACPError.rejected("This conversation is already working.")
         }
@@ -235,11 +240,64 @@ public actor ACPClient {
             closePermissions(in: sessionID)
         }
         if collectReply { voiceReplies[sessionID] = "" }
+        let blocks = try await promptBlocks(text, attachments: attachments, capabilities: capabilities)
+        if cancelledPrompts.contains(sessionID) { return ("cancelled", "") }
         let response = try await call("session/prompt", [
-            "sessionId": .string(sessionID), "prompt": .array([["type": "text", "text": .string(text)]])
+            "sessionId": .string(sessionID), "prompt": .array(blocks)
         ])
         guard let reason = response["stopReason"]?.string else { throw ACPError.malformedResponse }
         return (reason, voiceReplies[sessionID] ?? "")
+    }
+
+    private func acceptsImages(_ capabilities: JSON) -> Bool {
+        capabilities["promptCapabilities"]?["image"] == .boolean(true)
+            && (!restrictedSSH || stagesFiles(capabilities))
+    }
+
+    private func stagesFiles(_ capabilities: JSON) -> Bool {
+        capabilities["_meta"]?["riptide.app/attachments"] == .integer(1)
+    }
+
+    private func promptBlocks(_ text: String, attachments: [ChatAttachment], capabilities: JSON) async throws -> [JSON] {
+        var blocks: [JSON] = text.isEmpty ? [] : [["type": "text", "text": .string(text)]]
+        guard !attachments.isEmpty else { return blocks }
+        guard attachments.count <= ChatAttachment.maxCount,
+              attachments.reduce(0, { $0 + $1.data.count }) <= ChatAttachment.acpByteLimit else {
+            throw ACPError.rejected("A message can include up to four attachments and 1 MB total on this connection.")
+        }
+
+        let vision = acceptsImages(capabilities)
+        let files = attachments.filter { $0.imageMIMEType == nil || !vision }
+        if !files.isEmpty {
+            if stagesFiles(capabilities) {
+                let uploads: [JSON] = files.map { [
+                    "name": .string($0.hostFilename), "dataBase64": .string($0.data.base64EncodedString())
+                ] }
+                let reply = try await call("riptide/stageAttachments", ["files": .array(uploads)])
+                guard let paths = reply["paths"]?.array?.compactMap(\.string), paths.count == files.count,
+                      paths.allSatisfy({ $0.hasPrefix("/") && !$0.contains(where: \.isNewline) }) else {
+                    throw ACPError.malformedResponse
+                }
+                for (file, path) in zip(files, paths) {
+                    blocks.append(["type": "text", "text": .string(file.reference(to: path))])
+                }
+            } else {
+                for file in files {
+                    guard let contents = file.inlineText else {
+                        throw ACPError.rejected("This agent connection can only attach small UTF-8 text files. Update the Riptide host bridge for other files.")
+                    }
+                    blocks.append(["type": "text", "text": .string("Attached text file: \(file.name)\n\(contents)")])
+                }
+            }
+        }
+        if vision {
+            for image in attachments {
+                guard let mime = image.imageMIMEType else { continue }
+                blocks.append(["type": "text", "text": .string("Attached image: \(image.name)")])
+                blocks.append(["type": "image", "mimeType": .string(mime), "data": .string(image.data.base64EncodedString())])
+            }
+        }
+        return blocks
     }
 
     public func cancel(sessionID: String) async throws {

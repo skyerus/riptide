@@ -11,6 +11,8 @@ from pathlib import Path
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
+from ssh_acp import STAGE_ATTACHMENTS, advertise_attachments, rpc_id, stage_attachments
+
 MAX_FRAME = 2 * 1024 * 1024
 DICTATION_PATH = "/riptide-dictation"
 
@@ -25,11 +27,11 @@ def read_token(path):
     return token
 
 
-def rpc_frame(text):
+def rpc_packet(text):
     packet = json.loads(text)
     if not isinstance(packet, dict) or packet.get("jsonrpc") != "2.0":
         raise ValueError("Expected one ACP JSON-RPC object per frame.")
-    return json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
+    return packet
 
 
 def bridge_server(port, token, command, dictation_auth=None):
@@ -66,16 +68,30 @@ def bridge_server(port, token, command, dictation_auth=None):
                 limit=MAX_FRAME,
             )
 
+            initialize_id = None
+            initialized = False
+
             async def to_agent():
+                nonlocal initialize_id
                 async for message in socket:
                     if not isinstance(message, str):
                         raise ValueError("Expected a text frame.")
-                    process.stdin.write((rpc_frame(message) + "\n").encode())
+                    packet = rpc_packet(message)
+                    if packet.get("method") == STAGE_ATTACHMENTS and initialized:
+                        await socket.send(json.dumps(stage_attachments(packet)))
+                        continue
+                    if packet.get("method") == "initialize" and rpc_id(packet.get("id")):
+                        initialize_id = packet["id"]
+                    process.stdin.write((json.dumps(packet, ensure_ascii=False, separators=(",", ":")) + "\n").encode())
                     await process.stdin.drain()
 
             async def to_phone():
+                nonlocal initialized
                 while line := await process.stdout.readline():
-                    await socket.send(rpc_frame(line.decode()))
+                    packet = rpc_packet(line.decode())
+                    if rpc_id(packet.get("id")) and packet["id"] == initialize_id and "method" not in packet:
+                        initialized = advertise_attachments(packet)
+                    await socket.send(json.dumps(packet, ensure_ascii=False, separators=(",", ":")))
 
             pumps = [asyncio.create_task(to_agent()), asyncio.create_task(to_phone())]
             done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)

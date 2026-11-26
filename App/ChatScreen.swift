@@ -21,7 +21,7 @@ struct ChatScreen: View {
     @State private var focusAfterHandback: String?
     @State private var connectingHermes: UUID?
     @State private var hermesPairingAttempt: HermesPairingAttempt?
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     @State private var safariApproval = SafariChatApproval()
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
@@ -240,10 +240,12 @@ struct ChatScreen: View {
         }
     }
 
-    private func sendMessage(_ text: String) -> Bool {
-        guard safariApproval.pending != nil, let agent = safariAgent else { return model.submit(text) }
+    private func sendMessage(_ text: String, attachments: [ChatAttachment], onSent: (@MainActor () -> Void)?) -> Bool {
+        guard safariApproval.pending != nil, let agent = safariAgent else {
+            return model.submit(text, attachments: attachments, onSent: onSent)
+        }
         let chatID = model.selectedID
-        return model.submit(text) {
+        return model.submit(text, attachments: attachments, onSent: onSent) {
             await safariApproval.prepareTurn(agent: agent, chatID: chatID, stillInChat: {
                 model.selectedID == chatID && !model.selected.stopping
             }, turnWorking: {
@@ -267,7 +269,7 @@ struct ChatScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !resolvingInitialChat {
                 VStack(spacing: 0) {
-                    ComposerQueue(messages: model.selected.queuedMessages, sendingID: nil,
+                    ComposerQueue(messages: model.selected.queuedMessages, sendingID: model.selected.sendingQueuedID,
                                   paused: model.selected.queuePaused, canResume: model.selected.loaded,
                                   remove: { model.removeQueuedMessage($0, in: chatKey.chat) },
                                   resume: { model.resumeQueue(in: chatKey.chat) })
@@ -293,6 +295,10 @@ struct ChatScreen: View {
                         draft: Binding(
                             get: { workspace.drafts[chatKey] },
                             set: { workspace.drafts[chatKey] = $0 }
+                        ),
+                        attachments: Binding(
+                            get: { workspace.drafts[attachments: chatKey] },
+                            set: { workspace.drafts[attachments: chatKey] = $0 }
                         ),
                         modelPickerVisible: $showModelPicker,
                         editorFocus: $composerFocused,

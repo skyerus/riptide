@@ -111,11 +111,12 @@ struct CodexSavedChatScreen: View {
     let onOpen: (CodexChatSummary) -> Void
     @State private var session: CodexWorkspaceSession?
     @State private var draft = ""
+    @State private var draftAttachments: [ChatAttachment] = []
     @State private var showChats = false
     @State private var showCall = false
     @State private var viewport = TranscriptViewport()
     @State private var showsCompletedToolCalls = false
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     @Environment(WorkspaceState.self) private var workspace
 
     private var chat: CodexChatSummary? { session?.chat }
@@ -139,6 +140,14 @@ struct CodexSavedChatScreen: View {
     private var editor: Binding<String> {
         guard let chatKey else { return $draft }
         return Binding(get: { workspace.drafts[chatKey] }, set: { workspace.drafts[chatKey] = $0 })
+    }
+
+    private var attachments: Binding<[ChatAttachment]> {
+        guard let chatKey else { return $draftAttachments }
+        return Binding(
+            get: { workspace.drafts[attachments: chatKey] },
+            set: { workspace.drafts[attachments: chatKey] = $0 }
+        )
     }
 
     var body: some View {
@@ -287,24 +296,20 @@ struct CodexSavedChatScreen: View {
     private var composer: some View {
         let prompt = working ? "Steer this turn" : "Message Codex"
         let canSubmit = ready && !sending && !stopping
-        let disabled = !canSubmit || editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let send = { submitDraft(queue: false) }
-        return DictatingComposer(
-            focused: composerFocused, showsOptions: false, chatID: chatKey?.chat,
-            canDictate: canSubmit, draft: editor,
+        return MessageComposer(
+            focused: $composerFocused, prompt: prompt, editorIdentifier: "codex-composer",
+            editorEnabled: true, chatID: chatKey?.chat,
+            canDictate: canSubmit, draft: editor, attachments: attachments,
+            acceptsImages: true, attachmentByteLimit: ChatAttachment.codexByteLimit, canAttach: canSubmit,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
             dismissKeyboard: { composerFocused = false },
             canSubmit: canSubmit,
             submitDraft: send,
             queueDraft: working ? { submitDraft(queue: true) } : nil
         ) {
-            TextField(prompt, text: editor, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
-                .lineLimit(1...6)
-                .focused($composerFocused)
-                .accessibilityIdentifier("codex-composer")
-        } options: {
             EmptyView()
-        } actions: {
+        } actions: { canSend in
             if working {
                 Button {
                     Task { await session?.interrupt() }
@@ -320,7 +325,7 @@ struct CodexSavedChatScreen: View {
                 .accessibilityLabel("Stop turn")
                 .accessibilityIdentifier("stop-codex-turn")
             }
-            ComposerAction(working ? "Steer" : "Send", symbol: "arrow.up", disabled: disabled,
+            ComposerAction(working ? "Steer" : "Send", symbol: "arrow.up", disabled: !canSend,
                            queue: working ? { submitDraft(queue: true) } : nil, action: send)
         }
     }
@@ -353,24 +358,21 @@ struct CodexSavedChatScreen: View {
 
     private func submitDraft(queue: Bool) {
         guard let session, ready, !sending, !stopping else { return }
-        let draft = editor
-        let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let message = ComposerDraft(text: editor, files: attachments)
+        guard message.hasContent else { return }
         composerFocused = false
         if let chatKey { workspace.rememberReadingOffset(nil, for: chatKey) }
         viewport.restore(nil)
         if queue {
-            session.enqueue(text)
-            draft.wrappedValue = ""
+            session.enqueue(message.text, attachments: message.attachments)
+            message.clear()
         } else {
             Task {
-                if await session.send(text) != nil,
-                   draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
-                    draft.wrappedValue = ""
-                }
+                if await session.send(message.text, attachments: message.attachments) != nil { message.clear() }
             }
         }
     }
+
 }
 
 private struct CodexInputCard: View {
