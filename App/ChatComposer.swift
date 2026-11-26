@@ -153,15 +153,17 @@ struct ChatComposer: View {
     }
 
     @ViewBuilder private func actions(canSend: Bool) -> some View {
-        if let stop {
+        let hasSubmission = retrying || ComposerDraft(text: $draft, files: $attachments).hasContent
+        if let stop, !hasSubmission {
             ComposerAction(stopTitle, symbol: "stop.fill", disabled: stopping, action: stop)
                 .accessibilityIdentifier(stopID)
+        } else if hasSubmission || submission == .send {
+            let send = retrying ? ("Retry send", "arrow.clockwise") : (submission.rawValue, submission.symbol)
+            ComposerAction(send.0, symbol: send.1,
+                           disabled: !canSend && !(retrying && canSubmit),
+                           queue: queueDraft, action: submitDraft)
+                .accessibilityIdentifier(sendID)
         }
-        let send = retrying ? ("Retry send", "arrow.clockwise") : (submission.rawValue, submission.symbol)
-        ComposerAction(send.0, symbol: send.1,
-                       disabled: !canSend && !(retrying && canSubmit),
-                       queue: queueDraft, action: submitDraft)
-            .accessibilityIdentifier(sendID)
     }
 }
 
