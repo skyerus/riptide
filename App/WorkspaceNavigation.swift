@@ -88,7 +88,14 @@ private struct WorkspaceDestination: View {
 
     @ViewBuilder
     private var destination: some View {
-        if let model = workspace.roster.first(where: { $0.target.id == route.workspace }) {
+        if let id = route.hermesGroup {
+            if let session = workspace.hermesGroupSession(roomID: id, workspaceID: route.workspace) {
+                HermesGroupScreen(workspaceName: workspace.agent(route.workspace)?.name ?? "Hermes", session: session)
+            } else {
+                ContentUnavailableView("Group chat unavailable", systemImage: "lock",
+                                       description: Text("Unlock this device or pair the remote again."))
+            }
+        } else if let model = workspace.roster.first(where: { $0.target.id == route.workspace }) {
             ChatScreen(model: model, initialChatID: route.chat)
         } else if let endpoint = workspace.codexEndpoint(for: route.workspace) {
             if route.startsNewChat {

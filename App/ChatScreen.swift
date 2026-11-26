@@ -107,6 +107,9 @@ struct ChatScreen: View {
                         }
                         .accessibilityIdentifier("open-hermes-browser")
                     }
+                    if workspace.supportsHermesGroups(model.target.id) {
+                        Button("Group chats", systemImage: "person.2") { workspace.showSidebar(.agent(model.target.id)) }
+                    }
                     Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                 } label: {
                     Label("Chat actions", systemImage: "ellipsis.circle")

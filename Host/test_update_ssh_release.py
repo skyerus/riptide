@@ -46,3 +46,10 @@ class SSHReleaseTests(unittest.TestCase):
         self.assertEqual(keys.stat().st_mode & 0o777, 0o600)
         for name in PAYLOAD:
             self.assertEqual((new.parent / name).read_bytes(), (HOST / name).read_bytes())
+
+        with patch("update_ssh_release.verify") as verify, redirect_stdout(io.StringIO()):
+            update(keys, fingerprint, releases, previous, revision, enable_hermes_groups=True)
+            update(keys, fingerprint, releases, previous, revision, enable_hermes_groups=True)
+        boundary = argv.index("--")
+        argv[boundary:boundary] = ["--hermes-groups", "/profile", "/bin/hermes"]
+        self.assertEqual([call.args[0] for call in verify.call_args_list], [argv, argv])

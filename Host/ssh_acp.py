@@ -171,6 +171,7 @@ async def serve_safari(socket_path, device):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Narrow a dedicated OpenSSH key to Riptide’s ACP client.")
     parser.add_argument("--workspace", required=True)
+    parser.add_argument("--hermes-groups", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
     parser.add_argument("--hermes-screen", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
     parser.add_argument("--codex-dictation-auth", metavar="CODEX_AUTH_FILE")
     parser.add_argument("--safari", nargs=2, metavar=("BROWSER_SOCKET", "DEVICE_ID"))
@@ -212,6 +213,15 @@ if __name__ == "__main__":
         except (OSError, ValueError):
             parser.exit(1, "The Safari transport closed.\n")
         sys.exit(0)
+    if requested == "riptide-hermes-groups":
+        if args.hermes_groups is None:
+            print(json.dumps({"error": {"code": -32601, "message": "Group chats are not enabled for this SSH pairing."}}))
+            sys.exit(0)
+        home, hermes = args.hermes_groups
+        if not os.path.isabs(home) or not os.path.isdir(home) or not os.path.isabs(hermes):
+            parser.error("An absolute Hermes profile and launcher are required.")
+        adapter = os.path.join(os.path.dirname(os.path.realpath(__file__)), "hermes_groups.py")
+        os.execv(sys.executable, [sys.executable, adapter, hermes, os.path.realpath(home)])
     if requested == "riptide-hermes-screen":
         if args.hermes_screen is None:
             print(json.dumps({"event": "error", "message": "This SSH pairing has no Hermes screen."}))

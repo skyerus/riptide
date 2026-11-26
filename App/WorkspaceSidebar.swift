@@ -74,6 +74,7 @@ private struct SidebarAgentChats: View {
     @State private var failure: String?
     @State private var voiceEndpoint: CodexLocalEndpoint?
     @State private var showingCall = false
+    @State private var creatingGroup = false
 
     private var isCodex: Bool { agent.id == WorkspaceState.localID || workspace.profile(agent.id)?.kind == .codex }
 
@@ -86,6 +87,9 @@ private struct SidebarAgentChats: View {
                             identifier: "sidebar-main-chat", isMain: true)
                 }
                 .listSectionSeparator(.hidden)
+            }
+            if workspace.supportsHermesGroups(agent.id) {
+                HermesGroupSection(workspaceID: agent.id) { creatingGroup = true }
             }
             Section {
                 ForEach(chats) { chat in
@@ -145,6 +149,14 @@ private struct SidebarAgentChats: View {
         .refreshable { await reload() }
         .sheet(isPresented: $showingCall) {
             if let voiceEndpoint { CodexVoiceScreen(endpoint: voiceEndpoint) }
+        }
+        .sheet(isPresented: $creatingGroup) {
+            if let client = workspace.hermesGroupsClient(for: agent.id) {
+                HermesGroupCreate(client: client, workspaceName: agent.name) { room in
+                    creatingGroup = false
+                    workspace.openHermesGroup(room.id, in: agent.id)
+                }
+            }
         }
     }
 

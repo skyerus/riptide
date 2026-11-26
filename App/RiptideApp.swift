@@ -36,8 +36,14 @@ struct RiptideApp: App {
         localCodex = nil
         #endif
         remotes = RemoteStore(defaults: preferences)
-        _workspace = State(initialValue: WorkspaceState(roster: roster, localCodex: localCodex,
-                                                        remotes: remotes, defaults: preferences))
+        let state = WorkspaceState(roster: roster, localCodex: localCodex, remotes: remotes, defaults: preferences)
+        #if DEBUG
+        if let namespace, demos, environment["RIPTIDE_HERMES_GROUP_FIXTURE"] == "1" {
+            let fixture = HermesGroupsFixture(namespace: namespace)
+            state.groupFixture = HermesGroupsClient { try await fixture.exchange($0) }
+        }
+        #endif
+        _workspace = State(initialValue: state)
     }
 
     var body: some Scene {
