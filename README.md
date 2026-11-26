@@ -97,7 +97,7 @@ restrict,command="/usr/bin/python3 /usr/local/libexec/riptide/ssh_acp.py --works
 
 Use absolute paths for the regular agent account, workspace, and native ACP launcher. The key disallows SSH shell access, terminal allocation, and port forwarding. The launcher limits chat to the paired workspace and refuses client-supplied MCP servers and approval-policy changes. Use a trusted device and the least-privilege agent account available, since prompts reach the real agent with its configured tools. Removing the key on the host revokes access. The private key stays in the device’s Keychain. Voice keeps its separate native endpoint.
 
-Fast mode over Hermes SSH requires a Hermes gateway that advertises the ACP `service_tier` option and the Riptide SSH wrapper from this release. Apply the wrapper to an existing versioned pairing with the [SSH release updater](Host/update_ssh_release.py).
+Fast mode over Hermes SSH requires a Hermes gateway that advertises the ACP `service_tier` option and the Riptide SSH wrapper from this release. Apply the wrapper to an existing versioned pairing with the [SSH release updater](Host/update_ssh_release.py). Apply the [gateway chat speed patch](Host/compat/hermes-gateway-chat-speed.md) to remember each chat’s speed across gateway restarts.
 
 ### Send files privately to an SSH-paired host
 
