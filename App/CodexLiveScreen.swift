@@ -30,7 +30,7 @@ struct CodexLiveScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
+            TranscriptScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(status).font(.headline)
@@ -105,7 +105,7 @@ struct CodexLiveScreen: View {
                 .transcriptColumn()
             }
             .scrollDismissesKeyboard(.interactively)
-            .transcriptViewport($viewport, chat: nil)
+            .transcriptViewport($viewport, composerFocused: editorFocused)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if let session, session.ready {
                     VStack(alignment: .leading, spacing: 0) {
@@ -152,7 +152,7 @@ struct CodexLiveScreen: View {
     }
 
     private func watch() async {
-        viewport.restore(nil)
+        viewport.jumpToLatest()
         let peer = endpoint.makeClient()
         session = nil
         turn = nil

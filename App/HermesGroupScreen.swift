@@ -320,6 +320,7 @@ struct HermesGroupScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var composing = false
+    @State private var viewport = TranscriptViewport()
     @State private var showingMembers = false
     @State private var renaming = false
     @State private var disbanding = false
@@ -414,7 +415,7 @@ struct HermesGroupScreen: View {
     }
 
     private var transcript: some View {
-        ScrollView {
+        TranscriptScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 if session.snapshot == nil && session.readError == nil {
                     ProgressView("Opening group…").frame(maxWidth: .infinity)
@@ -434,9 +435,10 @@ struct HermesGroupScreen: View {
             .padding(.horizontal, ChatTheme.gutter)
             .padding(.vertical, 18)
         }
-        .defaultScrollAnchor(.bottom)
         .scrollDismissesKeyboard(.interactively)
         .accessibilityIdentifier("hermes-group-transcript")
+        .transcriptViewport($viewport, composerFocused: composing, shortContentAlignment: .bottom,
+                            showsJumpToLatest: false)
     }
 
     private func message(_ event: HermesGroupEvent, text: String) -> some View {
@@ -603,6 +605,7 @@ struct HermesGroupScreen: View {
                          stopping: session.acting || session.sending,
                          stop: canStop ? { Task { await session.stop() } } : nil,
                          mentions: mentions, onMention: mention) {
+                viewport.jumpToLatest()
                 Task { await session.send() }
             }
         }

@@ -424,6 +424,7 @@ final class AgentChatsUITests: XCTestCase {
 
     @MainActor
     func testFloatingComposerGrowsAndKeepsTheLatestReplyReachable() {
+        continueAfterFailure = false
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launch()
@@ -436,7 +437,9 @@ final class AgentChatsUITests: XCTestCase {
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
         XCTAssertTrue(latest.waitForExistence(timeout: 12))
         XCTAssertTrue(sendButton.waitForExistence(timeout: 5))
-        XCTAssertLessThan(latest.frame.maxY, composer.frame.minY)
+        XCTAssertTrue(app.buttons["stop-reply"].waitForNonExistence(timeout: 5))
+        let restingGap = composer.frame.minY - latest.frame.maxY
+        XCTAssertGreaterThan(restingGap, 0)
 
         let transcript = app.scrollViews["chat-transcript"]
         let jump = app.buttons["jump-to-latest"]
@@ -449,27 +452,31 @@ final class AgentChatsUITests: XCTestCase {
         XCTAssertTrue(advanced.waitForExistence(timeout: 5))
         XCTAssertFalse(jump.exists)
         capture(app, as: "Floating model picker")
-        controls.tap()
+        app.buttons["dismiss-model-picker"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        XCTAssertTrue(advanced.waitForNonExistence(timeout: 5))
 
         composer.tap()
         let keyboard = app.keyboards.firstMatch
         XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        XCTAssertTrue(jump.waitForNonExistence(timeout: 5), "Focusing the input should jump to the latest reply.")
+        let focusedGap = composer.frame.minY - latest.frame.maxY
+        XCTAssertGreaterThan(focusedGap, 0)
+        XCTAssertLessThanOrEqual(focusedGap, restingGap + 6, "The keyboard left a gap below the latest reply.")
+        capture(app, as: "Latest reply above the keyboard")
+
         let compactHeight = composer.frame.height
         let draft = "Review the workspace settings.\nKeep the draft while I scroll.\nThen list the next steps."
         composer.typeText(draft)
         XCTAssertGreaterThan(composer.frame.height, compactHeight + 20)
         XCTAssertEqual(composer.value as? String, draft)
         XCTAssertTrue(sendButton.isHittable)
+        XCTAssertEqual(composer.frame.minY - latest.frame.maxY, focusedGap, accuracy: 6)
         capture(app, as: "Expanded floating composer")
 
-        controls.tap()
-        XCTAssertTrue(advanced.waitForExistence(timeout: 5))
-        XCTAssertLessThan(advanced.frame.maxY, composer.frame.minY)
-        XCTAssertTrue(keyboard.exists)
-        controls.tap()
-        XCTAssertTrue(advanced.waitForNonExistence(timeout: 5))
-
-        XCTAssertTrue(jump.isHittable)
+        let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.78, dy: 0.2))
+        let end = start.withOffset(CGVector(dx: 0, dy: 90))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertTrue(jump.waitForExistence(timeout: 5), "History should still be scrollable while composing.")
         jump.tap()
         XCTAssertTrue(jump.waitForNonExistence(timeout: 5))
         XCTAssertLessThan(latest.frame.maxY, composer.frame.minY)

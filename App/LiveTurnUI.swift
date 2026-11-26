@@ -4,9 +4,12 @@ import UIKit
 import UIKit.UIGestureRecognizerSubclass
 
 extension View {
-    func transcriptViewport(_ viewport: Binding<TranscriptViewport>, chat: WorkspaceChatID?,
+    func transcriptViewport(_ viewport: Binding<TranscriptViewport>, chat: WorkspaceChatID? = nil,
+                            composerFocused: Bool, shortContentAlignment: UnitPoint = .top,
                             showsJumpToLatest: Bool = true) -> some View {
-        modifier(TranscriptViewportModifier(viewport: viewport, chat: chat, showsJumpToLatest: showsJumpToLatest))
+        modifier(TranscriptViewportModifier(viewport: viewport, chat: chat, composerFocused: composerFocused,
+                                            shortContentAlignment: shortContentAlignment,
+                                            showsJumpToLatest: showsJumpToLatest))
     }
 
     func transcriptColumn() -> some View {
@@ -56,57 +59,69 @@ struct ToolCallsMenuButton: View {
 
 struct TranscriptViewport {
     var follow = TranscriptFollow()
-    var position = ScrollPosition()
+    private(set) var jumpRequest = 0
 
-    mutating func restore(_ offset: CGFloat?) {
-        follow = TranscriptFollow(following: offset == nil)
-        position = offset.map { ScrollPosition(y: $0) } ?? ScrollPosition(edge: .bottom)
+    mutating func jumpToLatest() {
+        follow.jumpToLatest()
+        jumpRequest += 1
     }
 }
+
+struct TranscriptScrollView<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                content
+                Color.clear.frame(height: 1)
+                    .accessibilityHidden(true)
+                    .id(TranscriptAnchor.bottom)
+            }
+        }
+    }
+}
+
+private enum TranscriptAnchor: Hashable { case bottom }
 
 private struct TranscriptViewportModifier: ViewModifier {
     @Binding var viewport: TranscriptViewport
     let chat: WorkspaceChatID?
+    let composerFocused: Bool
+    let shortContentAlignment: UnitPoint
     let showsJumpToLatest: Bool
-    @Environment(WorkspaceState.self) private var workspace
     @State private var fingerDown = false
-    @State private var latestOffset: CGFloat = 0
-    @State private var hasAppeared = false
-    @State private var pendingReadingOffset: CGFloat?
-
-    private var readyReadingOffset: CGFloat? {
-        hasAppeared ? pendingReadingOffset : nil
-    }
 
     func body(content: Content) -> some View {
-        let initialAnchor: UnitPoint? = chat.flatMap { workspace.readingOffset(for: $0) } == nil ? .bottom : nil
+        ScrollViewReader { proxy in
+            transcript(content) { proxy.scrollTo(TranscriptAnchor.bottom, anchor: .bottom) }
+        }
+    }
+
+    private func transcript(_ content: Content, scrollToLatest: @escaping () -> Void) -> some View {
         content
-            .defaultScrollAnchor(initialAnchor, for: .initialOffset)
-            .defaultScrollAnchor(.top, for: .alignment)
-            .scrollPosition($viewport.position)
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(viewport.follow.canScrollAutomatically ? .bottom : nil, for: .sizeChanges)
+            .defaultScrollAnchor(shortContentAlignment, for: .alignment)
             .onChange(of: chat, initial: true) {
-                pendingReadingOffset = chat.flatMap { workspace.readingOffset(for: $0) }
-                viewport.follow = TranscriptFollow(following: pendingReadingOffset == nil)
-                viewport.position = pendingReadingOffset == nil ? ScrollPosition(edge: .bottom) : ScrollPosition()
+                viewport.jumpToLatest()
             }
+            .onChange(of: composerFocused) { _, focused in
+                if focused { viewport.jumpToLatest() }
+            }
+            .onChange(of: viewport.jumpRequest) { scrollToLatest() }
             .background {
-                TranscriptAppearanceObserver { hasAppeared = true }
-                    .frame(width: 0, height: 0)
-                    .accessibilityHidden(true)
-            }
-            .onChange(of: readyReadingOffset) { _, offset in
-                guard let offset else { return }
-                viewport.position.scrollTo(y: offset)
-                pendingReadingOffset = nil
+                TranscriptAppearanceObserver {
+                    if viewport.follow.canScrollAutomatically { scrollToLatest() }
+                }
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
             }
             .onScrollGeometryChange(for: Bool.self, of: Self.isAtLatest) { _, atBottom in
                 viewport.follow.geometryChanged(nearBottom: atBottom)
             }
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                Self.liveOffset(geometry)
-            } action: { _, offset in
-                latestOffset = offset
-                if viewport.follow.canScrollAutomatically { viewport.position.scrollTo(y: offset) }
+            .onScrollGeometryChange(for: CGFloat.self, of: Self.liveOffset) { _, _ in
+                if viewport.follow.canScrollAutomatically { scrollToLatest() }
             }
             .onScrollPhaseChange { _, phase, context in
                 let scrolling = phase == .interacting || phase == .decelerating
@@ -114,36 +129,19 @@ private struct TranscriptViewportModifier: ViewModifier {
                 let previous = viewport.follow.interaction
                 let geometry = context.geometry
                 viewport.follow.phaseChanged(interaction, nearBottom: Self.isAtLatest(geometry))
-                if previous == .idle && interaction != .idle {
-                    pendingReadingOffset = nil
-                    viewport.position = ScrollPosition()
-                } else if previous == .scrolling && interaction != .scrolling {
-                    if viewport.follow.canScrollAutomatically { viewport.position.scrollTo(y: Self.liveOffset(geometry)) }
-                    if let chat {
-                        let readingOffset = max(0, geometry.contentOffset.y + geometry.contentInsets.top)
-                        workspace.rememberReadingOffset(viewport.follow.following ? nil : readingOffset, for: chat)
-                    }
-                }
+                if previous == .scrolling && viewport.follow.canScrollAutomatically { scrollToLatest() }
             }
             .contentShape(Rectangle())
             .gesture(TranscriptContact { down in
                 fingerDown = down
                 guard viewport.follow.interaction != .scrolling else { return }
                 viewport.follow.phaseChanged(down ? .touching : .idle, nearBottom: false)
-                if down {
-                    pendingReadingOffset = nil
-                    viewport.position = ScrollPosition()
-                } else if viewport.follow.canScrollAutomatically {
-                    viewport.position.scrollTo(y: latestOffset)
-                }
+                if viewport.follow.canScrollAutomatically { scrollToLatest() }
             })
             .overlay(alignment: .bottomTrailing) {
                 if showsJumpToLatest && !viewport.follow.following {
-                    JumpToLatest {
-                        if let chat { workspace.rememberReadingOffset(nil, for: chat) }
-                        pendingReadingOffset = nil
-                        viewport.restore(nil)
-                    }.padding(.trailing, ChatTheme.gutter).padding(.bottom, 6)
+                    JumpToLatest { viewport.jumpToLatest() }
+                        .padding(.trailing, ChatTheme.gutter).padding(.bottom, 6)
                 }
             }
     }

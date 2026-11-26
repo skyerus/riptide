@@ -90,7 +90,6 @@ final class WorkspaceState {
     private var clearedRelayEvents = Set<String>()
     @ObservationIgnored private var codexSessions: [WorkspaceChatID: CodexWorkspaceSession] = [:]
     @ObservationIgnored private var codexRecency: [WorkspaceChatID] = []
-    @ObservationIgnored private var readingOffsets: [WorkspaceChatID: CGFloat] = [:]
     @ObservationIgnored var notifyAttention: ((WorkspaceAttention) -> Void)?
     private var relayedInbox: [RelayedAttention] = []
     private var readRelayReplies: [String]
@@ -437,12 +436,6 @@ final class WorkspaceState {
         if visibleChat == chat { visibleChat = nil }
     }
 
-    func readingOffset(for chat: WorkspaceChatID) -> CGFloat? { readingOffsets[chat] }
-
-    func rememberReadingOffset(_ offset: CGFloat?, for chat: WorkspaceChatID) {
-        readingOffsets[chat] = offset
-    }
-
     func setSceneActive(_ active: Bool) { sceneIsActive = active }
 
     func isFollowing(_ chat: WorkspaceChatID) -> Bool {
@@ -483,7 +476,6 @@ final class WorkspaceState {
         savedAttention.removeAll { $0.chat.workspace == workspaceID }
         relayedInbox.removeAll { $0.workspace == workspaceID }
         drafts.remove(workspace: workspaceID)
-        readingOffsets = readingOffsets.filter { $0.key.workspace != workspaceID }
         if favorites.contains(workspaceID) { toggleFavorite(workspaceID) }
         persistRecent()
         persistAttention()

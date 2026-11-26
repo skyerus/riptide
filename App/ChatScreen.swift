@@ -279,8 +279,7 @@ struct ChatScreen: View {
         let selected = model.selected
         guard model.selectedID == chat.chat, selected.loaded, !selected.loading, !selected.configuring,
               !selected.stopping, !selected.steering, message.hasContent else { return }
-        workspace.rememberReadingOffset(nil, for: chat)
-        viewport.restore(nil)
+        viewport.jumpToLatest()
         if queue || (selected.working && (!selected.canStop || !message.attachments.isEmpty)) {
             if model.enqueue(message.text, attachments: message.attachments, in: chat.chat) { message.clear() }
         } else if selected.working {
@@ -413,7 +412,7 @@ struct ChatScreen: View {
     }
 
     private var transcript: some View {
-        ScrollView {
+        TranscriptScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 if model.selected.loaded && model.selected.transcript.entries.isEmpty {
                     Text("Start a conversation")
@@ -475,7 +474,8 @@ struct ChatScreen: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .accessibilityIdentifier("chat-transcript")
-        .transcriptViewport($viewport, chat: model.selected.loaded ? chatKey : nil, showsJumpToLatest: !pickerIsOpen)
+        .transcriptViewport($viewport, chat: model.selected.loaded ? chatKey : nil,
+                            composerFocused: composerFocused, showsJumpToLatest: !pickerIsOpen)
     }
 
     private var transcriptEndsWithRunningTool: Bool {
