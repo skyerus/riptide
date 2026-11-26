@@ -169,7 +169,7 @@ python3 -B Host/update_ssh_release.py --fingerprint 'SHA256:…' \
   --previous "$previous_sha" --revision "$release_sha"
 ```
 
-For agent-driven handoffs, use Hermes’s default tool runtime (`model.openai_runtime: auto`) and enable `browser` and `clarify` for ACP, alongside the profile’s existing toolsets. Hermes can use the `openai-codex` subscription provider in that runtime. A separate Hermes profile lets you keep browser work and its login sessions separate from chats using the optional Codex App Server runtime.
+On the native Hermes runtime, enable `browser` and `clarify` for ACP alongside the existing toolsets. For a profile that runs Codex App Server, use the Chrome connector to drive the same tabs and request the same Riptide handoff. See [Codex Chrome deployment](Host/compat/hermes-gateway-browser-mcp.md).
 
 ### Safari handoff through MCP
 

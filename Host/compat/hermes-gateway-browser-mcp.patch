@@ -1,0 +1,131 @@
+diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -635,5 +635,5 @@
+     The first app-server session or a connector-only change resumes the stored thread. A prompt or
+     provider change starts a new thread seeded with the prior transcript in ``messages``."""
+-    from gateway.session_local_mcp import answer_riptide_pairing_form, current_riptide_mcp_args
++    from gateway.session_local_mcp import answer_riptide_form, current_riptide_mcp_args
+
+     developer_instructions = _codex_developer_instructions(agent)
+@@ -707,5 +707,5 @@
+         model=_codex_wire_model(agent, model_provider), model_provider=model_provider,
+         resume_thread_id=resume_thread_id, history_seed=history_seed, client_factory=client_factory,
+-        riptide_pairing_callback=lambda params: answer_riptide_pairing_form(
++        riptide_form_callback=lambda params: answer_riptide_form(
+             params, getattr(agent, "clarify_callback", None)),
+     )
+diff --git a/agent/transports/codex_app_server_session.py b/agent/transports/codex_app_server_session.py
+--- a/agent/transports/codex_app_server_session.py
++++ b/agent/transports/codex_app_server_session.py
+@@ -219,5 +219,5 @@
+         developer_instructions: Optional[str] = None, resume_thread_id: Optional[str] = None,
+         history_seed: Optional[str] = None,
+-        riptide_pairing_callback: Optional[Callable[[dict], dict]] = None,
++        riptide_form_callback: Optional[Callable[[dict], dict]] = None,
+     ) -> None:
+         self._cwd = cwd or os.getcwd()
+@@ -246,5 +246,5 @@
+         )
+         self._approval_callback = approval_callback
+-        self._riptide_pairing_callback = riptide_pairing_callback
++        self._riptide_form_callback = riptide_form_callback
+         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
+         self._routing = request_routing or _ServerRequestRouting()
+@@ -720,7 +720,8 @@
+         """MCP elicitation: auto-accept our own hermes-tools server (opted in by enabling the runtime;
+         exposes nothing codex's shell can't do); decline others so the user opts in via codex's own flow."""
+-        if (params.get("serverName") == "riptide_pairing" and params.get("threadId") == self._thread_id
+-                and self._thread_id is not None and self._riptide_pairing_callback is not None):
+-            return self._riptide_pairing_callback(params)
++        if (params.get("serverName") in {"riptide_pairing", "riptide_hermes_browser"}
++                and params.get("threadId") == self._thread_id
++                and self._thread_id is not None and self._riptide_form_callback is not None):
++            return self._riptide_form_callback(params)
+         action = "accept" if (params.get("serverName") or "") == HERMES_TOOLS_MCP_SERVER_NAME else "decline"
+         return {"action": action, "content": None, "_meta": None}
+diff --git a/gateway/session_local_mcp.py b/gateway/session_local_mcp.py
+--- a/gateway/session_local_mcp.py
++++ b/gateway/session_local_mcp.py
+@@ -144,5 +144,5 @@
+         # One bounded eager discovery; no lazy or late schema refresh.
+         config.update(connect_timeout=5, tool_timeout=30, lazy=False)
+-        if _riptide_connector(spec) == 'riptide_pairing':
++        if _riptide_connector(spec) in {'riptide_pairing', 'riptide_hermes_browser'}:
+             config.update(tool_timeout=180, elicitation={'timeout': 165})
+         configs[name] = config
+@@ -506,4 +506,9 @@
+         return None
+     name, command, args = spec['name'], spec['command'], spec['args']
++    if (name == 'riptide_hermes_browser' and len(args) == 5
++            and Path(args[0]).name == 'hermes_browser_mcp.py'
++            and args[1::2] == ['--hermes-source', '--profile']
++            and all(Path(path).is_absolute() for path in (command, *args[::2]))):
++        return name
+     if len(args) != 3 or not all(Path(path).is_absolute() for path in (command, args[0], args[2])):
+         return None
+@@ -519,5 +524,5 @@
+
+ @contextmanager
+-def _riptide_mcp_scope(servers=(), connected=()):
++def _riptide_mcp_scope(servers=(), connected=(), profile=None):
+     arguments = []
+     for index in connected:
+@@ -532,4 +537,8 @@
+             settings.update(tool_timeout_sec=180, default_tools_approval_mode='approve',
+                             enabled_tools=['list_pairable_agents', 'request_agent_pairing'])
++        if name == 'riptide_hermes_browser':
++            if spec['args'][-1] != str(profile):
++                continue
++            settings.update(tool_timeout_sec=180)
+         if name == 'riptide_agent_profile':
+             settings.update(default_tools_approval_mode='approve', enabled_tools=['set_display_name'])
+@@ -561,23 +570,30 @@
+             # Drift is re-frozen by the drain before a claim; inside an execution the manifest never changes.
+             raise AuthorityRefusal('acp_mcp_schema_changed')
+-        with _riptide_mcp_scope(servers, connected):
++        with _riptide_mcp_scope(servers, connected, authority.profile_id):
+             yield
+
+
+-def answer_riptide_pairing_form(params, clarify):
++def answer_riptide_form(params, clarify):
+     """Translate the shared MCP form to the gateway's current turn-bound ACP approval."""
+     declined = {'action': 'decline', 'content': None, '_meta': None}
+     if not callable(clarify) or params.get('mode') != 'form':
+         return declined
+-    if not any(arg.startswith('mcp_servers.riptide_pairing.command=') for arg in current_riptide_mcp_args()):
++    server = params.get('serverName')
++    fields_by_server = {'riptide_pairing': 'pair', 'riptide_hermes_browser': 'browser'}
++    field_name = fields_by_server.get(server)
++    if field_name is None or not any(arg.startswith(f'mcp_servers.{server}.command=')
++                                     for arg in current_riptide_mcp_args()):
+         return declined
+     schema = params.get('requestedSchema')
+     fields = schema.get('properties') if isinstance(schema, dict) else None
+-    field = fields.get('pair') if isinstance(fields, dict) and set(fields) == {'pair'} else None
++    field = fields.get(field_name) if isinstance(fields, dict) and set(fields) == {field_name} else None
+     choices = field.get('enum') if isinstance(field, dict) and field.get('type') == 'string' else None
+     message = params.get('message')
+     if (not isinstance(message, str) or not 0 < len(message) <= 200 or not isinstance(choices, list)
+-            or len(choices) != 1 or not isinstance(choices[0], str)
+-            or not re.fullmatch(r'Pair Hermes profile: [a-z0-9][a-z0-9_-]{0,63}', choices[0])):
++            or len(choices) != 1 or not isinstance(choices[0], str)):
++        return declined
++    if field_name == 'pair' and not re.fullmatch(r'Pair Hermes profile: [a-z0-9][a-z0-9_-]{0,63}', choices[0]):
++        return declined
++    if field_name == 'browser' and choices[0] != 'Browser handoff complete':
+         return declined
+     try:
+@@ -585,9 +601,9 @@
+                           'choices_offered': choices, 'multi_select': False}])
+     except Exception:
+-        logger.exception('Could not deliver the Riptide pairing approval')
++        logger.exception('Could not deliver the Riptide form')
+         return {**declined, 'action': 'cancel'}
+     if not isinstance(reply, dict) or reply.get('outcome') != 'submitted':
+         return {**declined, 'action': 'cancel'}
+     if (reply.get('answers') or {}).get('q0') == choices[0]:
+-        return {'action': 'accept', 'content': {'pair': choices[0]}, '_meta': None}
++        return {'action': 'accept', 'content': {field_name: choices[0]}, '_meta': None}
+     return declined

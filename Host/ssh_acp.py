@@ -146,7 +146,8 @@ def admitted(packet, workspace, pending):
     return True
 
 
-async def serve(workspace, command, safari_mcp=None, attention_socket=None, pairing_config=None, profile_state=None):
+async def serve(workspace, command, safari_mcp=None, attention_socket=None, pairing_config=None, profile_state=None,
+                browser_mcp=None):
     loop = asyncio.get_running_loop()
     source = asyncio.StreamReader(limit=MAX_FRAME)
     stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
@@ -168,6 +169,8 @@ async def serve(workspace, command, safari_mcp=None, attention_socket=None, pair
         })
     if profile_state is not None:
         connectors.append(profile_connector(profile_state))
+    if browser_mcp is not None:
+        connectors.append(browser_mcp)
     pending = set()
     openings = {}
     opened = set()
@@ -287,6 +290,7 @@ if __name__ == "__main__":
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--hermes-groups", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
     parser.add_argument("--hermes-screen", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
+    parser.add_argument("--hermes-browser-mcp", nargs=2, metavar=("PYTHON", "HERMES_SOURCE"))
     parser.add_argument("--codex-dictation-auth", metavar="CODEX_AUTH_FILE")
     parser.add_argument("--safari", nargs=2, metavar=("BROWSER_SOCKET", "DEVICE_ID"))
     parser.add_argument("--safari-mcp-python", metavar="PYTHON")
@@ -374,8 +378,18 @@ if __name__ == "__main__":
             "args": [str(Path(__file__).resolve().with_name("safari_mcp.py")), "--state-dir", str(socket_path.parent)],
             "env": [],
         }
+    browser_mcp = None
+    if args.hermes_browser_mcp:
+        python, source = map(Path, args.hermes_browser_mcp)
+        if args.hermes_screen is None or not python.is_absolute() or not source.is_absolute() or not source.is_dir():
+            parser.error("The Chrome connector requires --hermes-screen and the absolute Hermes Python and source paths.")
+        home = Path(args.hermes_screen[0])
+        if not home.is_absolute() or not home.is_dir():
+            parser.error("Use an existing absolute Hermes screen profile.")
+        from hermes_browser_mcp import connector
+        browser_mcp = connector(python, source, home.resolve())
     try:
         asyncio.run(serve(args.workspace, command, safari_mcp, args.attention_socket,
-                          args.pairing_config, args.agent_profile_state))
+                          args.pairing_config, args.agent_profile_state, browser_mcp))
     except (OSError, ValueError):
         parser.exit(1, "The ACP transport closed.\n")

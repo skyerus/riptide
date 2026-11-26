@@ -23,12 +23,15 @@ def debug_endpoint(profile):
 
 
 class DevTools:
-    def __init__(self, connection):
+    def __init__(self, connection, check_control=None):
         self.connection = connection
+        self.check_control = check_control
         self.events = deque()
         self.sequence = 0
 
     async def call(self, method, params=None, *, session=None):
+        if self.check_control is not None:
+            self.check_control()
         self.sequence += 1
         request = {"id": self.sequence, "method": method, "params": params or {}}
         if session is not None:
@@ -38,6 +41,8 @@ class DevTools:
             while True:
                 message = json.loads(await self.connection.recv())
                 if message.get("id") == self.sequence:
+                    if self.check_control is not None:
+                        self.check_control()
                     if "error" in message:
                         raise DevToolsError(method)
                     return message["result"]
