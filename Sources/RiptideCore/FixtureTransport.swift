@@ -272,6 +272,7 @@ public actor FixtureTransport: ACPTransport {
 
     private static func response(to text: String) -> [String] {
         if text.localizedCaseInsensitiveContains("streaming demo") { return longStreamChunks }
+        if text.localizedCaseInsensitiveContains("tables demo") { return tableChunks }
         if text.localizedCaseInsensitiveContains("formatting demo") { return richContentChunks }
         if text.localizedCaseInsensitiveContains("sources demo") { return sourceChunks }
         return [
@@ -282,6 +283,17 @@ public actor FixtureTransport: ACPTransport {
             "You can come back to this conversation whenever you need it."
         ]
     }
+
+    private static let tableChunks = [
+        "Here are two ways to connect a workspace.\n\n",
+        "| Option | Setup | Access |\n| --- | --- | --- |\n",
+        "| Local app | Follow the setup guide to connect your workspace. | Each teammate signs in and approves access. |\n",
+        "| Private link | Register the app once for your team. | Teammates open the link in their browser. |\n\n",
+        "Here are the details for the private link.\n\n",
+        "| Owner | Storage | Sign-in | Sharing | Follow-up |\n| --- | --- | --- | --- | --- |\n",
+        "| Workspace admin | Local disk | Browser | Invite only | Check access after setup. |\n\n",
+        "Table comparison complete."
+    ]
 
     private static let richContentChunks = [
         "## Agent handoff\n\nThe **same turn** stays on your host.\n\n",

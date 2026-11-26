@@ -105,6 +105,7 @@ private struct MarkdownBlocks: View {
     let sourceLines: [Substring]
     let streaming: Bool
     let footer: ChatSourceFooter?
+    @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth: CGFloat = 104
 
     var body: some View {
         VStack(alignment: .leading, spacing: ChatSourceSpacing.paragraph) {
@@ -185,8 +186,10 @@ private struct MarkdownBlocks: View {
 
     private func tableView(_ table: Markdown.Table) -> some View {
         let shape = RoundedRectangle(cornerRadius: 8)
+        let columns = CGFloat(max(1, table.head.childCount))
+        let spacing: CGFloat = 1
         return ScrollView(.horizontal) {
-            Grid(alignment: .leading, horizontalSpacing: 1, verticalSpacing: 1) {
+            Grid(alignment: .leading, horizontalSpacing: spacing, verticalSpacing: 1) {
                 GridRow {
                     ForEach(Array(table.head.children.enumerated()), id: \.offset) { column, cell in
                         tableCell(cell, alignment: alignment(of: table, column: column))
@@ -204,29 +207,34 @@ private struct MarkdownBlocks: View {
                     }
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
+            .containerRelativeFrame(.horizontal) { viewportWidth, _ in
+                max(viewportWidth, columns * minimumColumnWidth + spacing * (columns - 1))
+            }
             .background(ChatTheme.border)
             .clipShape(shape)
             .overlay { shape.strokeBorder(ChatTheme.border, lineWidth: 0.5) }
         }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .accessibilityIdentifier("markdown-table")
     }
 
-    private func tableCell(_ cell: any Markup, alignment: Alignment) -> some View {
+    private func tableCell(_ cell: any Markup, alignment: (frame: Alignment, text: TextAlignment)) -> some View {
         inline(content(of: cell))
             .font(.subheadline)
+            .multilineTextAlignment(alignment.text)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .frame(minWidth: 94, maxWidth: 230, alignment: alignment)
-            .fixedSize(horizontal: true, vertical: false)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+            .frame(minWidth: minimumColumnWidth, maxWidth: .infinity, maxHeight: .infinity, alignment: alignment.frame)
     }
 
-    private func alignment(of table: Markdown.Table, column: Int) -> Alignment {
-        guard table.columnAlignments.indices.contains(column) else { return .leading }
+    private func alignment(of table: Markdown.Table, column: Int) -> (Alignment, TextAlignment) {
+        guard table.columnAlignments.indices.contains(column) else { return (.leading, .leading) }
         switch table.columnAlignments[column] {
-        case .center: return .center
-        case .right: return .trailing
-        default: return .leading
+        case .center: return (.center, .center)
+        case .right: return (.trailing, .trailing)
+        default: return (.leading, .leading)
         }
     }
 
