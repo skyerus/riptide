@@ -113,6 +113,8 @@ struct CodexSavedChatScreen: View {
     @State private var draft = ""
     @State private var showChats = false
     @State private var showCall = false
+    @State private var showModelPicker = false
+    @State private var composerHeight: CGFloat = 0
     @State private var viewport = TranscriptViewport()
     @State private var showsCompletedToolCalls = false
     @FocusState private var composerFocused: Bool
@@ -130,6 +132,13 @@ struct CodexSavedChatScreen: View {
     private var working: Bool { session?.working == true }
     private var stopping: Bool { session?.stopping == true }
     private var sending: Bool { session?.sending == true }
+    private var canSubmit: Bool { ready && !sending && !stopping && session?.configuring != true }
+    private var composerSettings: ChatComposerSettings {
+        .init(options: session?.configOptions ?? [], configuring: session?.configuring == true,
+              working: working || sending, error: session?.configError) { [session] id, value in
+            await session?.setConfigOption(id, value: value) ?? false
+        }
+    }
     private var progress: CodexTurnProgress { session?.progress ?? .init() }
 
     private var chatKey: WorkspaceChatID? {
@@ -143,6 +152,7 @@ struct CodexSavedChatScreen: View {
 
     var body: some View {
         transcript
+        .accessibilityHidden(showModelPicker && composerSettings.hasChoices)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if ready, let session {
                 VStack(alignment: .leading, spacing: 0) {
@@ -151,8 +161,11 @@ struct CodexSavedChatScreen: View {
                                   remove: session.removeQueuedMessage, resume: session.resumeQueue)
                     composer
                 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
             }
         }
+        .modifier(ChatModelPicker(settings: composerSettings, composerHeight: composerHeight,
+                                  chatID: chatKey?.chat, isExpanded: $showModelPicker))
         .background(ChatTheme.background)
         .navigationTitle(chat?.title ?? initialChat?.title ?? "New chat")
         .navigationBarTitleDisplayMode(.inline)
@@ -285,44 +298,18 @@ struct CodexSavedChatScreen: View {
     }
 
     private var composer: some View {
-        let prompt = working ? "Steer this turn" : "Message Codex"
-        let canSubmit = ready && !sending && !stopping
-        let disabled = !canSubmit || editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let send = { submitDraft(queue: false) }
-        return DictatingComposer(
-            focused: composerFocused, showsOptions: false, chatID: chatKey?.chat,
-            canDictate: canSubmit, draft: editor,
+        ChatComposer(
+            prompt: working ? "Steer this turn" : "Message Codex",
+            chatID: chatKey?.chat, fieldID: "codex-composer",
+            sendID: working ? "codex-steer-send" : "send-message", stopID: "stop-codex-turn", stopTitle: "Stop turn", draft: editor,
+            modelPickerVisible: $showModelPicker, editorFocus: $composerFocused,
+            settings: composerSettings, context: session?.context, canDictate: canSubmit, canSubmit: canSubmit,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
-            dismissKeyboard: { composerFocused = false },
-            canSubmit: canSubmit,
-            submitDraft: send,
-            queueDraft: working ? { submitDraft(queue: true) } : nil
-        ) {
-            TextField(prompt, text: editor, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
-                .lineLimit(1...6)
-                .focused($composerFocused)
-                .accessibilityIdentifier("codex-composer")
-        } options: {
-            EmptyView()
-        } actions: {
-            if working {
-                Button {
-                    Task { await session?.interrupt() }
-                } label: {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(ChatTheme.muted)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(stopping)
-                .accessibilityLabel("Stop turn")
-                .accessibilityIdentifier("stop-codex-turn")
-            }
-            ComposerAction(working ? "Steer" : "Send", symbol: "arrow.up", disabled: disabled,
-                           queue: working ? { submitDraft(queue: true) } : nil, action: send)
-        }
+            submission: working ? .steer : .send, stopping: stopping,
+            stop: working ? { Task { await session?.interrupt() } } : nil,
+            enqueue: working ? { submitDraft(queue: true) } : nil,
+            submit: { submitDraft(queue: false) }
+        )
     }
 
     private func approvalCard(_ approval: CodexChatApproval) -> some View {
@@ -352,7 +339,7 @@ struct CodexSavedChatScreen: View {
     }
 
     private func submitDraft(queue: Bool) {
-        guard let session, ready, !sending, !stopping else { return }
+        guard let session, canSubmit else { return }
         let draft = editor
         let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }

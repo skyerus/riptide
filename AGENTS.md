@@ -6,6 +6,8 @@
 
 ## UI changes
 
+- Use the shared `ChatComposer` and model controls for Codex, Hermes, OpenClaw, and any new agent. Keep model, intelligence, Fast mode, dictation, and send/stop consistent wherever the backend supports them. Each connector must read capabilities and apply settings through its native protocol for the selected chat.
+- Keep the context window ring visible in every chat composer. Show usage reported by the backend and an unavailable state when there are no usage figures.
 - For every user-visible UI change, run the updated app on an iPhone simulator or device, capture the changed screens or states, and include the screenshots in the final reply. Attach or embed the images; a description or local path alone is not enough.
 - Use fixture or sanitized data in screenshots. Keep captures out of Git unless requested. If capture is blocked, say why rather than substituting a mockup for the running app.
 
