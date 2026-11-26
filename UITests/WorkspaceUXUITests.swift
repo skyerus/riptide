@@ -559,15 +559,20 @@ final class WorkspaceUXUITests: XCTestCase {
         editor.typeText("Review the draft")
         app.buttons["Send"].tap()
 
-        let steer = app.buttons["Steer"]
-        XCTAssertTrue(steer.waitForExistence(timeout: 8))
+        let stop = app.buttons["stop-codex-turn"]
+        let steer = app.buttons["codex-steer-send"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 8))
+        XCTAssertFalse(steer.exists)
         editor.tap()
         editor.typeText("Focus on the opening paragraph")
+        XCTAssertTrue(steer.isEnabled)
+        XCTAssertFalse(stop.exists)
         capture(app, as: "Tap to steer")
         steer.tap()
         let transcript = app.scrollViews["codex-saved-transcript"]
         XCTAssertTrue(transcript.staticTexts["Focus on the opening paragraph"].waitForExistence(timeout: 8))
-        XCTAssertTrue(steer.exists)
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        XCTAssertFalse(steer.exists)
 
         let followUp = "finish without approval and check the conclusion"
         editor.tap()
@@ -608,12 +613,27 @@ final class WorkspaceUXUITests: XCTestCase {
         send.tap()
         let deny = app.buttons["approval-reject_once"]
         XCTAssertTrue(deny.waitForExistence(timeout: 8))
+        let stop = app.buttons["stop-reply"]
+        XCTAssertTrue(stop.exists)
+        XCTAssertFalse(send.exists)
+        capture(app, as: "Empty running composer shows Stop")
         editor.tap()
+        editor.typeText("a")
+        XCTAssertTrue(send.isEnabled)
+        XCTAssertFalse(stop.exists)
+        editor.typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertTrue(stop.exists)
+        XCTAssertFalse(send.exists)
         editor.typeText("Focus on the draft")
+        XCTAssertTrue(send.isEnabled)
+        XCTAssertFalse(stop.exists)
+        capture(app, as: "Running composer with a draft shows Send")
         send.tap()
         let transcript = app.scrollViews["chat-transcript"]
         XCTAssertTrue(transcript.staticTexts["Focus on the draft"].waitForExistence(timeout: 5))
         XCTAssertTrue(deny.exists)
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        XCTAssertFalse(send.exists)
 
         app.buttons["dictation-start"].tap()
         let dictationSend = app.buttons["dictation-send"]
