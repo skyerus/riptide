@@ -151,6 +151,10 @@ Hermes' native runtime uses MCP form elicitation. For Hermes chats running throu
 
 For a gateway-managed Hermes chat, [the reconnect status patch](Host/compat/hermes-acp-turn-status.patch) lets Riptide recover the **Working** indicator from the same chat when SSH reconnects. Apply the patch from the Riptide release to the Hermes source at revision `8fc0374447313e276f6b9a2764bfc750190c966a`. Run `git apply --check /path/to/riptide/Host/compat/hermes-acp-turn-status.patch` before applying it with `git apply`. The next SSH connection starts a fresh ACP process and picks up the patch. Use `git apply -R` with the same patch to roll back. The patch can be applied alongside the gateway pairing and ACP steering compatibility patches.
 
+Apply [the assistant progress patch](Host/compat/hermes-codex-assistant-progress.patch) after the reconnect status patch on that revision. Run `git apply --check`, then `git apply` with the patch path from the Riptide release, and restart the Hermes gateway after active turns finish. To roll back, use `git apply -R` and restart the gateway again.
+
+ACP clients opt in with `clientCapabilities._meta["app.riptide.assistantProgress"] = true`. An `agent_message_chunk` with the same flag in `_meta` carries a complete progress update and uses the same `messageId` as any earlier deltas for that item. The app shows it until the turn ends. Connectors omit those updates from completed history. Codex App Server connections use the native message phase directly.
+
 ### Hermes browser handoff over SSH
 
 Configure [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) on the Linux gateway. Install its desktop packages, set `bot_desktop.auto_start: true` and `model.openai_runtime: codex_app_server` in the paired profile, and apply [the Hermes gateway patches](Host/compat/hermes-gateway-pairing.md). The SSH wrapper needs `websockets` and `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` in the key’s forced command. Give this option only to devices trusted to control the profile’s desktop.

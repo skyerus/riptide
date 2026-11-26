@@ -47,6 +47,7 @@ public struct PermissionRequest: Identifiable, Sendable, Equatable {
 
 public enum ACPEvent: Sendable, Equatable {
     case message(sessionID: String, messageID: String?, role: ChatRole, text: String)
+    case assistantProgress(sessionID: String, messageID: String, text: String)
     case agentActivity(sessionID: String)
     case turnActivity(sessionID: String, working: Bool)
     case tool(sessionID: String, activity: ToolActivity)
@@ -58,7 +59,8 @@ public enum ACPEvent: Sendable, Equatable {
 
     var sessionID: String {
         switch self {
-        case .message(let sessionID, _, _, _), .tool(let sessionID, _), .configOptions(let sessionID, _),
+        case .message(let sessionID, _, _, _), .assistantProgress(let sessionID, _, _),
+             .tool(let sessionID, _), .configOptions(let sessionID, _),
              .context(let sessionID, _), .permissionClosed(let sessionID, _), .plan(let sessionID, _),
              .agentActivity(let sessionID), .turnActivity(let sessionID, _):
             sessionID
@@ -344,7 +346,8 @@ public actor ACPClient {
         }
         let handshake = Task {
             let reply = try await call("initialize", [
-                "protocolVersion": .integer(1), "clientCapabilities": [:],
+                "protocolVersion": .integer(1),
+                "clientCapabilities": ["_meta": ["app.riptide.assistantProgress": .boolean(true)]],
                 "clientInfo": ["name": "riptide", "version": "0.1.0"]
             ])
             guard reply["protocolVersion"] == .integer(1) else { throw ACPError.protocolVersion }
@@ -448,7 +451,11 @@ public actor ACPClient {
         case "agent_message_chunk", "user_message_chunk":
             guard update["content"]?["type"] == "text", let text = update["content"]?["text"]?.string else { return nil }
             let role: ChatRole = update["sessionUpdate"] == "agent_message_chunk" ? .assistant : .user
-            return .message(sessionID: sessionID, messageID: update["messageId"]?.string, role: role, text: text)
+            let messageID = update["messageId"]?.string
+            if role == .assistant, let messageID, update["_meta"]?["app.riptide.assistantProgress"] == .boolean(true) {
+                return .assistantProgress(sessionID: sessionID, messageID: messageID, text: text)
+            }
+            return .message(sessionID: sessionID, messageID: messageID, role: role, text: text)
         case "tool_call", "tool_call_update":
             guard let id = update["toolCallId"]?.string else { return nil }
             return .tool(sessionID: sessionID, activity: ToolActivity(

@@ -288,8 +288,8 @@ final class CodexWorkspaceSession {
             switch update {
             case .assistantDelta(let turn, let item, let text):
                 turns[turnIndex(for: turn)].appendReply(text, id: item)
-            case .assistantCompleted(let turn, let item, let text):
-                turns[turnIndex(for: turn)].upsert(.init(id: item, role: .assistant, text: text, streaming: false))
+            case .assistantCompleted(let turn, let message):
+                turns[turnIndex(for: turn)].upsert(message)
             case .completed(let turn, let status):
                 lastCompletedTurnID = turn
                 activeTurnID = nil

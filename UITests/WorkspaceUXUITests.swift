@@ -202,6 +202,20 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
+    func testCodexDesktopWatcherHidesProgressOnCompletion() throws {
+        continueAfterFailure = false
+        let app = try launchCodexFixture(portKey: "RIPTIDE_UX_WATCH_PROGRESS_PORT")
+        app.buttons["watch-desktop-codex"].tap()
+        let progress = app.staticTexts["Checking the current changes."]
+        XCTAssertTrue(progress.waitForExistence(timeout: 14))
+        capture(app, as: "Codex desktop watcher while progress is visible")
+        let final = app.staticTexts["The fixture turn is complete."]
+        XCTAssertTrue(final.waitForExistence(timeout: 16))
+        XCTAssertTrue(progress.waitForNonExistence(timeout: 5))
+        capture(app, as: "Codex desktop watcher after progress disappears")
+    }
+
+    @MainActor
     func testHermesComposerChangesFastMode() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -723,6 +737,22 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(output.waitForExistence(timeout: 5))
         app.buttons["codex-chat-heading"].tap()
         XCTAssertTrue(app.buttons["codex-saved-chat"].firstMatch.waitForExistence(timeout: 8))
+    }
+
+    @MainActor
+    func testSavedCodexHidesProgressOnCompletion() throws {
+        continueAfterFailure = false
+        let (app, editor) = try openCodexFixture()
+        editor.tap()
+        editor.typeText("show live feedback")
+        app.buttons["Send"].tap()
+        let progress = app.staticTexts["Checking the current changes."]
+        XCTAssertTrue(progress.waitForExistence(timeout: 12))
+        capture(app, as: "Saved Codex chat while progress is visible")
+        let final = app.staticTexts["The fixture turn is complete."]
+        XCTAssertTrue(final.waitForExistence(timeout: 16))
+        XCTAssertTrue(progress.waitForNonExistence(timeout: 5))
+        capture(app, as: "Saved Codex chat after progress disappears")
     }
 
     @MainActor

@@ -377,7 +377,7 @@ struct ChatScreen: View {
                     case .message(.assistant, let text):
                         ChatMarkdown(
                             source: text,
-                            streaming: model.selected.working && !transcriptEndsWithRunningTool &&
+                            streaming: !entry.isAssistantProgress && model.selected.working && !transcriptEndsWithRunningTool &&
                                 model.selected.transcript.latestAssistantEntryID == entry.id,
                             openLink: { openURL($0) }
                         )

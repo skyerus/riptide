@@ -26,6 +26,7 @@ public actor FixtureTransport: ACPTransport {
     private let pace: Duration
     private let historyDelay: Duration
     private let pairingDemo: Bool
+    private let progressDemo: Bool
     private let cwd: String
     private let mainSessionID: String
     private var sessions: [SavedSession]
@@ -51,12 +52,14 @@ public actor FixtureTransport: ACPTransport {
     }
 
     public init(target: AgentTarget, file: URL? = nil, pace: Duration = .milliseconds(280),
-                catalog: [String] = [], historyDelay: Duration = .zero, pairingDemo: Bool = false) throws {
+                catalog: [String] = [], historyDelay: Duration = .zero, pairingDemo: Bool = false,
+                progressDemo: Bool = false) throws {
         (incoming, output) = AsyncThrowingStream.makeStream()
         self.file = file
         self.pace = pace
         self.historyDelay = historyDelay
         self.pairingDemo = pairingDemo
+        self.progressDemo = progressDemo
         cwd = target.cwd
         mainSessionID = target.mainSessionID
         if let file, FileManager.default.fileExists(atPath: file.path) {
@@ -260,7 +263,16 @@ public actor FixtureTransport: ACPTransport {
         }
         do { try recordTool(turn, status: "in_progress", in: sessionID) }
         catch { fail(sessionID); return }
-        turns[sessionID]?.work = Task { [weak self, pace] in
+        if progressDemo {
+            let id = UUID().uuidString
+            stream(Self.chunk("agent_message_chunk", id: id, text: "Checking the saved settings."), in: sessionID)
+            stream(Self.chunk("agent_message_chunk", id: id, text: "Checking the saved settings.", progress: true),
+                   in: sessionID)
+        }
+        turns[sessionID]?.work = Task { [weak self, pace, progressDemo] in
+            if progressDemo {
+                do { try await Task.sleep(for: .seconds(6)) } catch { return }
+            }
             let messageID = UUID().uuidString
             for text in turn.response {
                 do { try await Task.sleep(for: pace) } catch { return }
@@ -435,8 +447,10 @@ public actor FixtureTransport: ACPTransport {
         ], in: session.id)
     }
 
-    private static func chunk(_ kind: String, id: String, text: String) -> JSON {
-        ["sessionUpdate": .string(kind), "messageId": .string(id),
-         "content": ["type": "text", "text": .string(text)]]
+    private static func chunk(_ kind: String, id: String, text: String, progress: Bool = false) -> JSON {
+        var update: [String: JSON] = ["sessionUpdate": .string(kind), "messageId": .string(id),
+                                      "content": ["type": "text", "text": .string(text)]]
+        if progress { update["_meta"] = ["app.riptide.assistantProgress": .boolean(true)] }
+        return .object(update)
     }
 }

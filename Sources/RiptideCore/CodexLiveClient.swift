@@ -49,7 +49,7 @@ public struct CodexLiveTurn: Equatable, Sendable {
 public enum CodexLiveEvent: Equatable, Sendable {
     case output(turnID: String, text: String)
     case assistantDelta(turnID: String, itemID: String, text: String)
-    case assistantCompleted(turnID: String, itemID: String, text: String)
+    case assistantCompleted(turnID: String, message: CodexChatMessage)
     case diff(turnID: String, patch: String)
     case context(turnID: String, usage: ContextUsage?)
     case completed(turnID: String, status: String)
@@ -57,7 +57,7 @@ public enum CodexLiveEvent: Equatable, Sendable {
     var turnID: String {
         switch self {
         case .output(let turnID, _), .assistantDelta(let turnID, _, _), .diff(let turnID, _), .context(let turnID, _),
-             .assistantCompleted(let turnID, _, _), .completed(let turnID, _): turnID
+             .assistantCompleted(let turnID, _), .completed(let turnID, _): turnID
         }
     }
 }
@@ -738,8 +738,8 @@ public actor CodexLiveClient {
             return .assistantDelta(turnID: turnID, itemID: itemID, text: text)
         case "item/completed":
             guard let item = params["item"], item["type"] == "agentMessage",
-                  let itemID = item["id"]?.string, let text = item["text"]?.string else { return nil }
-            return .assistantCompleted(turnID: turnID, itemID: itemID, text: text)
+                  let message = CodexChatMessage(item) else { return nil }
+            return .assistantCompleted(turnID: turnID, message: message)
         default:
             return nil
         }
