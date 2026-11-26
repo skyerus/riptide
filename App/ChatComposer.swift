@@ -184,16 +184,32 @@ struct ComposerAction: View {
     let title: String
     let symbol: String
     let disabled: Bool
+    let queue: (() -> Void)?
     let action: () -> Void
 
-    init(_ title: String, symbol: String, disabled: Bool, action: @escaping () -> Void) {
+    init(_ title: String, symbol: String, disabled: Bool, queue: (() -> Void)? = nil,
+         action: @escaping () -> Void) {
         self.title = title
         self.symbol = symbol
         self.disabled = disabled
+        self.queue = queue
         self.action = action
     }
 
     var body: some View {
+        if let queue, !disabled {
+            button
+                .contextMenu {
+                    Button("Queue", systemImage: "text.append", action: queue)
+                }
+                .accessibilityHint("Queues a follow-up when you touch and hold.")
+                .accessibilityAction(named: Text("Queue"), queue)
+        } else {
+            button
+        }
+    }
+
+    private var button: some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: symbol == "stop.fill" ? 11 : 16, weight: .semibold))
@@ -206,5 +222,75 @@ struct ComposerAction: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .accessibilityLabel(title)
+    }
+}
+
+struct QueuedChatMessage: Identifiable {
+    let id = UUID()
+    let text: String
+}
+
+struct ComposerQueue: View {
+    let messages: [QueuedChatMessage]
+    let sendingID: UUID?
+    let paused: Bool
+    let canResume: Bool
+    let remove: (UUID) -> Void
+    let resume: () -> Void
+    @State private var showingMessages = false
+
+    var body: some View {
+        if !messages.isEmpty {
+            HStack {
+                Button {
+                    showingMessages = true
+                } label: {
+                    Label("\(messages.count) queued", systemImage: "text.append")
+                        .monospacedDigit()
+                }
+                .accessibilityIdentifier("queued-messages")
+                .popover(isPresented: $showingMessages, arrowEdge: .bottom) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(messages) { message in
+                                HStack(spacing: 12) {
+                                    Text(message.text).lineLimit(3)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    if sendingID == message.id {
+                                        ProgressView()
+                                    } else {
+                                        Button(role: .destructive) {
+                                            remove(message.id)
+                                            if messages.count == 1 { showingMessages = false }
+                                        } label: {
+                                            Label("Remove queued message", systemImage: "xmark")
+                                                .labelStyle(.iconOnly)
+                                                .frame(width: 44, height: 44)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.leading, 16)
+                        .padding(.trailing, 4)
+                    }
+                    .frame(width: 280)
+                    .frame(height: CGFloat(min(messages.count, 4)) * 48)
+                    .font(.subheadline)
+                    .presentationCompactAdaptation(.popover)
+                }
+                if paused {
+                    Spacer(minLength: 8)
+                    Button("Resume queue", action: resume).disabled(!canResume)
+                }
+            }
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(ChatTheme.ink)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 32)
+            .chatGlass(in: Capsule())
+            .frame(maxWidth: ChatTheme.readingWidth, alignment: .leading)
+            .padding(.horizontal, ChatTheme.gutter)
+        }
     }
 }

@@ -209,21 +209,35 @@ public actor CodexLiveClient {
                                  hasOlderTurns: history["nextCursor"]?.string != nil)
     }
 
-    public func sendToSavedChat(_ text: String) async throws {
+    @discardableResult
+    public func sendToSavedChat(_ text: String, startOnly: Bool = false) async throws -> String? {
         guard verifiedChat, let threadID, !submitting else { throw CodexLiveError.connectionClosed }
+        let turnID = activeTurnID
+        if startOnly, turnID != nil {
+            throw CodexLiveError.rejected("Codex is already working on this chat.")
+        }
         submitting = true
         defer { submitting = false }
         let input: JSON = .array([["type": "text", "text": .string(text)]])
-        if let activeTurnID {
-            let result = try await call("turn/steer", [
-                "threadId": .string(threadID), "expectedTurnId": .string(activeTurnID), "input": input
-            ])
-            guard result["turnId"]?.string == activeTurnID else { throw CodexLiveError.wrongTurn }
-        } else {
-            let result = try await call("turn/start", ["threadId": .string(threadID), "input": input])
-            guard let id = result["turn"]?["id"]?.string else { throw CodexLiveError.invalidResponse }
-            if activeTurnID == nil, latestCompletedTurn != id { activeTurnID = id }
+        if let turnID {
+            do {
+                let result = try await call("turn/steer", [
+                    "threadId": .string(threadID), "expectedTurnId": .string(turnID), "input": input
+                ])
+                guard result["turnId"]?.string == turnID else { throw CodexLiveError.wrongTurn }
+                return nil
+            } catch CodexLiveError.rejected(let message)
+                where message == "no active turn to steer" && (activeTurnID == turnID || activeTurnID == nil) {
+                // App Server explicitly rejected the input before the completion notification arrived.
+            }
         }
+        let result = try await call("turn/start", ["threadId": .string(threadID), "input": input])
+        guard let id = result["turn"]?["id"]?.string else { throw CodexLiveError.invalidResponse }
+        if (activeTurnID == nil || activeTurnID == turnID), latestCompletedTurn != id {
+            activeTurnID = id
+            emitChat.yield(.turnStarted(id))
+        }
+        return id
     }
 
     public func answer(_ approval: CodexChatApproval, allow: Bool) async throws {
@@ -542,6 +556,7 @@ public actor CodexLiveClient {
             return
         }
         if method == "turn/started", let id = params["turn"]?["id"]?.string {
+            guard id != latestCompletedTurn, id != activeTurnID else { return }
             turnChanged = true
             activeTurnID = id
             emitChat.yield(.turnStarted(id))

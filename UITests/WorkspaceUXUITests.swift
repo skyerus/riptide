@@ -314,6 +314,47 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
+    func testCodexTapSteersAndLongPressQueuesAfterTheActiveTurn() throws {
+        let (app, editor) = try openCodexFixture()
+        continueAfterFailure = false
+        editor.tap()
+        editor.typeText("Review the draft")
+        app.buttons["Send"].tap()
+
+        let steer = app.buttons["Steer"]
+        XCTAssertTrue(steer.waitForExistence(timeout: 8))
+        editor.tap()
+        editor.typeText("Focus on the opening paragraph")
+        capture(app, as: "Tap to steer")
+        steer.tap()
+        let transcript = app.scrollViews["codex-saved-transcript"]
+        XCTAssertTrue(transcript.staticTexts["Focus on the opening paragraph"].waitForExistence(timeout: 8))
+        XCTAssertTrue(steer.exists)
+
+        let followUp = "finish without approval and check the conclusion"
+        editor.tap()
+        editor.typeText(followUp)
+        steer.press(forDuration: 1)
+        let queue = app.buttons["Queue"]
+        XCTAssertTrue(queue.waitForExistence(timeout: 5))
+        XCTAssertFalse(transcript.staticTexts[followUp].exists)
+        capture(app, as: "Hold Send to queue")
+        queue.tap()
+        let queued = app.buttons["queued-messages"]
+        XCTAssertTrue(queued.waitForExistence(timeout: 5))
+        XCTAssertFalse(transcript.staticTexts[followUp].exists)
+        capture(app, as: "Follow-up queued")
+
+        let decline = app.buttons["Decline"]
+        XCTAssertTrue(decline.waitForExistence(timeout: 8))
+        decline.tap()
+        XCTAssertTrue(transcript.staticTexts["This reply survived switching workspaces."].waitForExistence(timeout: 8))
+        XCTAssertTrue(transcript.staticTexts[followUp].waitForExistence(timeout: 8))
+        XCTAssertTrue(queued.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(transcript.staticTexts["A reply finished in the other workspace."].waitForExistence(timeout: 12))
+    }
+
+    @MainActor
     func testCodexApprovalArrivingAfterSwitchStillOpensTheSameLiveTurn() throws {
         let (app, editor) = try openCodexFixture()
         editor.tap()

@@ -144,7 +144,14 @@ struct CodexSavedChatScreen: View {
     var body: some View {
         transcript
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if ready { composer }
+            if ready, let session {
+                VStack(alignment: .leading, spacing: 0) {
+                    ComposerQueue(messages: session.queuedMessages, sendingID: session.sendingQueuedID,
+                                  paused: session.queuePaused, canResume: !stopping,
+                                  remove: session.removeQueuedMessage, resume: session.resumeQueue)
+                    composer
+                }
+            }
         }
         .background(ChatTheme.background)
         .navigationTitle(chat?.title ?? initialChat?.title ?? "New chat")
@@ -241,6 +248,9 @@ struct CodexSavedChatScreen: View {
                 } else if turns.allSatisfy({ $0.messages.isEmpty }) && !working {
                     Text("Start a conversation").foregroundStyle(.secondary)
                 }
+                if let sendIssue = session?.sendIssue {
+                    Text(sendIssue).font(.footnote).foregroundStyle(.secondary)
+                }
                 if !progress.plan.isEmpty { TurnPlanCard(steps: progress.plan) }
                 if let activeTurnID {
                     let current = progress.items.last {
@@ -278,13 +288,14 @@ struct CodexSavedChatScreen: View {
         let prompt = working ? "Steer this turn" : "Message Codex"
         let canSubmit = ready && !sending && !stopping
         let disabled = !canSubmit || editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let send = { submitDraft(queue: false) }
         return DictatingComposer(
             focused: composerFocused, showsOptions: false, chatID: chatKey?.chat,
             canDictate: canSubmit, draft: editor,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
             dismissKeyboard: { composerFocused = false },
             canSubmit: canSubmit,
-            submitDraft: submitDraft
+            submitDraft: send
         ) {
             TextField(prompt, text: editor, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
                 .lineLimit(1...6)
@@ -308,7 +319,8 @@ struct CodexSavedChatScreen: View {
                 .accessibilityLabel("Stop turn")
                 .accessibilityIdentifier("stop-codex-turn")
             }
-            ComposerAction(working ? "Steer" : "Send", symbol: "arrow.up", disabled: disabled, action: submitDraft)
+            ComposerAction(working ? "Steer" : "Send", symbol: "arrow.up", disabled: disabled,
+                           queue: working ? { submitDraft(queue: true) } : nil, action: send)
         }
     }
 
@@ -338,7 +350,7 @@ struct CodexSavedChatScreen: View {
         .contentPanel()
     }
 
-    private func submitDraft() {
+    private func submitDraft(queue: Bool) {
         guard let session, ready, !sending, !stopping else { return }
         let draft = editor
         let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -346,9 +358,15 @@ struct CodexSavedChatScreen: View {
         composerFocused = false
         if let chatKey { workspace.rememberReadingOffset(nil, for: chatKey) }
         viewport.restore(nil)
-        Task {
-            if await session.send(text), draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
-                draft.wrappedValue = ""
+        if queue {
+            session.enqueue(text)
+            draft.wrappedValue = ""
+        } else {
+            Task {
+                if await session.send(text),
+                   draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+                    draft.wrappedValue = ""
+                }
             }
         }
     }

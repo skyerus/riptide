@@ -22,20 +22,25 @@ async def fixture(socket):
     async def notify(method, params):
         await send({"method": method, "params": {"threadId": CHAT, **params}})
 
+    async def user_message(inputs, message_id):
+        await notify("item/completed", {"turnId": turn_id, "item": {
+            "id": message_id, "type": "userMessage", "content": inputs,
+        }})
+
     async def conclude(text):
         nonlocal started
-        await notify("item/completed", {"turnId": TURN, "item": {
+        await notify("item/completed", {"turnId": turn_id, "item": {
             "id": "fixture-reply", "type": "agentMessage", "text": text,
         }})
-        await notify("turn/completed", {"turn": {"id": TURN, "status": "completed"}})
         started = False
+        await notify("turn/completed", {"turn": {"id": turn_id, "status": "completed"}})
 
     async def continue_turn(needs_approval):
         try:
             await asyncio.sleep(6)
             if needs_approval:
                 await send({"id": "fixture-approval", "method": "item/commandExecution/requestApproval", "params": {
-                    "threadId": CHAT, "turnId": TURN, "itemId": "fixture-tool", "command": "echo fixture",
+                    "threadId": CHAT, "turnId": turn_id, "itemId": "fixture-tool", "command": "echo fixture",
                     "availableDecisions": ["accept", "decline"],
                 }})
             else:
@@ -48,19 +53,19 @@ async def fixture(socket):
             await asyncio.sleep(6)
             steps = [{"step": "Inspect the fixture workspace", "status": "inProgress"},
                      {"step": "Summarize the changes", "status": "pending"}]
-            await notify("turn/plan/updated", {"turnId": TURN, "plan": steps})
+            await notify("turn/plan/updated", {"turnId": turn_id, "plan": steps})
             command = {"id": "fixture-tool", "type": "commandExecution", "command": "git status --short"}
-            await notify("item/started", {"turnId": TURN, "item": command})
+            await notify("item/started", {"turnId": turn_id, "item": command})
             await notify("item/commandExecution/outputDelta", {
-                "turnId": TURN, "itemId": command["id"], "delta": "Fixture output is ready.",
+                "turnId": turn_id, "itemId": command["id"], "delta": "Fixture output is ready.",
             })
-            await notify("item/completed", {"turnId": TURN, "item": {
+            await notify("item/completed", {"turnId": turn_id, "item": {
                 "id": "fixture-note", "type": "agentMessage", "phase": "commentary", "text": "Checking the current changes.",
             }})
-            await notify("turn/diff/updated", {"turnId": TURN, "diff": "--- a/demo.txt\n+++ b/demo.txt\n@@ -1 +1 @@\n-old\n+new\n"})
+            await notify("turn/diff/updated", {"turnId": turn_id, "diff": "--- a/demo.txt\n+++ b/demo.txt\n@@ -1 +1 @@\n-old\n+new\n"})
             await asyncio.sleep(12)
-            await notify("item/completed", {"turnId": TURN, "item": {**command, "status": "completed", "exitCode": 0}})
-            await notify("turn/plan/updated", {"turnId": TURN, "plan": [{**step, "status": "completed"} for step in steps]})
+            await notify("item/completed", {"turnId": turn_id, "item": {**command, "status": "completed", "exitCode": 0}})
+            await notify("turn/plan/updated", {"turnId": turn_id, "plan": [{**step, "status": "completed"} for step in steps]})
             await conclude("The fixture turn is complete.")
         except ConnectionClosed:
             return
@@ -68,10 +73,14 @@ async def fixture(socket):
     thread = {"id": CHAT, "name": "Busy Codex fixture", "cwd": WORKSPACE, "status": {"type": "idle"}}
     approval = None
     started = False
+    turn_number = 0
+    steering_number = 0
+    turn_id = None
     try:
         async for raw in socket:
             packet = json.loads(raw)
             method, request = packet.get("method"), packet.get("id")
+            params = packet.get("params", {})
             if method == "initialized":
                 continue
             if method is None and request == "fixture-approval" and started:
@@ -90,17 +99,21 @@ async def fixture(socket):
                 result = {"thread": thread}
             elif method == "thread/turns/list":
                 result = {"data": []}
-            elif method == "turn/start":
+            elif method == "turn/start" and not started:
                 started = True
-                result = {"turn": {"id": TURN}}
-                await notify("turn/started", {"turn": {"id": TURN}})
-                inputs = packet.get("params", {}).get("input", [])
-                await notify("item/completed", {"turnId": TURN, "item": {
-                    "id": "fixture-user-message", "type": "userMessage", "content": inputs,
-                }})
+                turn_number += 1
+                turn_id = f"{TURN}-{turn_number}"
+                result = {"turn": {"id": turn_id}}
+                inputs = params.get("input", [])
+                await notify("turn/started", {"turn": {"id": turn_id}})
+                await user_message(inputs, "fixture-user-message")
                 feedback = any("show live feedback" in item.get("text", "") for item in inputs)
                 needs_approval = not any("finish without approval" in item.get("text", "") for item in inputs)
                 approval = asyncio.create_task(show_live_feedback() if feedback else continue_turn(needs_approval))
+            elif method == "turn/steer" and started and params.get("expectedTurnId") == turn_id:
+                steering_number += 1
+                await user_message(params.get("input", []), f"fixture-steer-{steering_number}")
+                result = {"turnId": turn_id}
             else:
                 await send({"id": request, "error": {"code": -32601, "message": "Not available in the UX fixture."}})
                 continue
