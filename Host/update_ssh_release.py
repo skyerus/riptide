@@ -15,6 +15,7 @@ import tempfile
 
 from agent_profile import RENAME, read_name
 from install_safari import Edit, HOST, PAYLOAD, key_command, read_owned, require
+from ssh_acp import PRIVATE_FILE_GREETING
 
 
 def find_key(source, fingerprint):
@@ -52,7 +53,7 @@ def verify(argv):
         require(result.returncode == 0, f"The staged {route} command failed.")
         return result.stdout
 
-    require(json.loads(run("riptide-private-file", "")) == {"version": 1},
+    require(json.loads(run("riptide-private-file", "")) == PRIVATE_FILE_GREETING,
             "The private file transfer command did not confirm its protocol version.")
     if "--safari" in argv:
         state = json.loads(run("riptide-safari", '{"operation":"state","body":{}}\n'))
