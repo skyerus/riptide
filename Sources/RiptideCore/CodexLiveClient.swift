@@ -117,23 +117,11 @@ public actor CodexLiveClient {
     private var latestCompletedTurn: String?
     private var approvals: [JSON: CodexChatApproval] = [:]
     private var responsesInFlight = Set<JSON>()
-    private var threadModel: String?
-    private var threadServiceTier: String?
-    private var fastTiersByModel: [String: FastTier] = [:]
-    private var speedRevision = 0
+    private var threadSettings: CodexThreadSettings?
+    private var modelCatalog: [CodexCatalogModel] = []
+    private var settingsRevision = 0
 
-    private struct FastTier {
-        let id: String
-        let modelDefault: String?
-
-        func isSelected(_ tier: String?) -> Bool {
-            guard let tier = tier ?? modelDefault else { return false }
-            return tier == id || (["fast", "priority"].contains(id) && ["fast", "priority"].contains(tier))
-        }
-    }
-
-    private var fastTier: FastTier? { threadModel.flatMap { fastTiersByModel[$0] } }
-    private var fastMode: Bool? { fastTier?.isSelected(threadServiceTier) }
+    private var configOptions: [SessionConfigOption] { threadSettings?.configOptions(catalog: modelCatalog) ?? [] }
 
     init(transport: any JSONMessageTransport, workspace: String, accountFingerprint: String? = nil) {
         self.transport = transport
@@ -177,7 +165,7 @@ public actor CodexLiveClient {
         guard let thread = result["thread"], thread["cwd"]?.string == workspace,
               let chat = CodexChatSummary(thread) else { throw CodexLiveError.invalidResponse }
         threadID = chat.id
-        readThreadSpeed(result)
+        threadSettings = CodexThreadSettings(result)
         savedChat = true
         verifiedChat = true
         return chat
@@ -201,7 +189,7 @@ public actor CodexLiveClient {
         if accountFingerprint != nil { _ = try await checkedAccount() }
         savedChat = true
         threadID = id
-        readThreadSpeed(try await resumeSavedThread(id))
+        threadSettings = CodexThreadSettings(try await resumeSavedThread(id))
         let history = try await call("thread/turns/list", [
             "threadId": .string(id), "limit": .integer(30), "itemsView": "full", "sortDirection": "desc"
         ])
@@ -227,50 +215,56 @@ public actor CodexLiveClient {
                                  hasOlderTurns: history["nextCursor"]?.string != nil)
     }
 
-    public func discoverSavedChatFastMode() async {
-        guard verifiedChat, threadModel != nil else { return }
+    public func discoverSavedChatConfiguration() async {
+        guard verifiedChat, let settings = threadSettings else { return }
+        emitChat.yield(.configOptions(configOptions))
         var cursor: String?
         var seen = Set<String>()
-        var tiers: [String: FastTier] = [:]
+        var ids = Set<String>()
+        var catalog: [CodexCatalogModel] = []
         repeat {
             var params: [String: JSON] = ["includeHidden": .boolean(true), "limit": .integer(100)]
+            if let provider = settings.provider { params["modelProvider"] = .string(provider) }
             if let cursor { params["cursor"] = .string(cursor) }
             guard let result = try? await call("model/list", .object(params)),
                   let models = result["data"]?.array else { return }
-            for model in models {
-                let nativeTier = model["serviceTiers"]?.array?.first {
-                    $0["name"]?.string?.lowercased() == "fast"
-                }?["id"]?.string
-                let legacyTier = model["additionalSpeedTiers"]?.array?.contains("fast") == true ? "priority" : nil
-                guard let tier = nativeTier ?? legacyTier, !tier.isEmpty else { continue }
-                let option = FastTier(id: tier, modelDefault: model["defaultServiceTier"]?.string)
-                for key in [model["model"]?.string, model["id"]?.string].compactMap({ $0 }) {
-                    tiers[key] = option
-                }
-            }
+            catalog.append(contentsOf: models.compactMap(CodexCatalogModel.init).filter { ids.insert($0.id).inserted })
             cursor = result["nextCursor"]?.string
             if let cursor, !seen.insert(cursor).inserted { return }
         } while cursor != nil && seen.count < 20
-        fastTiersByModel = tiers
-        if let fastMode { emitChat.yield(.fastModeChanged(fastMode)) }
+        modelCatalog = catalog
+        emitChat.yield(.configOptions(configOptions))
     }
 
-    public func setSavedChatFastMode(_ enabled: Bool) async throws -> Bool? {
-        guard verifiedChat, let threadID, let fastTier, !submitting, activeTurnID == nil else {
-            throw CodexLiveError.rejected("Fast mode is unavailable in this chat right now.")
+    public func setSavedChatConfigOption(_ id: String, value: String) async throws -> [SessionConfigOption] {
+        guard verifiedChat, let threadID, var settings = threadSettings, !submitting, activeTurnID == nil,
+              let option = configOptions.first(where: { $0.id == id }), option.choices.contains(where: { $0.id == value }) else {
+            throw CodexLiveError.rejected("This setting is unavailable in this chat right now.")
         }
-        let revision = speedRevision
-        let tier = enabled ? fastTier.id : "default"
-        _ = try await call("thread/settings/update", ["threadId": .string(threadID), "serviceTier": .string(tier)])
+        var params: [String: JSON] = ["threadId": .string(threadID)]
+        switch option.category {
+        case .model:
+            guard let nextModel = modelCatalog.first(where: { $0.id == value }) else { throw CodexLiveError.invalidResponse }
+            settings.model = value
+            params["model"] = .string(value)
+            if let effort = nextModel.defaultEffort, !nextModel.efforts.contains(where: { $0.id == settings.effort }) {
+                params["effort"] = .string(effort)
+                settings.effort = effort
+            }
+        case .thoughtLevel:
+            params["effort"] = .string(value)
+            settings.effort = value
+        case .serviceTier:
+            guard let fast = modelCatalog.first(where: { $0.id == settings.model })?.fastTier else { throw CodexLiveError.invalidResponse }
+            let tier = value == "fast" ? fast : "default"
+            params["serviceTier"] = .string(tier)
+            settings.serviceTier = tier
+        }
+        let revision = settingsRevision
+        _ = try await call("thread/settings/update", .object(params))
         // A settings notification can arrive before the acknowledgment with the server's effective value.
-        if speedRevision == revision { threadServiceTier = tier }
-        return fastMode
-    }
-
-    private func readThreadSpeed(_ settings: JSON) {
-        threadModel = settings["model"]?.string
-        threadServiceTier = settings["serviceTier"]?.string
-        speedRevision += 1
+        if settingsRevision == revision { threadSettings = settings }
+        return configOptions
     }
 
     public func sendToSavedChat(_ text: String) async throws {
@@ -605,10 +599,12 @@ public actor CodexLiveClient {
             if let approval = approvals.removeValue(forKey: id) { emitChat.yield(.approvalResolved(approval.id)) }
             return
         }
-        if method == "thread/settings/updated", let settings = params["threadSettings"], settings["model"]?.string != nil {
-            let oldMode = fastMode
-            readThreadSpeed(settings)
-            if fastMode != oldMode { emitChat.yield(.fastModeChanged(fastMode)) }
+        if method == "thread/settings/updated", let value = params["threadSettings"], let settings = CodexThreadSettings(value) {
+            let previous = configOptions
+            if threadSettings?.model != settings.model { emitChat.yield(.context(nil)) }
+            threadSettings = settings
+            settingsRevision += 1
+            if configOptions != previous { emitChat.yield(.configOptions(configOptions)) }
             return
         }
         if method == "turn/started", let id = params["turn"]?["id"]?.string {
@@ -622,6 +618,10 @@ public actor CodexLiveClient {
         if method == "turn/completed", let reportedTurn = params["turn"]?["id"]?.string,
            reportedTurn == latestCompletedTurn || (activeTurnID != nil && reportedTurn != activeTurnID) { return }
         if let progress = CodexWorkDecoder.decode(method, params) { emitChat.yield(.progress(progress)) }
+        if method == "thread/tokenUsage/updated", let usage = params["tokenUsage"],
+           let used = usage["last"]?["totalTokens"]?.integer, let capacity = usage["modelContextWindow"]?.integer {
+            emitChat.yield(.context(ContextUsage(used: used, capacity: capacity)))
+        }
         if method == "error", let message = params["error"]?["message"]?.string {
             emitChat.yield(.issue(params["willRetry"] == .boolean(true)
                                   ? "Codex is reconnecting…" : String(message.prefix(600))))

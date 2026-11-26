@@ -17,8 +17,10 @@ final class CodexWorkspaceSession {
     private(set) var ready = false
     private(set) var stopping = false
     private(set) var sending = false
-    private(set) var fastMode: Bool?
-    private(set) var changingFastMode = false
+    private(set) var configOptions: [SessionConfigOption] = []
+    private(set) var context: ContextUsage?
+    private(set) var configuring = false
+    private(set) var configError: String?
     private(set) var issue: String?
     private(set) var hasOlderTurns = false
     private(set) var diff: String?
@@ -59,8 +61,8 @@ final class CodexWorkspaceSession {
                     self?.setChat(created, peer: peer)
                 }
                 self?.connected(peer)
-                let discoverFastMode = Task { await peer.discoverSavedChatFastMode() }
-                defer { discoverFastMode.cancel() }
+                let discovery = Task { await peer.discoverSavedChatConfiguration() }
+                defer { discovery.cancel() }
                 for try await event in peer.chatEvents {
                     guard let self, !Task.isCancelled, self.client === peer else { break }
                     self.apply(event)
@@ -82,8 +84,7 @@ final class CodexWorkspaceSession {
         activeTurnID = nil
         stopping = false
         sending = false
-        fastMode = nil
-        changingFastMode = false
+        clearConfiguration()
         approvals = []
         responding = []
         publishAttention()
@@ -91,7 +92,7 @@ final class CodexWorkspaceSession {
     }
 
     func send(_ text: String) async -> Bool {
-        guard let client, ready, !sending, !stopping, !changingFastMode, !text.isEmpty else { return false }
+        guard let client, ready, !sending, !stopping, !configuring, !text.isEmpty else { return false }
         sending = true
         issue = nil
         defer { sending = false }
@@ -104,17 +105,27 @@ final class CodexWorkspaceSession {
         }
     }
 
-    func toggleFastMode() async {
-        guard let client, let fastMode, ready, !working, !sending, !changingFastMode else { return }
-        changingFastMode = true
-        issue = nil
-        defer { if self.client === client { changingFastMode = false } }
+    func setConfigOption(_ id: String, value: String) async -> Bool {
+        guard let client, ready, !working, !sending, !configuring else { return false }
+        configuring = true
+        configError = nil
+        defer { if self.client === client { configuring = false } }
         do {
-            let selected = try await client.setSavedChatFastMode(!fastMode)
-            if self.client === client { self.fastMode = selected }
+            let options = try await client.setSavedChatConfigOption(id, value: value)
+            guard self.client === client else { return false }
+            configOptions = options
+            return options.contains { $0.id == id && $0.currentValue == value }
         } catch {
-            if self.client === client { issue = error.localizedDescription }
+            if self.client === client { configError = error.localizedDescription }
+            return false
         }
+    }
+
+    private func clearConfiguration() {
+        configOptions = []
+        context = nil
+        configuring = false
+        configError = nil
     }
 
     func answer(_ approval: CodexChatApproval, allow: Bool) {
@@ -162,8 +173,7 @@ final class CodexWorkspaceSession {
         ready = false
         activeTurnID = nil
         stopping = false
-        fastMode = nil
-        changingFastMode = false
+        clearConfiguration()
         approvals = []
         responding = []
         issue = message
@@ -209,8 +219,10 @@ final class CodexWorkspaceSession {
             publishAttention()
         case .progress(let update):
             if let activeTurnID { turns[turnIndex(for: activeTurnID)].apply(update) }
-        case .fastModeChanged(let enabled):
-            fastMode = enabled
+        case .configOptions(let options):
+            configOptions = options
+        case .context(let usage):
+            context = usage
         case .issue(let message):
             issue = message
         case .live(let update):

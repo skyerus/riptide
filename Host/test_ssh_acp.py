@@ -20,6 +20,8 @@ class SSHACPPolicyTests(unittest.TestCase):
             ("session/load", {"cwd": workspace, "sessionId": "main", "mcpServers": []}),
             ("session/prompt", {"sessionId": "main", "prompt": [{"type": "text", "text": "Hello"}]}),
             ("session/set_config_option", {"sessionId": "main", "configId": "model", "value": "default"}),
+            ("session/set_config_option", {"sessionId": "main", "configId": "service_tier", "value": "fast"}),
+            ("session/set_config_option", {"sessionId": "main", "configId": "service_tier", "value": "normal"}),
         ):
             with self.subTest(method=method):
                 self.assertTrue(admitted({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, workspace, set()))
@@ -36,6 +38,7 @@ class SSHACPPolicyTests(unittest.TestCase):
             ("session/load", {"cwd": "/", "sessionId": "main", "mcpServers": []}),
             ("session/load", {"cwd": workspace, "sessionId": "main", "mcpServers": [], "_meta": {}}),
             ("session/set_config_option", {"sessionId": "main", "configId": "mode", "value": "unconfigured"}),
+            ("session/set_config_option", {"sessionId": "main", "configId": "service_tier", "value": "--global"}),
             ("session/prompt", {"sessionId": "main", "prompt": [{"type": "resource", "uri": "file:///example"}]}),
             ("other/method", {}),
         ):
@@ -67,6 +70,8 @@ class SSHACPPolicyTests(unittest.TestCase):
                             ("session/load", {"cwd": workspace, "sessionId": "main", "mcpServers": []}),
                             ("session/list", {"cwd": workspace}),
                             ("session/new", {"cwd": workspace, "mcpServers": [{"name": "client-provided"}]}),
+                            ("session/set_config_option", {"sessionId": "main", "configId": "service_tier", "value": "fast"}),
+                            ("session/set_config_option", {"sessionId": "main", "configId": "service_tier", "value": "normal"}),
                         )
                         for request_id, (method, params) in enumerate(requests, 1):
                             process.stdin.write(json.dumps({

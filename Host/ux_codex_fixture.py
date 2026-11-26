@@ -13,6 +13,13 @@ WORKSPACE = "/riptide-ux-fixture"
 CHAT = "busy-fixture-thread"
 TURN = "busy-fixture-turn"
 TOKEN = "fixture-" + "x" * 40
+MODELS = [
+    {"model": "gpt-6.2-sol", "displayName": "GPT-6.2 Sol", "defaultReasoningEffort": "xhigh",
+     "supportedReasoningEfforts": [{"reasoningEffort": value} for value in ("medium", "high", "xhigh", "ultra")],
+     "serviceTiers": [{"id": "priority", "name": "Fast"}]},
+    {"model": "gpt-6.2-astra", "displayName": "GPT-6.2 Astra", "defaultReasoningEffort": "medium",
+     "supportedReasoningEfforts": [{"reasoningEffort": value} for value in ("medium", "high")]},
+]
 
 
 async def fixture(socket):
@@ -66,7 +73,7 @@ async def fixture(socket):
             return
 
     thread = {"id": CHAT, "name": "Busy Codex fixture", "cwd": WORKSPACE, "status": {"type": "idle"}}
-    thread_settings = {"model": "fixture-model", "serviceTier": None}
+    thread_settings = {"model": "gpt-6.2-sol", "effort": "xhigh", "serviceTier": None}
     approval = None
     started = False
     try:
@@ -92,13 +99,17 @@ async def fixture(socket):
             elif method == "thread/resume":
                 result = {"thread": thread, **thread_settings}
             elif method == "model/list":
-                result = {"data": [{"model": "fixture-model", "serviceTiers": [{"id": "priority", "name": "Fast"}]}]}
+                result = {"data": MODELS}
             elif method == "thread/settings/update":
                 params = packet.get("params", {})
-                if params.get("threadId") != CHAT or params.get("serviceTier") not in ("priority", "default"):
-                    await send({"id": request, "error": {"code": -32602, "message": "Invalid fixture speed selection."}})
+                options = {key: value for key, value in params.items() if key != "threadId"}
+                model = next((row for row in MODELS if row["model"] == options.get("model", thread_settings["model"])), None)
+                if (params.get("threadId") != CHAT or not model or options.keys() - thread_settings.keys() or
+                        "effort" in options and {"reasoningEffort": options["effort"]} not in model["supportedReasoningEfforts"] or
+                        "serviceTier" in options and options["serviceTier"] not in ("priority", "default")):
+                    await send({"id": request, "error": {"code": -32602, "message": "Invalid fixture settings."}})
                     continue
-                thread_settings["serviceTier"] = params["serviceTier"]
+                thread_settings.update(options)
                 await notify("thread/settings/updated", {"threadSettings": thread_settings})
                 result = {}
             elif method == "thread/turns/list":
