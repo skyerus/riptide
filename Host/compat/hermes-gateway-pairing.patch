@@ -1,0 +1,231 @@
+diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -634,14 +634,14 @@
+     or a prompt mirror mutate the agent in place) is retired first so the new thread carries the current one.
+     The first app-server session or a connector-only change resumes the stored thread. A prompt or
+     provider change starts a new thread seeded with the prior transcript in ``messages``."""
+-    from gateway.session_local_mcp import current_riptide_safari_args
++    from gateway.session_local_mcp import answer_riptide_pairing_form, current_riptide_mcp_args
+
+     developer_instructions = _codex_developer_instructions(agent)
+     model_provider = _codex_model_provider(agent)
+-    safari_args = current_riptide_safari_args()
+-    safari_only_change = False
++    mcp_args = current_riptide_mcp_args()
++    connector_only_change = False
+     if getattr(agent, "_codex_session", None) is not None:
+-        # A session attached without a prompt record is kept unless its Safari connector changed.
++        # A session attached without a prompt record is kept unless its Riptide connectors changed.
+         # The provider is fixed per thread (turn/start can switch the model, not the provider), so an
+         # in-place switch to or from a named custom provider retires the thread too.
+         recorded = getattr(agent, "_codex_session_prompt", None)
+@@ -649,13 +649,13 @@
+             recorded == developer_instructions
+             and getattr(agent, "_codex_session_model_provider", None) == model_provider
+         )
+-        safari_changed = getattr(agent, "_codex_session_safari_args", ()) != safari_args
+-        if same_composition and not safari_changed:
++        connectors_changed = getattr(agent, "_codex_session_mcp_args", ()) != mcp_args
++        if same_composition and not connectors_changed:
+             return
+-        safari_only_change = same_composition and safari_changed
++        connector_only_change = same_composition and connectors_changed
+         _close_codex_session(agent)
+     first_session = getattr(agent, "_codex_session_prompt", None) is None
+-    resume_thread_id = _stored_codex_thread_id(agent) if first_session or safari_only_change else None
++    resume_thread_id = _stored_codex_thread_id(agent) if first_session or connector_only_change else None
+     from agent.runtime_cwd import resolve_agent_cwd
+     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
+     from hermes_cli.codex_runtime_switch import get_configured_codex_binary
+@@ -689,13 +689,13 @@
+     # The recorded composition stays the bare prompt: the seed must not make the next turn retire the thread.
+     agent._codex_session_prompt = developer_instructions
+     agent._codex_session_model_provider = model_provider
+-    agent._codex_session_safari_args = safari_args
++    agent._codex_session_mcp_args = mcp_args
+     from agent.codex_runtime_history_seed import render_history_seed
+     history_seed = render_history_seed(messages) or None
+     client_factory = None
+-    if safari_args:
++    if mcp_args:
+         from agent.transports.codex_app_server import CodexAppServerClient
+-        client_factory = functools.partial(CodexAppServerClient, extra_args=list(safari_args))
++        client_factory = functools.partial(CodexAppServerClient, extra_args=list(mcp_args))
+     # The model always rides along: codex's home is shared, while the Hermes model is per profile/session,
+     # so omitting it ran codex's own default instead of the selection.
+     agent._codex_session = CodexAppServerSession(
+@@ -706,6 +706,8 @@
+         developer_instructions=developer_instructions or None,
+         model=_codex_wire_model(agent, model_provider), model_provider=model_provider,
+         resume_thread_id=resume_thread_id, history_seed=history_seed, client_factory=client_factory,
++        riptide_pairing_callback=lambda params: answer_riptide_pairing_form(
++            params, getattr(agent, "clarify_callback", None)),
+     )
+
+
+diff --git a/agent/transports/codex_app_server_session.py b/agent/transports/codex_app_server_session.py
+--- a/agent/transports/codex_app_server_session.py
++++ b/agent/transports/codex_app_server_session.py
+@@ -218,6 +218,7 @@
+         model: Optional[str] = None, model_provider: Optional[str] = None,
+         developer_instructions: Optional[str] = None, resume_thread_id: Optional[str] = None,
+         history_seed: Optional[str] = None,
++        riptide_pairing_callback: Optional[Callable[[dict], dict]] = None,
+     ) -> None:
+         self._cwd = cwd or os.getcwd()
+         self._codex_bin = codex_bin
+@@ -244,6 +245,7 @@
+             os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"), "workspace-write"
+         )
+         self._approval_callback = approval_callback
++        self._riptide_pairing_callback = riptide_pairing_callback
+         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
+         self._routing = request_routing or _ServerRequestRouting()
+         self._client_factory = client_factory or CodexAppServerClient
+@@ -717,6 +719,9 @@
+     def _respond_elicitation(self, params: dict) -> dict:
+         """MCP elicitation: auto-accept our own hermes-tools server (opted in by enabling the runtime;
+         exposes nothing codex's shell can't do); decline others so the user opts in via codex's own flow."""
++        if (params.get("serverName") == "riptide_pairing" and params.get("threadId") == self._thread_id
++                and self._thread_id is not None and self._riptide_pairing_callback is not None):
++            return self._riptide_pairing_callback(params)
+         action = "accept" if (params.get("serverName") or "") == HERMES_TOOLS_MCP_SERVER_NAME else "decline"
+         return {"action": action, "content": None, "_meta": None}
+
+diff --git a/gateway/session_local_mcp.py b/gateway/session_local_mcp.py
+--- a/gateway/session_local_mcp.py
++++ b/gateway/session_local_mcp.py
+@@ -19,6 +19,7 @@
+ import hmac
+ import json
+ import logging
++import re
+ from pathlib import Path
+ import threading
+ import uuid
+@@ -31,7 +32,7 @@
+ PRIVATE_KEY = ('editor_mcp',)
+ _HELD_LOCK = threading.Lock()
+ _RELIST_TIMEOUT = 5  # seconds an admission start waits on a held server's tools/list
+-_RIPTIDE_SAFARI_ARGS: ContextVar[tuple[str, ...]] = ContextVar('riptide_safari_args', default=())
++_RIPTIDE_MCP_ARGS: ContextVar[tuple[str, ...]] = ContextVar('riptide_mcp_args', default=())
+
+
+ def _json(value):
+@@ -142,6 +143,8 @@
+                 config['transport'] = 'sse'
+         # One bounded eager discovery; no lazy or late schema refresh.
+         config.update(connect_timeout=5, tool_timeout=30, lazy=False)
++        if _riptide_connector(spec) == 'riptide_pairing':
++            config.update(tool_timeout=180, elicitation={'timeout': 165})
+         configs[name] = config
+     return configs
+
+@@ -497,37 +500,52 @@
+             'config_secret_ref': policy.config_secret_ref}, servers
+
+
++def _riptide_connector(spec):
++    # Only forward the known host connectors from the admitted editor's manifest.
++    if spec.get('type', 'stdio') != 'stdio' or spec.get('env'):
++        return None
++    name, command, args = spec['name'], spec['command'], spec['args']
++    if len(args) != 3 or not all(Path(path).is_absolute() for path in (command, args[0], args[2])):
++        return None
++    signature = (Path(args[0]).name, args[1])
++    if name == 'riptide_safari' and signature == ('safari_mcp.py', '--state-dir'):
++        return name
++    if name == 'riptide_pairing' and signature == ('agent_pairing_mcp.py', '--config'):
++        return name
++    return None
++
++
+ @contextmanager
+-def _riptide_safari_scope(servers=(), connected=()):
+-    """Expose the frozen Riptide stdio connector only while executing its owning chat."""
++def _riptide_mcp_scope(servers=(), connected=()):
+     arguments = []
+     for index in connected:
+         spec = servers[index]
+-        if spec.get('name') != 'riptide_safari' or spec.get('type', 'stdio') != 'stdio':
++        name = _riptide_connector(spec)
++        if name is None:
+             continue
+-        command, args = spec['command'], spec['args']
+-        if (spec.get('env') or len(args) != 3 or args[1] != '--state-dir'
+-                or not all(Path(path).is_absolute() for path in (command, args[0], args[2]))
+-                or Path(args[0]).name != 'safari_mcp.py'):
+-            continue
+-        for key, value in (('command', command), ('args', args), ('tool_timeout_sec', 90)):
+-            arguments.extend(('-c', f'mcp_servers.riptide_safari.{key}={_json(value)}'))
+-        break
+-    token = _RIPTIDE_SAFARI_ARGS.set(tuple(arguments))
++        settings = {'command': spec['command'], 'args': spec['args'], 'tool_timeout_sec': 90}
++        if name == 'riptide_pairing':
++            # Invoking these two tools only discovers targets or asks the phone for consent.
++            # The pairing form itself stays interactive even under Codex's approval settings.
++            settings.update(tool_timeout_sec=180, default_tools_approval_mode='approve',
++                            enabled_tools=['list_pairable_agents', 'request_agent_pairing'])
++        for key, value in settings.items():
++            arguments.extend(('-c', f'mcp_servers.{name}.{key}={_json(value)}'))
++    token = _RIPTIDE_MCP_ARGS.set(tuple(arguments))
+     try:
+         yield
+     finally:
+-        _RIPTIDE_SAFARI_ARGS.reset(token)
+-
+-
+-def current_riptide_safari_args():
+-    return _RIPTIDE_SAFARI_ARGS.get()
++        _RIPTIDE_MCP_ARGS.reset(token)
++
++
++def current_riptide_mcp_args():
++    return _RIPTIDE_MCP_ARGS.get()
+
+
+ @contextmanager
+ def editor_mcp_scope(authority, policy):
+     if not policy.editor_mcp_json:
+-        with _riptide_safari_scope():
++        with _riptide_mcp_scope():
+             yield
+         return
+     data = json.loads(policy.editor_mcp_json)
+@@ -538,5 +556,34 @@
+         if schemas != data['schemas']:
+             # Drift is re-frozen by the drain before a claim; inside an execution the manifest never changes.
+             raise AuthorityRefusal('acp_mcp_schema_changed')
+-        with _riptide_safari_scope(servers, connected):
++        with _riptide_mcp_scope(servers, connected):
+             yield
++
++
++def answer_riptide_pairing_form(params, clarify):
++    """Translate the shared MCP form to the gateway's current turn-bound ACP approval."""
++    declined = {'action': 'decline', 'content': None, '_meta': None}
++    if not callable(clarify) or params.get('mode') != 'form':
++        return declined
++    if not any(arg.startswith('mcp_servers.riptide_pairing.command=') for arg in current_riptide_mcp_args()):
++        return declined
++    schema = params.get('requestedSchema')
++    fields = schema.get('properties') if isinstance(schema, dict) else None
++    field = fields.get('pair') if isinstance(fields, dict) and set(fields) == {'pair'} else None
++    choices = field.get('enum') if isinstance(field, dict) and field.get('type') == 'string' else None
++    message = params.get('message')
++    if (not isinstance(message, str) or not 0 < len(message) <= 200 or not isinstance(choices, list)
++            or len(choices) != 1 or not isinstance(choices[0], str)
++            or not re.fullmatch(r'Pair Hermes profile: [a-z0-9][a-z0-9_-]{0,63}', choices[0])):
++        return declined
++    try:
++        reply = clarify([{'qid': 'q0', 'question': message, 'choices': choices,
++                          'choices_offered': choices, 'multi_select': False}])
++    except Exception:
++        logger.exception('Could not deliver the Riptide pairing approval')
++        return {**declined, 'action': 'cancel'}
++    if not isinstance(reply, dict) or reply.get('outcome') != 'submitted':
++        return {**declined, 'action': 'cancel'}
++    if (reply.get('answers') or {}).get('q0') == choices[0]:
++        return {'action': 'accept', 'content': {'pair': choices[0]}, '_meta': None}
++    return declined
