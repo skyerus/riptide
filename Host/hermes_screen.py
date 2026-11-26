@@ -59,16 +59,18 @@ class BrowserWindow:
         classes = set(re.findall(r'"([^"]+)"', details.lower()))
         return details if classes & self.CHROMIUM else None
 
-    def active_browser(self):
+    def active_browser(self, *, activate=False):
         if self.env is None:
             return
         root = self.properties("-root", "_NET_ACTIVE_WINDOW")
         match = re.search(r"# (0x[0-9a-fA-F]+)", root)
         if match and (window := int(match[1], 16)) and (details := self.browser_details(window)):
             return window, details
+        if activate:
+            self.activate_existing()
 
-    def minimum_width(self):
-        active = self.active_browser()
+    def minimum_width(self, *, activate=False):
+        active = self.active_browser(activate=activate)
         if active is None:
             return None
         _, details = active
@@ -76,9 +78,7 @@ class BrowserWindow:
         # Chromium's minimum is for the client area. Leave room for the window frame.
         return int(minimum[1]) + 12 if minimum else 512
 
-    def open_or_activate(self):
-        if self.active_browser():
-            return
+    def activate_existing(self):
         windows = self.properties("-root", "_NET_CLIENT_LIST_STACKING")
         for identifier in reversed(re.findall(r"0x[0-9a-fA-F]+", windows)):
             window = int(identifier, 16)
@@ -87,8 +87,12 @@ class BrowserWindow:
             except subprocess.CalledProcessError:
                 continue  # The window was closed after the list was read.
             if details:
-                self.send_window_message(window, "_NET_ACTIVE_WINDOW", 2)
-                return
+                return self.send_window_message(window, "_NET_ACTIVE_WINDOW", 2)
+        return False
+
+    def open_or_activate(self):
+        if self.active_browser() or self.activate_existing():
+            return
 
         # Use the same Desktop Entry the Hermes dock uses. Its Exec line selects
         # the agent's Chromium executable, persistent profile, and launch flags.
@@ -297,7 +301,7 @@ class Display:
             await asyncio.to_thread(self.browser.open_or_activate)
         except (OSError, subprocess.SubprocessError):
             raise ScreenError("Hermes could not start or bring forward its browser.") from None
-        width = await self.wait_for_browser(self.browser.minimum_width, 10)
+        width = await self.wait_for_browser(lambda: self.browser.minimum_width(activate=True), 10)
         if width is None:
             raise ScreenError("Hermes started its browser, but no browser window appeared.")
         if self.owns(await self.call("display.status")):

@@ -101,10 +101,13 @@ class Chrome:
             raise ScreenError("Chrome control changed. Capture it again after handback.")
         if open_or_activate:
             window.open_or_activate()
-        for _ in range(40 if open_or_activate else 1):
-            if active := window.active_browser():
+        deadline = time.monotonic() + 8
+        while self.epoch() == epoch:
+            if active := window.active_browser(activate=open_or_activate):
                 if pid := window.process_id(active[0]):
                     return (view.display, active[0], pid)
+            if not open_or_activate or time.monotonic() >= deadline:
+                break
             time.sleep(0.1)
         raise ScreenError("Chrome is no longer in front. Capture it again before sending input.")
 
