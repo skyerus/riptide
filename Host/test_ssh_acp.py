@@ -19,6 +19,7 @@ class SSHACPPolicyTests(unittest.TestCase):
             ("session/new", {"cwd": workspace, "mcpServers": []}),
             ("session/load", {"cwd": workspace, "sessionId": "main", "mcpServers": []}),
             ("session/prompt", {"sessionId": "main", "prompt": [{"type": "text", "text": "Hello"}]}),
+            ("_riptide/session/steer", {"sessionId": "main", "text": "Focus on the draft"}),
             ("session/set_config_option", {"sessionId": "main", "configId": "model", "value": "default"}),
             ("session/set_config_option", {"sessionId": "main", "configId": "service_tier", "value": "fast"}),
             ("session/set_config_option", {"sessionId": "main", "configId": "service_tier", "value": "normal"}),
@@ -40,6 +41,7 @@ class SSHACPPolicyTests(unittest.TestCase):
             ("session/set_config_option", {"sessionId": "main", "configId": "mode", "value": "unconfigured"}),
             ("session/set_config_option", {"sessionId": "main", "configId": "service_tier", "value": "--global"}),
             ("session/prompt", {"sessionId": "main", "prompt": [{"type": "resource", "uri": "file:///example"}]}),
+            ("_riptide/session/steer", {"sessionId": "main", "text": " ", "cwd": "/"}),
             ("other/method", {}),
         ):
             with self.subTest(method=method):

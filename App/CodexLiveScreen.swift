@@ -3,15 +3,15 @@ import SwiftUI
 
 struct CodexLiveScreen: View {
     let endpoint: CodexLocalEndpoint
+    @Environment(WorkspaceState.self) private var workspace
     @State private var showVoice = false
-    @State private var client: CodexLiveClient?
+    @State private var session: CodexWorkspaceSession?
     @State private var turn: CodexLiveTurn?
     @State private var status = "Joining the running turn…"
     @State private var active = false
     @State private var failure: String?
     @State private var attempt = 0
     @State private var draft = ""
-    @State private var steering = false
     @State private var receipt: String?
     @State private var output = ""
     @State private var outputEvents = 0
@@ -67,6 +67,17 @@ struct CodexLiveScreen: View {
                         ChatMarkdown(source: reply.text, streaming: active && !reply.finished)
                             .accessibilityIdentifier("codex-assistant-reply")
                     }
+                    if let turn, let session {
+                        ForEach(session.turns.drop(while: { $0.id != turn.turnID }).dropFirst()) { followUp in
+                            ForEach(followUp.messages) { message in
+                                if message.role == .user {
+                                    TranscriptUserMessage(text: message.text, receipt: message.receipt)
+                                } else {
+                                    ChatMarkdown(source: message.text, streaming: message.streaming)
+                                }
+                            }
+                        }
+                    }
                     if let patch, !patch.isEmpty {
                         DisclosureGroup("Changes") {
                             DiffPreview(source: patch, title: "Turn diff")
@@ -86,13 +97,23 @@ struct CodexLiveScreen: View {
                                 .accessibilityIdentifier("codex-reconnect")
                         }
                     }
+                    if let issue = session?.sendIssue ?? session?.issue {
+                        Text(issue).font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
                 .transcriptColumn()
             }
             .scrollDismissesKeyboard(.interactively)
             .transcriptViewport($viewport, chat: nil)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if active { composer }
+                if let session, session.ready {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ComposerQueue(messages: session.queuedMessages, sendingID: session.sendingQueuedID,
+                                      paused: session.queuePaused, canResume: !session.stopping,
+                                      remove: session.removeQueuedMessage, resume: session.resumeQueue)
+                        composer(session)
+                    }
+                }
             }
         }
         .background(ChatTheme.background.ignoresSafeArea())
@@ -115,20 +136,24 @@ struct CodexLiveScreen: View {
         .task(id: attempt) { await watch() }
     }
 
-    private var composer: some View {
-        ChatComposer(
-            prompt: "Steer this turn", chatID: turn?.turnID, fieldID: "codex-steer-input", draft: $draft,
-            modelPickerVisible: .constant(false), editorFocus: $editorFocused, context: context,
-            canDictate: active && !steering, canSubmit: active && !steering,
+    private func composer(_ session: CodexWorkspaceSession) -> some View {
+        let canSubmit = !session.sending && !session.stopping && !session.configuring
+        return ChatComposer(
+            prompt: session.working ? "Steer this turn" : "Message Codex",
+            chatID: turn?.threadID, fieldID: "codex-steer-input", sendID: "codex-steer-send", draft: $draft,
+            modelPickerVisible: .constant(false), editorFocus: $editorFocused, context: session.context ?? context,
+            canDictate: canSubmit, canSubmit: canSubmit,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
-            steering: true, submit: submitDraft
+            steering: session.working,
+            enqueue: session.working ? { submitDraft(queue: true) } : nil,
+            submit: { submitDraft(queue: false) }
         )
     }
 
     private func watch() async {
         viewport.restore(nil)
         let peer = endpoint.makeClient()
-        client = peer
+        session = nil
         turn = nil
         active = false
         status = "Joining the running turn…"
@@ -142,6 +167,11 @@ struct CodexLiveScreen: View {
         do {
             let joined = try await peer.attach()
             turn = joined
+            let saved = workspace.codexSession(endpoint: endpoint,
+                                               initialChat: .init(id: joined.threadID, title: "Codex on this Mac"),
+                                               workspaceID: WorkspaceState.localID)
+            session = saved
+            saved.start()
             active = true
             status = "Watching a turn already in progress"
             for try await event in peer.events {
@@ -158,6 +188,7 @@ struct CodexLiveScreen: View {
                 case .context(_, let usage):
                     context = usage
                 case .completed(_, let outcome):
+                    context = nil
                     status = outcome == "completed" ? "Turn completed" : "Turn \(outcome)"
                     active = false
                     await peer.close()
@@ -184,23 +215,19 @@ struct CodexLiveScreen: View {
         }
     }
 
-    private func submitDraft() {
-        editorFocused = false
-        Task { await steer() }
-    }
-
-    private func steer() async {
+    private func submitDraft(queue: Bool) {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let client, let turn, active, !steering, !text.isEmpty else { return }
-        steering = true
-        failure = nil
-        defer { steering = false }
-        do {
-            let acceptedTurnID = try await client.steer(text, expected: turn)
-            receipt = "Steering accepted · Turn \(acceptedTurnID.suffix(8))"
-            if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
-        } catch {
-            failure = error.localizedDescription
+        guard let session, session.ready, !session.sending, !session.stopping, !session.configuring, !text.isEmpty else { return }
+        editorFocused = false
+        if queue {
+            session.enqueue(text)
+            draft = ""
+        } else {
+            Task {
+                guard let delivery = await session.send(text) else { return }
+                if case .steered(let id) = delivery { receipt = "Steering accepted · Turn \(id.suffix(8))" }
+                if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
+            }
         }
     }
 }

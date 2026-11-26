@@ -241,15 +241,36 @@ struct ChatScreen: View {
         }
     }
 
-    private func sendMessage(_ text: String) {
-        guard safariApproval.pending != nil, let agent = safariAgent else { model.submit(text); return }
+    private func sendMessage(_ text: String) -> Bool {
+        guard safariApproval.pending != nil, let agent = safariAgent else { return model.submit(text) }
         let chatID = model.selectedID
-        model.submit(text) {
+        return model.submit(text) {
             await safariApproval.prepareTurn(agent: agent, chatID: chatID, stillInChat: {
                 model.selectedID == chatID && !model.selected.stopping
             }, turnWorking: {
                 model.selected.working
             }, resume: { openURL($0) })
+        }
+    }
+
+    private func submitDraft(_ draft: Binding<String>, in chat: WorkspaceChatID, queue: Bool) {
+        let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selected = model.selected
+        guard model.selectedID == chat.chat, selected.loaded, !selected.loading, !selected.configuring,
+              !selected.stopping, !selected.steering, !text.isEmpty else { return }
+        workspace.rememberReadingOffset(nil, for: chat)
+        viewport.restore(nil)
+        if queue {
+            if model.enqueue(text, in: chat.chat) { draft.wrappedValue = "" }
+        } else if selected.working {
+            Task {
+                if await model.steer(text, in: chat.chat),
+                   draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+                    draft.wrappedValue = ""
+                }
+            }
+        } else if sendMessage(text) {
+            draft.wrappedValue = ""
         }
     }
 
@@ -271,6 +292,18 @@ struct ChatScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !resolvingInitialChat {
                 VStack(spacing: 0) {
+                    ComposerQueue(messages: model.selected.queuedMessages, sendingID: nil,
+                                  paused: model.selected.queuePaused, canResume: model.selected.loaded,
+                                  remove: { model.removeQueuedMessage($0, in: chatKey.chat) },
+                                  resume: { model.resumeQueue(in: chatKey.chat) })
+                    if let error = model.selected.steeringError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 4)
+                            .accessibilityIdentifier("chat-steering-status")
+                    }
                     if let error = safariApproval.errorMessage {
                         Text(error)
                             .font(.footnote)
@@ -280,7 +313,7 @@ struct ChatScreen: View {
                             .accessibilityIdentifier("safari-chat-status")
                     }
                     ChatComposer(
-                        prompt: "Message \(model.target.name)",
+                        prompt: selected.working ? "Steer this reply" : "Message \(model.target.name)",
                         chatID: chatKey.chat,
                         draft: draft,
                         modelPickerVisible: $showModelPicker,
@@ -289,16 +322,14 @@ struct ChatScreen: View {
                         context: selected.context,
                         ready: selected.loaded,
                         canDictate: selected.loaded,
-                        canSubmit: selected.loaded && !selected.configuring && !selected.working,
+                        canSubmit: selected.loaded && !selected.loading && !selected.configuring
+                            && !selected.stopping && !selected.steering,
                         transcribe: dictationTranscriber,
-                        stopping: selected.stopping,
-                        stop: selected.working ? { Task { await model.stop() } } : nil
+                        steering: selected.working, stopping: selected.stopping,
+                        stop: selected.working ? { Task { await model.stop() } } : nil,
+                        enqueue: selected.working ? { submitDraft(draft, in: chatKey, queue: true) } : nil
                     ) {
-                        guard model.selectedID == chatKey.chat else { return }
-                        sendMessage(draft.wrappedValue)
-                        draft.wrappedValue = ""
-                        workspace.rememberReadingOffset(nil, for: chatKey)
-                        viewport.restore(nil)
+                        submitDraft(draft, in: chatKey, queue: false)
                     }
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }

@@ -12,6 +12,7 @@ REQUESTS = {
     "session/new": {"cwd", "mcpServers"},
     "session/load": {"sessionId", "cwd", "mcpServers"},
     "session/prompt": {"sessionId", "prompt"},
+    "_riptide/session/steer": {"sessionId", "text"},
     "session/cancel": {"sessionId"},
     "session/set_config_option": {"sessionId", "configId", "value"},
 }
@@ -54,6 +55,9 @@ def admitted(packet, workspace, pending):
             return (isinstance(params.get("value"), str) and
                     params["value"] in ("normal", "fast", "auto", "cold", "ultrafast"))
         return params.get("configId") in ("model", "effort", "reasoning_effort") and isinstance(params.get("value"), str)
+    if method == "_riptide/session/steer":
+        text = params.get("text")
+        return isinstance(text, str) and bool(text.strip()) and len(text) <= 65_536
     if method == "session/prompt":
         blocks = params.get("prompt")
         return isinstance(blocks, list) and bool(blocks) and all(

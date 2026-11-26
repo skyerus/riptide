@@ -154,8 +154,14 @@ struct CodexSavedChatScreen: View {
         transcript
         .accessibilityHidden(showModelPicker && composerSettings.hasChoices)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if ready {
-                composer.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
+            if ready, let session {
+                VStack(alignment: .leading, spacing: 0) {
+                    ComposerQueue(messages: session.queuedMessages, sendingID: session.sendingQueuedID,
+                                  paused: session.queuePaused, canResume: !stopping,
+                                  remove: session.removeQueuedMessage, resume: session.resumeQueue)
+                    composer
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
             }
         }
         .modifier(ChatModelPicker(settings: composerSettings, composerHeight: composerHeight,
@@ -255,6 +261,9 @@ struct CodexSavedChatScreen: View {
                 } else if turns.allSatisfy({ $0.messages.isEmpty }) && !working {
                     Text("Start a conversation").foregroundStyle(.secondary)
                 }
+                if let sendIssue = session?.sendIssue {
+                    Text(sendIssue).font(.footnote).foregroundStyle(.secondary)
+                }
                 if !progress.plan.isEmpty { TurnPlanCard(steps: progress.plan) }
                 if let activeTurnID {
                     let current = progress.items.last {
@@ -291,13 +300,15 @@ struct CodexSavedChatScreen: View {
     private var composer: some View {
         ChatComposer(
             prompt: working ? "Steer this turn" : "Message Codex",
-            chatID: chatKey?.chat, fieldID: "codex-composer", draft: editor,
+            chatID: chatKey?.chat, fieldID: "codex-composer",
+            sendID: working ? "codex-steer-send" : "send-message", stopID: "stop-codex-turn", stopTitle: "Stop turn", draft: editor,
             modelPickerVisible: $showModelPicker, editorFocus: $composerFocused,
             settings: composerSettings, context: session?.context, canDictate: canSubmit, canSubmit: canSubmit,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
             steering: working, stopping: stopping,
             stop: working ? { Task { await session?.interrupt() } } : nil,
-            submit: submitDraft
+            enqueue: working ? { submitDraft(queue: true) } : nil,
+            submit: { submitDraft(queue: false) }
         )
     }
 
@@ -327,7 +338,7 @@ struct CodexSavedChatScreen: View {
         .contentPanel()
     }
 
-    private func submitDraft() {
+    private func submitDraft(queue: Bool) {
         guard let session, canSubmit else { return }
         let draft = editor
         let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -335,9 +346,15 @@ struct CodexSavedChatScreen: View {
         composerFocused = false
         if let chatKey { workspace.rememberReadingOffset(nil, for: chatKey) }
         viewport.restore(nil)
-        Task {
-            if await session.send(text), draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
-                draft.wrappedValue = ""
+        if queue {
+            session.enqueue(text)
+            draft.wrappedValue = ""
+        } else {
+            Task {
+                if await session.send(text) != nil,
+                   draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
+                    draft.wrappedValue = ""
+                }
             }
         }
     }

@@ -21,9 +21,14 @@ final class CodexWorkspaceSession {
     private(set) var context: ContextUsage?
     private(set) var configuring = false
     private(set) var configError: String?
+    private(set) var queuedMessages: [QueuedChatMessage] = []
+    private(set) var sendingQueuedID: UUID?
+    private(set) var queuePaused = false
     private(set) var issue: String?
+    private(set) var sendIssue: String?
     private(set) var hasOlderTurns = false
     private(set) var diff: String?
+    private var lastCompletedTurnID: String?
     private var unscopedTurnID: String?
 
     var locator: WorkspaceChatID? { chat.map { .init(workspace: workspaceID, chat: $0.id) } }
@@ -32,7 +37,9 @@ final class CodexWorkspaceSession {
         if let activeTurnID { return turns.last { $0.id == activeTurnID }?.progress ?? .init() }
         return turns.last?.progress ?? .init()
     }
-    var needsConnection: Bool { working || sending || !approvals.isEmpty || !ready && listener != nil }
+    var needsConnection: Bool {
+        working || sending || !queuedMessages.isEmpty || !approvals.isEmpty || !ready && listener != nil
+    }
 
     init(endpoint: CodexLocalEndpoint, chat: CodexChatSummary?, workspaceID: String, workspace: WorkspaceState) {
         self.endpoint = endpoint
@@ -85,23 +92,67 @@ final class CodexWorkspaceSession {
         stopping = false
         sending = false
         clearConfiguration()
+        sendingQueuedID = nil
+        queuePaused = !queuedMessages.isEmpty
         approvals = []
         responding = []
         publishAttention()
         if let old { Task { await old.close() } }
     }
 
-    func send(_ text: String) async -> Bool {
-        guard let client, ready, !sending, !stopping, !configuring, !text.isEmpty else { return false }
+    func enqueue(_ text: String) {
+        sendIssue = nil
+        queuedMessages.append(QueuedChatMessage(text: text))
+        drainQueue()
+    }
+
+    func removeQueuedMessage(_ id: UUID) {
+        guard id != sendingQueuedID else { return }
+        queuedMessages.removeAll { $0.id == id }
+        if queuedMessages.isEmpty { queuePaused = false }
+    }
+
+    func resumeQueue() {
+        queuePaused = false
+        drainQueue()
+    }
+
+    private func drainQueue() {
+        guard ready, !working, !sending, !stopping, !configuring, !queuePaused, !queuedMessages.isEmpty else { return }
+        Task {
+            guard !working, !queuePaused, let message = queuedMessages.first else { return }
+            await send(message.text, queuedID: message.id)
+        }
+    }
+
+    @discardableResult
+    func send(_ text: String, queuedID: UUID? = nil) async -> CodexMessageDelivery? {
+        guard let client, ready, !sending, !stopping, !configuring, !text.isEmpty else { return nil }
         sending = true
-        issue = nil
-        defer { sending = false }
+        sendingQueuedID = queuedID
+        sendIssue = nil
+        defer {
+            if self.client === client {
+                sending = false
+                sendingQueuedID = nil
+                drainQueue()
+            }
+        }
         do {
-            try await client.sendToSavedChat(text)
-            return true
+            let previousTurnID = activeTurnID
+            let delivery = try await client.sendToSavedChat(text, startOnly: queuedID != nil)
+            guard self.client === client else { return nil }
+            if case .started(let id) = delivery, activeTurnID == nil || activeTurnID == previousTurnID,
+               lastCompletedTurnID != id {
+                apply(.turnStarted(id))
+            }
+            if let queuedID { queuedMessages.removeAll { $0.id == queuedID } }
+            return delivery
         } catch {
-            issue = error.localizedDescription
-            return false
+            guard self.client === client else { return nil }
+            if queuedID != nil { queuePaused = true }
+            sendIssue = error.localizedDescription
+            return nil
         }
     }
 
@@ -109,7 +160,12 @@ final class CodexWorkspaceSession {
         guard let client, ready, !working, !sending, !configuring else { return false }
         configuring = true
         configError = nil
-        defer { if self.client === client { configuring = false } }
+        defer {
+            if self.client === client {
+                configuring = false
+                drainQueue()
+            }
+        }
         do {
             let options = try await client.setSavedChatConfigOption(id, value: value)
             guard self.client === client else { return false }
@@ -174,6 +230,9 @@ final class CodexWorkspaceSession {
         activeTurnID = nil
         stopping = false
         clearConfiguration()
+        sending = false
+        sendingQueuedID = nil
+        queuePaused = !queuedMessages.isEmpty
         approvals = []
         responding = []
         issue = message
@@ -232,11 +291,13 @@ final class CodexWorkspaceSession {
             case .assistantCompleted(let turn, let item, let text):
                 turns[turnIndex(for: turn)].upsert(.init(id: item, role: .assistant, text: text, streaming: false))
             case .completed(let turn, let status):
+                lastCompletedTurnID = turn
                 activeTurnID = nil
                 publishAttention()
                 stopping = false
                 if status == "completed" { issue = nil }
                 if status == "interrupted" { issue = "Turn stopped." }
+                if status != "completed", !queuedMessages.isEmpty { queuePaused = true }
                 if let index = turns.lastIndex(where: { $0.id == turn }) {
                     turns[index].finishStreaming()
                     if status == "completed", let reply = turns[index].replyText, let locator, let chat {
@@ -244,6 +305,7 @@ final class CodexWorkspaceSession {
                     }
                 }
                 workspace?.pruneCodexSessions()
+                drainQueue()
             case .diff(_, let patch):
                 diff = patch.isEmpty ? nil : patch
             case .context(_, let usage):
