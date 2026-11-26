@@ -111,6 +111,47 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
+    func testAShortScrollUpKeepsTheReadingPosition() {
+        continueAfterFailure = false
+        let app = freshApp()
+        openMainChat(in: app)
+        let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap()
+        composer.typeText("streaming demo")
+        app.buttons["send-message"].tap()
+
+        let latest = app.staticTexts["Long stream complete."]
+        let transcript = app.scrollViews["chat-transcript"]
+        let jump = app.buttons["jump-to-latest"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 12))
+        XCTAssertTrue(app.buttons["stop-reply"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(isVisible(latest, in: transcript))
+        let initialY = latest.frame.midY
+
+        let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.45))
+        let end = start.withOffset(CGVector(dx: 0, dy: 48))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+
+        XCTAssertTrue(jump.waitForExistence(timeout: 3), "A small scroll should pause following the latest reply.")
+        let displacement = latest.frame.midY - initialY
+        XCTAssertGreaterThan(displacement, 10, "The transcript snapped back to the bottom.")
+        XCTAssertLessThan(displacement, 112, "The gesture should stay inside the old auto-follow range.")
+        capture(app, as: "Chat stays in place after a short scroll")
+
+        jump.tap()
+        XCTAssertTrue(jump.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(latest.frame.midY, initialY, accuracy: 2)
+        capture(app, as: "Chat returns to the latest reply")
+
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertTrue(jump.waitForExistence(timeout: 3))
+        transcript.swipeUp(velocity: .slow)
+        XCTAssertTrue(jump.waitForNonExistence(timeout: 5), "Scrolling back to the bottom should resume following.")
+        XCTAssertEqual(latest.frame.midY, initialY, accuracy: 2)
+    }
+
+    @MainActor
     func testReadingHistoryDoesNotGetPulledToTheEndOfALiveReply() {
         let app = freshApp()
         openMainChat(in: app)
