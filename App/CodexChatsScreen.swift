@@ -237,7 +237,7 @@ struct CodexSavedChatScreen: View {
     }
 
     private var transcript: some View {
-        ScrollView {
+        TranscriptScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 if session?.hasOlderTurns == true {
                     Text("Showing the latest 30 turns.").font(.caption).foregroundStyle(.secondary)
@@ -288,7 +288,7 @@ struct CodexSavedChatScreen: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .accessibilityIdentifier("codex-saved-transcript")
-        .transcriptViewport($viewport, chat: ready ? chatKey : nil)
+        .transcriptViewport($viewport, chat: ready ? chatKey : nil, composerFocused: composerFocused)
     }
 
     @ViewBuilder
@@ -352,8 +352,7 @@ struct CodexSavedChatScreen: View {
         let message = ComposerDraft(text: editor, files: attachments)
         guard message.hasContent else { return }
         composerFocused = false
-        if let chatKey { workspace.rememberReadingOffset(nil, for: chatKey) }
-        viewport.restore(nil)
+        viewport.jumpToLatest()
         if queue {
             session.enqueue(message.text, attachments: message.attachments)
             message.clear()

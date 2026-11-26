@@ -349,7 +349,7 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(isVisible(latest, in: transcript))
         let initialY = latest.frame.midY
 
-        let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.45))
+        let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.78, dy: 0.45))
         let end = start.withOffset(CGVector(dx: 0, dy: 48))
         start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
 
@@ -373,7 +373,8 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
-    func testReadingHistoryDoesNotGetPulledToTheEndOfALiveReply() {
+    func testReadingHistoryStaysInPlaceDuringAReplyAndReopensAtTheLatestMessage() {
+        continueAfterFailure = false
         let app = freshApp()
         openMainChat(in: app)
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
@@ -388,35 +389,20 @@ final class WorkspaceUXUITests: XCTestCase {
         transcript.swipeDown()
         let jump = app.buttons["jump-to-latest"]
         XCTAssertTrue(jump.waitForExistence(timeout: 8))
-        XCTAssertTrue(app.staticTexts["Long stream complete."].waitForExistence(timeout: 10))
+        let latest = app.staticTexts["Long stream complete."]
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
         XCTAssertTrue(jump.exists)
+        XCTAssertFalse(isVisible(latest, in: transcript))
         transcript.swipeUp(velocity: .slow)
-        let readableArea = transcript.frame.insetBy(dx: 0, dy: 55)
-        let readingHeading = app.staticTexts.matching(NSPredicate(format: "label MATCHES %@", "Update [0-9]+"))
-            .allElementsBoundByIndex.first { (readableArea.minY...readableArea.maxY).contains($0.frame.midY) }
-        guard let readingHeading else {
-            XCTFail("No streamed update was visible in the reading area.")
-            return
-        }
-        let heading = readingHeading.label
-        let readingY = readingHeading.frame.midY
-        XCTAssertNotEqual(heading, "Update 1", "Save a reading position partway through the transcript.")
-        app.navigationBars.buttons["BackButton"].tap()
-        app.navigationBars.buttons["BackButton"].tap()
-        openMainChat(in: app, agent: "hermes")
-        app.navigationBars.buttons["BackButton"].tap()
-        app.navigationBars.buttons["BackButton"].tap()
-        openMainChat(in: app)
-        XCTAssertTrue(jump.waitForExistence(timeout: 6), "Returning to the chat lost the reader's place.")
-        let restoredHeading = app.staticTexts[heading]
-        XCTAssertTrue(restoredHeading.waitForExistence(timeout: 6))
-        let restoredArea = transcript.frame
-        XCTAssertTrue((restoredArea.minY...restoredArea.maxY).contains(restoredHeading.frame.midY))
-        XCTAssertEqual(restoredHeading.frame.midY, readingY, accuracy: 65)
-        capture(app, as: "Resumed reading the same streamed chat")
-        jump.tap()
+        XCTAssertTrue(jump.exists, "Leave the chat while reading its history.")
+        app.buttons["BackButton"].tap()
+        let main = app.buttons["sidebar-main-chat"]
+        XCTAssertTrue(main.waitForExistence(timeout: 8))
+        main.tap()
+        XCTAssertTrue(latest.waitForExistence(timeout: 8))
+        XCTAssertTrue(isVisible(latest, in: transcript), "Reopening the chat should show the newest message.")
         XCTAssertFalse(jump.exists)
-        XCTAssertTrue(app.staticTexts["Long stream complete."].isHittable)
+        capture(app, as: "Reopened chat at the latest message")
     }
 
     @MainActor
