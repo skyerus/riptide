@@ -162,10 +162,11 @@ python -B Host/configure_hermes_codex.py \
   --hermes-home /absolute/hermes/default-profile \
   --codex-config /absolute/codex/config.toml \
   --codex-bin /absolute/path/to/codex
-systemctl reload hermes-gateway.service
 ```
 
-Reload the gateway after applying the configuration so existing sessions rebuild with the selected runtime. For a service configured to drain before reload, wait for it to return to ready before checking the paired chats. Codex handles shell and file tools, including auto-review for eligible permission requests. Riptide's pairing and Safari handoff continue through their scoped MCP adapters.
+For Hermes source revision `8fc0374447313e276f6b9a2764bfc750190c966a`, apply [the saved-session runtime adapter](Host/compat/hermes-gateway-codex-profile-runtime.patch) with `git apply --check` and `git apply` in the Hermes checkout. Then run `systemctl reload hermes-gateway.service`. On reconnect, a saved chat picks up its profile's current execution harness and keeps its model, workspace, and history. For a service configured to drain before reload, wait for it to return to ready before reopening the paired chats. Codex handles shell and file tools, including auto-review for eligible permission requests.
+
+For an existing Riptide Safari relay, pass `--safari-mcp-python /absolute/path/to/the/existing/mcp-venv/bin/python` to `Host/update_ssh_release.py` for that pairing if its command has `--safari` but lacks `--safari-mcp-python`. The [gateway Safari adapter](Host/compat/hermes-gateway-safari.md) gives the bound Codex chat the connector through its own MCP configuration.
 
 ### Hermes browser handoff over SSH
 

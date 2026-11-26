@@ -97,7 +97,7 @@ def verify(argv):
 
 
 def update(keys, fingerprint, releases, previous, revision, attention_socket=None, pairing_config=None,
-           enable_hermes_groups=False, agent_profile_state=None):
+           enable_hermes_groups=False, agent_profile_state=None, safari_mcp_python=None):
     directory = releases.lstat()
     require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid() and not directory.st_mode & 0o022,
             "Use an existing release directory controlled by the deployment account.")
@@ -133,6 +133,14 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
                 prefix[prefix.index("--agent-profile-state") + 1] = str(agent_profile_state)
             else:
                 prefix.extend(["--agent-profile-state", str(agent_profile_state)])
+        if safari_mcp_python is not None:
+            require("--safari" in prefix, "The paired key has no existing Safari relay.")
+            require(safari_mcp_python.is_absolute() and os.access(safari_mcp_python, os.X_OK),
+                    "Use an absolute executable Python path for the existing Safari MCP environment.")
+            if "--safari-mcp-python" in prefix:
+                prefix[prefix.index("--safari-mcp-python") + 1] = str(safari_mcp_python)
+            else:
+                prefix.extend(["--safari-mcp-python", str(safari_mcp_python)])
         if enable_hermes_groups and "--hermes-groups" not in prefix:
             require("--hermes-screen" in prefix, "The paired key has no Hermes screen profile for groups.")
             screen = prefix.index("--hermes-screen")
@@ -155,6 +163,8 @@ def main():
     parser.add_argument("--revision", required=True)
     parser.add_argument("--attention-socket", type=Path)
     parser.add_argument("--pairing-config", type=Path)
+    parser.add_argument("--safari-mcp-python", type=Path,
+                        help="Expose this key's existing Safari relay as a chat-scoped Codex MCP server.")
     parser.add_argument("--agent-profile-state", type=Path,
                         help="Absolute per-agent display name file inside a private directory.")
     parser.add_argument("--enable-hermes-groups", action="store_true",
@@ -166,7 +176,8 @@ def main():
         parser.error("Pass an absolute --releases-dir.")
     try:
         update(args.authorized_keys, args.fingerprint, args.releases_dir, args.previous, args.revision,
-               args.attention_socket, args.pairing_config, args.enable_hermes_groups, args.agent_profile_state)
+               args.attention_socket, args.pairing_config, args.enable_hermes_groups, args.agent_profile_state,
+               args.safari_mcp_python)
     except subprocess.TimeoutExpired:
         parser.exit(1, "The staged SSH command timed out during verification.\n")
     except (OSError, ValueError) as error:

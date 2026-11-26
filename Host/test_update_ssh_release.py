@@ -71,6 +71,14 @@ class SSHReleaseTests(unittest.TestCase):
         argv[boundary:boundary] = ["--hermes-groups", "/profile", "/bin/hermes"]
         self.assertEqual([call.args[0] for call in verify.call_args_list], [argv, argv])
 
+        with patch("update_ssh_release.verify") as verify, redirect_stdout(io.StringIO()):
+            update(keys, fingerprint, releases, previous, revision, safari_mcp_python=Path(sys.executable))
+            update(keys, fingerprint, releases, previous, revision, safari_mcp_python=Path(sys.executable))
+        boundary = argv.index("--")
+        argv[boundary:boundary] = ["--safari-mcp-python", sys.executable]
+        self.assertEqual([call.args[0] for call in verify.call_args_list], [argv, argv])
+        self.assertIn('from="192.0.2.1",restrict,command=', keys.read_text())
+
     def test_versioned_update_can_enable_pairing_for_only_the_selected_key(self):
         home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         phone = home / "phone"

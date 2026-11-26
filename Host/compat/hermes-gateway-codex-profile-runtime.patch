@@ -1,0 +1,33 @@
+diff --git a/gateway/session_policy_refresh.py b/gateway/session_policy_refresh.py
+--- a/gateway/session_policy_refresh.py
++++ b/gateway/session_policy_refresh.py
+@@ -53,6 +53,13 @@
+     """Follow the config-derived settings into *config*; the toolsets they select."""
+     from gateway.session_policy import _resolve_toolsets, session_pinned
+     request = json.loads(policy.request_json)
++    # The execution harness belongs to the owning profile, even for a saved model pick.
++    model, live_model = config.get('model') or {}, live.get('model') or {}
++    openai_providers = {'openai', 'openai-codex'}
++    if (not policy.ignore_user_config and model.get('provider') in openai_providers
++            and live_model.get('provider') in openai_providers):
++        for key in ('openai_runtime', 'codex_bin'):
++            _follow(model, live_model, key)
+     live_agent = live.get('agent') or {}
+     agent = dict(config.get('agent') or {})
+     keys = [] if 'max_turns' in request else ['max_turns']
+diff --git a/gateway/session_local.py b/gateway/session_local.py
+--- a/gateway/session_local.py
++++ b/gateway/session_local.py
+@@ -580,7 +580,11 @@
+     api_mode = getattr(agent, 'api_mode', None) if agent is not None else None
+     if api_mode is None and policy is not None:
+         with contextlib.suppress(Exception):
+-            api_mode = (policy.effective(authority, secrets=False)[0].get('model') or {}).get('api_mode')
++            from hermes_cli.runtime_provider import _maybe_apply_codex_app_server_runtime
++            model_config = policy.effective(authority, secrets=False)[0].get('model') or {}
++            api_mode = _maybe_apply_codex_app_server_runtime(
++                provider=model_config.get('provider') or '',
++                api_mode=model_config.get('api_mode') or '', model_cfg=model_config)
+     hint = None
+     if agent is not None and getattr(agent, 'api_key', None):
+         from agent.redact import mask_secret
