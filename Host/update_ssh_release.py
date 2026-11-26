@@ -56,7 +56,7 @@ def verify(argv):
     require(run("riptide-hermes-screen", "") == "", "The Hermes screen command did not close cleanly.")
 
 
-def update(keys, fingerprint, releases, previous, revision, attention_socket=None):
+def update(keys, fingerprint, releases, previous, revision, attention_socket=None, pairing_config=None):
     directory = releases.lstat()
     require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid() and not directory.st_mode & 0o022,
             "Use an existing release directory controlled by the deployment account.")
@@ -81,6 +81,13 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
                 prefix[prefix.index("--attention-socket") + 1] = str(attention_socket)
             else:
                 prefix.extend(["--attention-socket", str(attention_socket)])
+        if pairing_config is not None:
+            require(pairing_config.is_absolute() and read_owned(pairing_config)[0] is not None,
+                    "Use an existing absolute path to an owner-controlled pairing manifest.")
+            if "--pairing-config" in prefix:
+                prefix[prefix.index("--pairing-config") + 1] = str(pairing_config)
+            else:
+                prefix.extend(["--pairing-config", str(pairing_config)])
         argv = [*prefix, "--", *agent]
         verify(argv)
         command = shlex.join(argv).replace('"', r'\"')
@@ -98,6 +105,7 @@ def main():
     parser.add_argument("--previous", required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--attention-socket", type=Path)
+    parser.add_argument("--pairing-config", type=Path)
     args = parser.parse_args()
     if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (args.previous, args.revision)):
         parser.error("Pass full Git revisions for --previous and --revision.")
@@ -105,7 +113,7 @@ def main():
         parser.error("Pass an absolute --releases-dir.")
     try:
         update(args.authorized_keys, args.fingerprint, args.releases_dir, args.previous, args.revision,
-               args.attention_socket)
+               args.attention_socket, args.pairing_config)
     except subprocess.TimeoutExpired:
         parser.exit(1, "The staged SSH command timed out during verification.\n")
     except (OSError, ValueError) as error:
