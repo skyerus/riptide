@@ -47,6 +47,13 @@ class SSHReleaseTests(unittest.TestCase):
         for name in PAYLOAD:
             self.assertEqual((new.parent / name).read_bytes(), (HOST / name).read_bytes())
 
+        with patch("update_ssh_release.verify") as verify, redirect_stdout(io.StringIO()):
+            update(keys, fingerprint, releases, previous, revision, enable_hermes_groups=True)
+            update(keys, fingerprint, releases, previous, revision, enable_hermes_groups=True)
+        boundary = argv.index("--")
+        argv[boundary:boundary] = ["--hermes-groups", "/profile", "/bin/hermes"]
+        self.assertEqual([call.args[0] for call in verify.call_args_list], [argv, argv])
+
     def test_versioned_update_can_enable_pairing_for_only_the_selected_key(self):
         home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         phone = home / "phone"

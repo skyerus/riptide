@@ -91,6 +91,14 @@ Use absolute paths for the regular agent account, workspace, and native ACP laun
 
 Fast mode over Hermes SSH requires a Hermes gateway that advertises the ACP `service_tier` option and the Riptide SSH wrapper from this release. Apply the wrapper to an existing versioned pairing with the [SSH release updater](Host/update_ssh_release.py).
 
+### Hermes group chats over SSH
+
+Open **Groups → +** in Riptide, choose the Hermes connection that serves your bots, name the group, and select two to six bots from that gateway. The Groups tab lists rooms from every paired Hermes connection with group access, including rooms created in Hermes Desktop. Each room names the connection that owns it. Send to the group or use the **@** menu to address individual bots. Each reply shows its author, and **Reply in thread** continues a topic. Hermes stores the shared transcript and runs the turns while Riptide is closed.
+
+Group chats require a running Hermes gateway that advertises a group driver. The picker uses its seatable profiles. If a profile-bound gateway leaves out a bot, configure it in the gateway’s `hosted_rooms.profiles` using the [Hermes Bot Mode guide](https://hermes-agent.nousresearch.com/docs/user-guide/bot-mode). Riptide can open existing gateway-owned rooms with peer members. Creating a room in Riptide uses bots from the selected gateway and supports text messages.
+
+Stage the versioned Riptide host payload and run `Host/update_ssh_release.py` with the existing pairing fingerprint and release arguments plus `--enable-hermes-groups`. The updater reuses the paired Hermes profile and launcher from the screen route and verifies `groups.capabilities` before changing the key. For a pairing without a screen route, install `hermes_groups.py`, `hermes_screen.py`, and `hermes_mobile.py` alongside the updated `ssh_acp.py`, with the `websockets` Python dependency. Add `--hermes-groups /absolute/hermes/profile/home /absolute/path/to/hermes` before `--` in the fixed command. Grant this option to devices trusted to read and operate the group chats accessible to that profile. It uses the existing authenticated SSH pairing and Hermes’s local gateway ticket.
+
 ### One-tap Hermes pairing
 
 An existing trusted Hermes-over-SSH pairing can offer a **Connect agent** button in chat for another Hermes profile on that host. Riptide creates a fresh key on-device only after the tap, sends just the public key over the current pinned SSH connection, checks the new connection, and saves it as a separate remote. It doesn't re-use the existing device key or let the invitation change the SSH host.

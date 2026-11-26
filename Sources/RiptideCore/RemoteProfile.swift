@@ -98,6 +98,15 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
         return .webSocket(at: url, bearer: credential)
     }
 
+    public var canOpenHermesGroups: Bool { kind == .hermes && sshHostFingerprint != nil }
+
+    public func makeHermesGroups(credential: String) -> HermesGroupsClient? {
+        guard canOpenHermesGroups else { return nil }
+        return HermesGroupsClient(transport: {
+            sshTransport(credential: credential, command: "riptide-hermes-groups")
+        })
+    }
+
     public var canOpenHermesScreen: Bool { kind == .hermes && sshHostFingerprint != nil }
 
     public func makeHermesScreenTransport(credential: String) -> (any JSONMessageTransport)? {

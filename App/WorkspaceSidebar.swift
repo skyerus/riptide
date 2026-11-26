@@ -5,13 +5,17 @@ import UIKit
 struct WorkspaceSidebar: View {
     @Environment(WorkspaceState.self) private var workspace
     @State private var editing = false
+    @State private var creatingGroup = false
 
     var body: some View {
         let selectedAgent = workspace.sidebarTab.agentID.flatMap { workspace.agent($0) }
+        let showingGroups = workspace.sidebarTab == .groups
         VStack(spacing: 0) {
-            header(title: selectedAgent?.name ?? "Inbox", showsNotifications: selectedAgent == nil)
+            header(title: showingGroups ? "Group chats" : selectedAgent?.name ?? "Inbox")
             WorkspaceRail(selected: workspace.sidebarTab)
-            if let selectedAgent {
+            if showingGroups {
+                HermesGroupCatalog(sources: workspace.hermesGroupSources, creating: $creatingGroup)
+            } else if let selectedAgent {
                 SidebarAgentChats(agent: selectedAgent).id(selectedAgent.id)
             } else {
                 WorkspaceInboxList().id(workspace.inboxReset)
@@ -28,9 +32,10 @@ struct WorkspaceSidebar: View {
             }
         }
         .sheet(isPresented: $editing) { WorkspaceEditor().environment(workspace) }
+
     }
 
-    private func header(title: String, showsNotifications: Bool) -> some View {
+    private func header(title: String) -> some View {
         HStack(alignment: .center, spacing: 4) {
             Text(title)
                 .font(.largeTitle.weight(.semibold))
@@ -39,12 +44,17 @@ struct WorkspaceSidebar: View {
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityIdentifier("sidebar-heading")
             Spacer(minLength: 6)
-            if showsNotifications {
+            if workspace.sidebarTab == .inbox {
                 sidebarAction("Notification settings", symbol: "bell") { workspace.showingAlerts = true }
                     .accessibilityIdentifier("inbox-notifications")
             }
-            sidebarAction("Manage agents", symbol: "pencil") { editing = true }
-                .accessibilityIdentifier("edit-roster")
+            if workspace.sidebarTab == .groups {
+                sidebarAction("New group chat", symbol: "plus") { creatingGroup = true }
+                    .accessibilityIdentifier("new-hermes-group")
+            } else {
+                sidebarAction("Manage agents", symbol: "pencil") { editing = true }
+                    .accessibilityIdentifier("edit-roster")
+            }
         }
         .foregroundStyle(ChatTheme.ink)
         .padding(.leading, ChatTheme.gutter)
