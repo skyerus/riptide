@@ -1,0 +1,148 @@
+diff --git a/gateway/run_config_loaders.py b/gateway/run_config_loaders.py
+index 59b26fd..ab1de96 100644
+--- a/gateway/run_config_loaders.py
++++ b/gateway/run_config_loaders.py
+@@ -377,6 +377,15 @@ class GatewayConfigLoadersMixin:
+         """Set ("priority" / None = explicit normal) or ``clear`` the session-scoped /fast override."""
+         if not session_key:
+             return
++        from gateway.session_persistence import authority_persistence
++        from gateway.session_setting_commands import LOCAL_SERVICE_TIER_META_PREFIX, local_authority_live_for_route
++
++        authority, live = local_authority_live_for_route(self, session_key)
++        if live is not None:
++            # Use the logical chat id so the preference also survives transcript rotation.
++            # An empty value inherits the policy. "normal" is an explicit override.
++            key = LOCAL_SERVICE_TIER_META_PREFIX + live.source.chat_id
++            authority_persistence(authority).state_meta.set(key, "" if clear else service_tier or "normal")
+         # Presence-sensitive: "priority" or None (explicit normal) both count as an override; the
+         # sentinel means "no override". Per-session field write: a lazy dict replace races sessions.
+         self._session_state(session_key).conversation.service_tier_override = (
+diff --git a/gateway/session_policy.py b/gateway/session_policy.py
+index 55a0daf..10cb523 100644
+--- a/gateway/session_policy.py
++++ b/gateway/session_policy.py
+@@ -295,10 +295,18 @@ class LocalSessionPolicy:
+         """The next turn's tier: a typed session /fast, else the policy's (frozen, or the profile's when following)."""
+         from agent.fast_mode import parse_service_tier
+         from gateway.session_authorities import active_authority
++        from gateway.session_persistence import authority_persistence
++        from gateway.session_setting_commands import LOCAL_SERVICE_TIER_META_PREFIX, local_authority_live_for_route
+         from gateway.session_state import SERVICE_TIER_UNSET
+         state = runner._peek_session_state(session_key) if session_key else None
+         if state is not None and state.conversation.service_tier_override is not SERVICE_TIER_UNSET:
+             return state.conversation.service_tier_override
++        authority, live = local_authority_live_for_route(runner, session_key)
++        if live is not None:
++            key = LOCAL_SERVICE_TIER_META_PREFIX + live.source.chat_id
++            saved = authority_persistence(authority).state_meta.get(key)
++            if saved:
++                return parse_service_tier(saved)
+         config = self.config(active_authority(runner), secrets=False)
+         return parse_service_tier((config.get('agent') or {}).get('service_tier'))
+
+diff --git a/gateway/session_setting_commands.py b/gateway/session_setting_commands.py
+index 8a45102..f7d0bdf 100644
+--- a/gateway/session_setting_commands.py
++++ b/gateway/session_setting_commands.py
+@@ -10,6 +10,8 @@ from types import SimpleNamespace
+
+ logger = logging.getLogger(__name__)
+
++LOCAL_SERVICE_TIER_META_PREFIX = 'gateway.service_tier.v1:'
++
+
+ def local_live(runner, source):
+     """The ``LiveSession`` of the local session ``source`` belongs to, else None (messaging chats)."""
+@@ -44,15 +46,20 @@ def session_busy_mode(runner, live):
+
+ def local_live_for_route(runner, session_key):
+     """The local ``LiveSession`` whose route is ``session_key``, else None."""
++    return local_authority_live_for_route(runner, session_key)[1]
++
++
++def local_authority_live_for_route(runner, session_key):
++    """The owning authority and live session for a local route."""
+     if not session_key:
+-        return None
++        return None, None
+     from gateway.config import Platform
+     from gateway.session_authorities import all_authorities
+     for authority in all_authorities(runner):
+         for live in list(getattr(authority, 'sessions', {}).values()):
+             if live.route == session_key and getattr(live.source, 'platform', None) == Platform.LOCAL:
+-                return live
+-    return None
++                return authority, live
++    return None, None
+
+
+ def local_authority_live(runner, source):
+diff --git a/tests/acp_adapter/test_riptide_service_tier_restart.py b/tests/acp_adapter/test_riptide_service_tier_restart.py
+new file mode 100644
+index 0000000..7cd6bba
+--- /dev/null
++++ b/tests/acp_adapter/test_riptide_service_tier_restart.py
+@@ -0,0 +1,62 @@
++"""ACP speed choices survive a gateway restart without changing the profile default."""
++import json
++from pathlib import Path
++
++import pytest
++
++from tests.acp_adapter.test_gateway_service_tier import _tier
++from tests.acp_adapter.test_gateway_sessions import editor, viewer
++from tests.gateway.fixtures.local_recovery_probe import child_env, daemon
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(('default', 'selected'), [('normal', 'fast'), ('fast', 'normal')])
++async def test_chat_speed_survives_gateway_restart(tmp_path, model_peer, default, selected):
++    root = Path(__file__).resolve().parents[2]
++    home, user = tmp_path / 'state', tmp_path / 'user'
++    home.mkdir(mode=0o700)
++    user.mkdir()
++    model_url = f'http://127.0.0.1:{model_peer.server_port}/v1'
++    config = {
++        'gateway': {'multiplex_profiles': False},
++        'agent': {'service_tier': default},
++        'model': {'provider': 'openai', 'default': 'gpt-6.1-sol', 'base_url': 'https://api.openai.com/v1'},
++        'model_catalog': {'enabled': False},
++        'models_dev': {'url': model_url.removesuffix('/v1') + '/models-dev-offline'},
++    }
++    config_path = home / 'config.yaml'
++    config_path.write_text(json.dumps(config))
++    original_config = config_path.read_bytes()
++    env = child_env()
++    env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
++               PYTHONPATH=str(root), PYTHONUNBUFFERED='1', OPENAI_API_KEY='loopback-only')
++
++    async def open_editor(acp):
++        assert 'result' in await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
++
++    async def open_chat(acp, method, **params):
++        return (await acp.rpc(method, cwd=str(tmp_path), mcpServers=[], **params))['result']
++
++    with daemon(root, home, env, barrier=False) as (first, descriptor):
++        async with editor((home, descriptor, env, root), tmp_path) as acp:
++            await open_editor(acp)
++            chat = await open_chat(acp, 'session/new')
++            sibling = await open_chat(acp, 'session/new')
++            assert _tier(chat)['currentValue'] == default
++            assert _tier(sibling)['currentValue'] == default
++            changed = await acp.rpc('session/set_config_option', sessionId=chat['sessionId'],
++                                    configId='service_tier', value=selected)
++            assert _tier(changed['result'])['currentValue'] == selected
++
++    with daemon(root, home, env, barrier=False) as (second, descriptor):
++        assert second.pid != first.pid
++        connection = home, descriptor, env, root
++        async with editor(connection, tmp_path) as acp, viewer(connection) as ws:
++            await open_editor(acp)
++            for row, expected in ((chat, selected), (sibling, default)):
++                sid = row['sessionId']
++                restored = await open_chat(acp, 'session/load', sessionId=sid)
++                assert _tier(restored)['currentValue'] == expected
++                assert (await ws.rpc('config.get', session_id=sid, key='service_tier'))['value'] == expected
++    assert config_path.read_bytes() == original_config
++    assert not model_peer.requests
