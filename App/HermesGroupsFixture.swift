@@ -40,7 +40,7 @@ actor HermesGroupsFixture {
         switch request["method"] as? String {
         case "groups.capabilities":
             result = ["driver": true, "seatable_profiles": bots.compactMap { $0["name"] },
-                      "methods": ["groups.list", "groups.create", "groups.state", "groups.log", "groups.send", "groups.stop"]]
+                      "methods": ["groups.list", "groups.create", "groups.state", "groups.log", "groups.send", "groups.stop", "riptide/stageAttachments"]]
         case "profiles.list":
             result = ["profiles": bots]
         case "groups.list":
@@ -56,6 +56,9 @@ actor HermesGroupsFixture {
             let cursor = params["since_seq"] as! Int
             let all = rooms[roomID]!["events"] as! [[String: Any]]
             result = ["events": Array(all.dropFirst(cursor)), "has_more": false, "authority": ["epoch": 1]]
+        case "riptide/stageAttachments":
+            let files = params["files"] as? [[String: String]] ?? []
+            result = ["paths": files.compactMap { $0["name"].map { "/fixture/attachments/" + $0 } }]
         case "groups.send":
             let id = params["event_id"] as! String
             var record = rooms[roomID]!

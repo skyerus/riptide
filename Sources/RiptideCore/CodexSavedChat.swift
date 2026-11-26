@@ -58,7 +58,24 @@ public struct CodexChatMessage: Equatable, Identifiable, Sendable {
         switch item["type"]?.string {
         case "userMessage":
             role = .user
-            text = item["content"]?.array?.compactMap { $0["text"]?.string }.joined(separator: "\n") ?? ""
+            text = item["content"]?.array?.compactMap { block in
+                switch block["type"]?.string {
+                case "localImage":
+                    guard let path = block["path"]?.string else { return "Attached image" }
+                    let url = URL(fileURLWithPath: path)
+                    let filename = url.lastPathComponent
+                    let directory = url.deletingLastPathComponent()
+                    let displayName = filename.split(separator: "-", maxSplits: 1)
+                    if directory.deletingLastPathComponent().lastPathComponent == "attachments",
+                       UUID(uuidString: directory.lastPathComponent) != nil,
+                       displayName.count == 2, displayName[0].allSatisfy(\.isNumber) {
+                        return "Attached image: \(displayName[1])"
+                    }
+                    return "Attached image: \(filename)"
+                case "image": return "Attached image"
+                default: return block["text"]?.string
+                }
+            }.joined(separator: "\n") ?? ""
         case "agentMessage":
             role = .assistant
             text = item["text"]?.string ?? ""

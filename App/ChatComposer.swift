@@ -23,8 +23,12 @@ struct ChatComposer: View {
     var stopID = "stop-reply"
     var stopTitle = "Stop reply"
     @Binding var draft: String
+    @Binding var attachments: [ChatAttachment]
     @Binding var modelPickerVisible: Bool
-    var editorFocus: FocusState<Bool>.Binding
+    @Binding var editorFocus: Bool
+    var acceptsImages = true
+    var attachmentByteLimit = ChatAttachment.codexByteLimit
+    var attachmentsAvailable = true
     var settings = ChatComposerSettings()
     var context: ContextUsage? = nil
     var ready = true
@@ -48,15 +52,13 @@ struct ChatComposer: View {
                 Text(error).font(.footnote).foregroundStyle(ChatTheme.warning)
                     .padding(.horizontal, ChatTheme.gutter)
             }
-            DictatingComposer(
-                focused: editorFocus.wrappedValue,
-                showsOptions: true,
-                chatID: chatID,
-                canDictate: canDictate,
-                draft: $draft,
+            MessageComposer(
+                focused: $editorFocus, prompt: prompt, editorIdentifier: fieldID, editorEnabled: ready,
+                chatID: chatID, canDictate: canDictate, draft: $draft, attachments: $attachments,
+                acceptsImages: acceptsImages, attachmentByteLimit: attachmentByteLimit, canAttach: ready && attachmentsAvailable,
                 transcribe: transcribe,
                 dismissKeyboard: {
-                    editorFocus.wrappedValue = false
+                    editorFocus = false
                     modelPickerVisible = false
                     showContext = false
                 },
@@ -64,12 +66,6 @@ struct ChatComposer: View {
                 submitDraft: submitDraft,
                 queueDraft: queueDraft
             ) {
-                TextField(prompt, text: $draft, prompt: Text(prompt).foregroundStyle(ChatTheme.muted), axis: .vertical)
-                    .lineLimit(1...6)
-                    .focused(editorFocus)
-                    .disabled(!ready)
-                    .accessibilityIdentifier(fieldID)
-            } options: {
                 contextButton
                 ChatModelControls(settings: settings, isExpanded: $modelPickerVisible)
                 FastModeButton(settings: settings)
@@ -89,13 +85,13 @@ struct ChatComposer: View {
                     .disabled(!ready)
                     .accessibilityIdentifier("chat-composer-mentions")
                 }
-            } actions: {
-                actions
+            } actions: { canSend in
+                actions(canSend: canSend)
             }
         }
         .onChange(of: chatID) {
             showContext = false
-            editorFocus.wrappedValue = false
+            editorFocus = false
         }
         .onChange(of: modelPickerVisible) {
             if modelPickerVisible { showContext = false }
@@ -150,20 +146,20 @@ struct ChatComposer: View {
     private func submitDraft() { perform(submit) }
 
     private func perform(_ action: () -> Void) {
-        guard canSubmit, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        editorFocus.wrappedValue = false
+        guard canSubmit, retrying || ComposerDraft(text: $draft, files: $attachments).hasContent else { return }
+        editorFocus = false
         modelPickerVisible = false
         action()
     }
 
-    @ViewBuilder private var actions: some View {
+    @ViewBuilder private func actions(canSend: Bool) -> some View {
         if let stop {
             ComposerAction(stopTitle, symbol: "stop.fill", disabled: stopping, action: stop)
                 .accessibilityIdentifier(stopID)
         }
         let send = retrying ? ("Retry send", "arrow.clockwise") : (submission.rawValue, submission.symbol)
         ComposerAction(send.0, symbol: send.1,
-                       disabled: !canSubmit || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       disabled: !canSend && !(retrying && canSubmit),
                        queue: queueDraft, action: submitDraft)
             .accessibilityIdentifier(sendID)
     }
@@ -319,7 +315,7 @@ struct ComposerQueue: View {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(messages) { message in
                                 HStack(spacing: 12) {
-                                    Text(message.text).lineLimit(3)
+                                    Text(message.displayText).lineLimit(3)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                     if sendingID == message.id {
                                         ProgressView()

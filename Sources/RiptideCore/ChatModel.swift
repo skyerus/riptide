@@ -9,8 +9,14 @@ public enum MessageReceipt: String, Equatable, Sendable {
 public struct QueuedChatMessage: Identifiable, Sendable {
     public let id = UUID()
     public let text: String
+    public let attachments: [ChatAttachment]
 
-    public init(text: String) { self.text = text }
+    public init(text: String, attachments: [ChatAttachment] = []) {
+        self.text = text
+        self.attachments = attachments
+    }
+
+    public var displayText: String { ChatAttachment.messageText(text, attachments: attachments) }
 }
 
 public struct ChatEntry: Identifiable, Equatable, Sendable {
@@ -168,6 +174,7 @@ public final class AgentChatModel {
     @ObservationIgnored private var observer: Task<Void, Never>?
     @ObservationIgnored private var liveEventsDuringLoad: [String: [ACPEvent]] = [:]
     @ObservationIgnored private var mainPreload: Task<Void, Never>?
+    @ObservationIgnored private var attachmentDeliveries: [String: @MainActor () -> Void] = [:]
     @ObservationIgnored private var prompts: [String: Task<Void, Never>] = [:]
 
     public struct CompletedReply: Equatable, Sendable {
@@ -180,6 +187,7 @@ public final class AgentChatModel {
         public fileprivate(set) var permissions: [PermissionRequest] = []
         public fileprivate(set) var configOptions: [SessionConfigOption] = []
         fileprivate var reportedModelName: String?
+        public fileprivate(set) var acceptsImages = false
         public fileprivate(set) var context: ContextUsage?
         public fileprivate(set) var configuring = false
         public fileprivate(set) var configError: String?
@@ -193,6 +201,7 @@ public final class AgentChatModel {
         public fileprivate(set) var steering = false
         public fileprivate(set) var steeringError: String?
         public fileprivate(set) var queuedMessages: [QueuedChatMessage] = []
+        public fileprivate(set) var sendingQueuedID: UUID?
         public fileprivate(set) var queuePaused = false
         public fileprivate(set) var error: String?
         public fileprivate(set) var notice: String?
@@ -423,15 +432,20 @@ public final class AgentChatModel {
     }
 
     @discardableResult
-    public func submit(_ rawText: String, beforePrompt: (@MainActor () async -> Void)? = nil) -> Bool {
+    public func submit(_ rawText: String, attachments: [ChatAttachment] = [],
+                       onSent: (@MainActor () -> Void)? = nil,
+                       beforePrompt: (@MainActor () async -> Void)? = nil) -> Bool {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return startPrompt(text, in: selectedID, beforePrompt: beforePrompt)
+        return startPrompt(text, attachments: attachments, in: selectedID, onSent: onSent, beforePrompt: beforePrompt)
     }
 
     @discardableResult
-    private func startPrompt(_ text: String, in sessionID: String,
+    private func startPrompt(_ text: String, attachments: [ChatAttachment] = [], in sessionID: String,
+                             onSent: (@MainActor () -> Void)? = nil,
                              beforePrompt: (@MainActor () async -> Void)? = nil) -> Bool {
-        guard let client = preparePrompt(text, for: sessionID) else { return false }
+        let display = ChatAttachment.messageText(text, attachments: attachments)
+        guard let client = preparePrompt(display, for: sessionID) else { return false }
+        attachmentDeliveries[sessionID] = onSent
         chats[sessionID]?.preparingPrompt = beforePrompt != nil
         prompts[sessionID] = Task {
             var completed = false
@@ -444,8 +458,9 @@ public final class AgentChatModel {
                 return
             }
             do {
-                let reason = try await client.prompt(text, sessionID: sessionID)
+                let reason = try await client.prompt(text, sessionID: sessionID, attachments: attachments)
                 guard self.client === client else { return }
+                if reason != "cancelled" { attachmentDeliveries.removeValue(forKey: sessionID)?() }
                 chats[sessionID]?.transcript.acknowledgePrompt()
                 switch reason {
                 case "end_turn":
@@ -500,16 +515,17 @@ public final class AgentChatModel {
         }
     }
 
-    public func enqueue(_ rawText: String, in sessionID: String) -> Bool {
+    public func enqueue(_ rawText: String, attachments: [ChatAttachment] = [], in sessionID: String) -> Bool {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, chats[sessionID]?.loaded == true else { return false }
-        chats[sessionID]?.queuedMessages.append(QueuedChatMessage(text: text))
+        guard chats[sessionID]?.loaded == true, !text.isEmpty || !attachments.isEmpty else { return false }
+        chats[sessionID]?.queuedMessages.append(QueuedChatMessage(text: text, attachments: attachments))
         chats[sessionID]?.steeringError = nil
         drainQueue(in: sessionID)
         return true
     }
 
     public func removeQueuedMessage(_ id: UUID, in sessionID: String) {
+        guard chats[sessionID]?.sendingQueuedID != id else { return }
         chats[sessionID]?.queuedMessages.removeAll { $0.id == id }
         if chats[sessionID]?.queuedMessages.isEmpty == true { chats[sessionID]?.queuePaused = false }
     }
@@ -521,8 +537,16 @@ public final class AgentChatModel {
 
     private func drainQueue(in sessionID: String) {
         guard let chat = chats[sessionID], !chat.steering, !chat.queuePaused,
-              let message = chat.queuedMessages.first, startPrompt(message.text, in: sessionID) else { return }
-        removeQueuedMessage(message.id, in: sessionID)
+              let message = chat.queuedMessages.first else { return }
+        if message.attachments.isEmpty {
+            if startPrompt(message.text, in: sessionID) { removeQueuedMessage(message.id, in: sessionID) }
+            return
+        }
+        let started = startPrompt(message.text, attachments: message.attachments, in: sessionID, onSent: { [weak self] in
+            self?.chats[sessionID]?.sendingQueuedID = nil
+            self?.removeQueuedMessage(message.id, in: sessionID)
+        })
+        if started { chats[sessionID]?.sendingQueuedID = message.id }
     }
 
     public func submitHermesVoice(_ rawText: String, in sessionID: String) async throws -> String {
@@ -578,7 +602,9 @@ public final class AgentChatModel {
     private func finishPrompt(_ sessionID: String, from client: ACPClient, advanceQueue: Bool) {
         guard self.client === client else { return }
         prompts[sessionID] = nil
+        attachmentDeliveries.removeValue(forKey: sessionID)
         guard var chat = chats[sessionID] else { return }
+        chat.sendingQueuedID = nil
         chat.submittingPrompt = false
         chat.stopping = false
         if !chat.working { chat.transcript.finishPrompt() }
@@ -622,6 +648,7 @@ public final class AgentChatModel {
             self.pendingApprovalSince.removeAll()
             self.workingChats.removeAll()
             self.prompts.removeAll()
+            self.attachmentDeliveries.removeAll()
             self.liveEventsDuringLoad.removeAll()
             self.newlyCreatedOpenClawKeys.removeAll()
             self.observer = nil
@@ -641,6 +668,7 @@ public final class AgentChatModel {
                 chat.stopping = false
                 chat.preparingPrompt = false
                 chat.steering = false
+                chat.sendingQueuedID = nil
                 chat.queuePaused = !chat.queuedMessages.isEmpty
                 chat.permissions = []
                 self.chats[id] = chat
@@ -652,6 +680,7 @@ public final class AgentChatModel {
         let sessionID = event.sessionID
         if case .agentActivity = event, chats[sessionID]?.transcript.hasUnseenPrompt != true { return }
         chats[sessionID, default: ChatState()].receive(event)
+        if case .message = event { attachmentDeliveries.removeValue(forKey: event.sessionID)?() }
         switch event {
         case .turnActivity:
             recordWorkingState(sessionID)
@@ -680,6 +709,7 @@ public final class AgentChatModel {
         if chat.agentWorking { chat.transcript.beginObservedTurn() }
         if let options = opened.configOptions { chat.configOptions = options }
         chat.reportedModelName = opened.reportedModelName
+        chat.acceptsImages = opened.acceptsImages
         chat.loaded = true
         chat.loading = false
         chat.connectionLost = false

@@ -1,6 +1,147 @@
+import UIKit
+import UniformTypeIdentifiers
 import XCTest
 
 final class WorkspaceUXUITests: XCTestCase {
+    @MainActor
+    func testSharedComposerPastesTextPhotoAndFile() {
+        continueAfterFailure = false
+        let app = freshApp()
+        openMainChat(in: app, agent: "hermes")
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+
+        editor.tap()
+        func pasteFromEditMenu() {
+            editor.press(forDuration: 0.65)
+            let paste = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label == %@", "Paste")).firstMatch
+            XCTAssertTrue(paste.waitForExistence(timeout: 5), app.debugDescription)
+            paste.tap()
+        }
+
+        UIPasteboard.general.string = "Please review"
+        pasteFromEditMenu()
+        let textPasted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Please review"),
+                                                   object: editor)
+        XCTAssertEqual(XCTWaiter.wait(for: [textPasted], timeout: 5), .completed, app.debugDescription)
+
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        }
+        UIPasteboard.general.image = image
+        pasteFromEditMenu()
+        XCTAssertTrue(app.buttons["remove-attachment"].firstMatch.waitForExistence(timeout: 8))
+
+        let document = NSItemProvider()
+        document.suggestedName = "Fixture report.pdf"
+        document.registerDataRepresentation(forTypeIdentifier: UTType.pdf.identifier, visibility: .all) { result in
+            result(Data("%PDF-1.4 Riptide fixture".utf8), nil)
+            return nil
+        }
+        UIPasteboard.general.setItemProviders([document], localOnly: true, expirationDate: nil)
+        pasteFromEditMenu()
+        let file = app.staticTexts["Fixture report.pdf"]
+        XCTAssertTrue(file.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertEqual(app.buttons.matching(identifier: "remove-attachment").count, 2)
+        XCTAssertEqual(editor.value as? String, "Please review")
+        capture(app, as: "Image and PDF pasted into the shared Riptide composer")
+
+        app.buttons["send-message"].tap()
+        let sent = app.scrollViews["chat-transcript"].staticTexts
+            .matching(NSPredicate(format: "label CONTAINS %@", "Attached: Fixture report.pdf")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 8))
+    }
+
+    @MainActor
+    func testHermesComposerOffersNativeAttachmentPickers() {
+        let app = freshApp()
+        openMainChat(in: app, agent: "hermes")
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        editor.tap()
+        editor.typeText("Can you review this?")
+        let add = app.buttons["add-attachments"]
+        add.tap()
+        XCTAssertTrue(app.buttons["Camera"].waitForExistence(timeout: 4))
+        XCTAssertTrue(app.buttons["Photos"].exists)
+        XCTAssertTrue(app.buttons["Files"].exists)
+        captureAttachmentMenu(as: "Riptide attachment menu")
+
+        app.buttons["Files"].tap()
+        let browse = app.buttons["Browse"]
+        let recents = app.buttons["Recents"]
+        XCTAssertTrue(browse.waitForExistence(timeout: 5) || recents.exists)
+        capture(app, as: "Riptide Files picker")
+    }
+
+    @MainActor
+    func testHermesPhotoAttachmentCanBeRemovedAndSentWithoutText() throws {
+        guard ProcessInfo.processInfo.environment["RIPTIDE_ATTACHMENT_PHOTO_SEEDED"] == "1" else {
+            throw XCTSkip("Seed one photo with simctl addmedia and set RIPTIDE_ATTACHMENT_PHOTO_SEEDED.")
+        }
+        continueAfterFailure = false
+        let app = freshApp()
+        openMainChat(in: app, agent: "hermes")
+        let add = app.buttons["add-attachments"]
+        XCTAssertTrue(add.waitForExistence(timeout: 8))
+
+        func selectPhoto() {
+            add.tap()
+            app.buttons["Photos"].tap()
+            let photo = app.images.matching(NSPredicate(format: "label BEGINSWITH %@", "Photo,")).firstMatch
+            XCTAssertTrue(photo.waitForExistence(timeout: 8), app.debugDescription)
+            photo.tap()
+            let done = app.navigationBars["Photos"].buttons["Done"]
+            XCTAssertTrue(done.waitForExistence(timeout: 4), app.debugDescription)
+            XCTAssertTrue(done.isEnabled, app.debugDescription)
+            done.tap()
+            XCTAssertTrue(app.buttons["remove-attachment"].waitForExistence(timeout: 10), app.debugDescription)
+        }
+
+        selectPhoto()
+        capture(app, as: "Riptide photo attachment ready to send")
+        XCTAssertTrue(app.buttons["send-message"].isEnabled)
+        app.buttons["remove-attachment"].tap()
+        XCTAssertFalse(app.buttons["send-message"].isEnabled)
+        selectPhoto()
+        app.buttons["send-message"].tap()
+        XCTAssertTrue(app.scrollViews["chat-transcript"].staticTexts
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Attached: Photo-")).firstMatch.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["remove-attachment"].waitForNonExistence(timeout: 8))
+    }
+
+    @MainActor
+    func testCodexNewSavedAndLiveChatsShareTheAttachmentMenu() throws {
+        continueAfterFailure = false
+        let (app, _) = try openCodexFixture()
+        func verifyMenu(_ name: String) {
+            let add = app.buttons["add-attachments"]
+            XCTAssertTrue(add.waitForExistence(timeout: 8))
+            add.tap()
+            XCTAssertTrue(app.buttons["Camera"].waitForExistence(timeout: 4))
+            XCTAssertTrue(app.buttons["Photos"].exists)
+            XCTAssertTrue(app.buttons["Files"].exists)
+            captureAttachmentMenu(as: name)
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.2)).tap()
+            XCTAssertTrue(app.buttons["Camera"].waitForNonExistence(timeout: 4))
+        }
+
+        verifyMenu("Attachments in a saved Codex chat")
+        app.navigationBars.buttons["BackButton"].tap()
+        let actions = app.buttons["Codex actions"]
+        XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        actions.tap()
+        app.buttons["New chat"].tap()
+        XCTAssertTrue(app.staticTexts["New Codex fixture"].waitForExistence(timeout: 8))
+        verifyMenu("Attachments in a new Codex chat")
+        app.navigationBars.buttons["BackButton"].tap()
+        app.buttons["watch-desktop-codex"].tap()
+        XCTAssertTrue(app.staticTexts["Watching a turn already in progress"].waitForExistence(timeout: 8))
+        verifyMenu("Attachments while steering Codex")
+    }
+
     @MainActor
     func testCodexComposerChangesNativeSpeedModelAndIntelligence() throws {
         continueAfterFailure = false
@@ -750,6 +891,14 @@ final class WorkspaceUXUITests: XCTestCase {
         let main = app.buttons["sidebar-main-chat"]
         XCTAssertTrue(main.waitForExistence(timeout: 8))
         main.tap()
+    }
+
+    @MainActor
+    private func captureAttachmentMenu(as name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     @MainActor

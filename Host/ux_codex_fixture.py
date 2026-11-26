@@ -106,11 +106,19 @@ async def fixture(socket, live=False):
                 await conclude("This reply survived switching workspaces.")
                 continue
             if method == "initialize":
-                result = {}
+                if not params.get("capabilities", {}).get("experimentalApi"):
+                    live = True
+                    started = True
+                    turn_number = 1
+                    turn_id = f"{TURN}-1"
+                    thread["status"] = {"type": "active"}
+                result = {"codexHome": "/riptide-ux-fixture/codex-home"}
             elif method == "account/read":
                 result = {"account": {"type": "chatgpt"}, "workspaceRouting": {"chatgptAccountId": "fixture-identity"}}
             elif method == "thread/list":
                 result = {"data": [thread]}
+            elif method == "thread/start":
+                result = {"thread": {**thread, "id": "new-fixture-thread", "name": "New Codex fixture"}, **thread_settings}
             elif method == "thread/read":
                 result = {"thread": thread}
             elif method == "thread/resume":

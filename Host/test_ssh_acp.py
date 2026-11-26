@@ -1,13 +1,16 @@
+import base64
 import json
 import os
 from pathlib import Path
 import select
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 
-from ssh_acp import admitted
+from ssh_acp import STAGE_ATTACHMENTS, admitted, stage_attachments
 
 
 class SSHACPPolicyTests(unittest.TestCase):
@@ -30,6 +33,31 @@ class SSHACPPolicyTests(unittest.TestCase):
         response = {"jsonrpc": "2.0", "id": 2, "result": {"outcome": {"outcome": "cancelled"}}}
         self.assertTrue(admitted(response, workspace, pending))
         self.assertFalse(admitted(response, workspace, pending))
+
+    def test_staging_preserves_bytes_and_limits_filenames_and_permissions(self):
+        data = b"%PDF-example"
+        attachment = {"name": "report.pdf", "dataBase64": base64.b64encode(data).decode()}
+        packet = {"jsonrpc": "2.0", "id": 9, "method": STAGE_ATTACHMENTS, "params": {"files": [attachment]}}
+        reply = stage_attachments(packet)
+        path = Path(reply["result"]["paths"][0])
+        self.addCleanup(shutil.rmtree, path.parent)
+        self.assertEqual(path.read_bytes(), data)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+        for invalid in (
+            {**attachment, "name": "../report.pdf"},
+            {**attachment, "dataBase64": "invalid%"},
+            {**attachment, "dataBase64": base64.b64encode(b"x" * (1024 * 1024 + 1)).decode()},
+        ):
+            packet["params"]["files"] = [invalid]
+            self.assertEqual(stage_attachments(packet)["error"]["code"], -32602)
+
+    def test_prompt_admits_inline_images_with_the_expected_shape(self):
+        image = {"type": "image", "mimeType": "image/png", "data": base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()}
+        packet = {"jsonrpc": "2.0", "id": 8, "method": "session/prompt", "params": {"sessionId": "main", "prompt": [image]}}
+        self.assertTrue(admitted(packet, "/agent/workspace", set()))
+        packet["params"]["prompt"] = [{**image, "uri": "file:///example"}]
+        self.assertFalse(admitted(packet, "/agent/workspace", set()))
 
     def test_cannot_request_extra_capabilities_or_bypass_workspace(self):
         workspace = "/agent/workspace"

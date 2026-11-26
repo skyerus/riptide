@@ -104,6 +104,7 @@ public actor CodexLiveClient {
     private let emitChat: AsyncThrowingStream<CodexChatEvent, any Error>.Continuation
     private let transport: any JSONMessageTransport
     private let workspace: String
+    private var codexHome: String?
     private let accountFingerprint: String?
     private var reader: Task<Void, Never>?
     private var pending: [JSON: CheckedContinuation<JSON, any Error>] = [:]
@@ -274,7 +275,7 @@ public actor CodexLiveClient {
     }
 
     @discardableResult
-    public func sendToSavedChat(_ text: String, startOnly: Bool = false) async throws -> CodexMessageDelivery {
+    public func sendToSavedChat(_ text: String, attachments: [ChatAttachment] = [], startOnly: Bool = false) async throws -> CodexMessageDelivery {
         guard verifiedChat, let threadID, !submitting else { throw CodexLiveError.connectionClosed }
         let turnID = activeTurnID
         if startOnly, turnID != nil {
@@ -282,7 +283,15 @@ public actor CodexLiveClient {
         }
         submitting = true
         defer { submitting = false }
-        let input: JSON = .array([["type": "text", "text": .string(text)]])
+        let (input, directory) = try await savedChatInput(text, attachments: attachments)
+        if closed {
+            await removeUnsentAttachments(directory)
+            throw CodexLiveError.connectionClosed
+        }
+        if let current = activeTurnID, current != turnID {
+            await removeUnsentAttachments(directory)
+            throw CodexLiveError.rejected("The Codex turn changed while the attachments were uploading. Send again to use the current turn.")
+        }
         if let turnID {
             do {
                 let result = try await call("turn/steer", [
@@ -302,6 +311,41 @@ public actor CodexLiveClient {
             emitChat.yield(.turnStarted(id))
         }
         return .started(turnID: id)
+    }
+
+    // Like Codex's TUI, stage files on the app-server host before referencing them in a turn.
+    private func savedChatInput(_ text: String, attachments: [ChatAttachment]) async throws -> (JSON, String?) {
+        var input: [JSON] = text.isEmpty && !attachments.isEmpty ? [] : [["type": "text", "text": .string(text)]]
+        guard !attachments.isEmpty else { return (.array(input), nil) }
+        guard attachments.count <= ChatAttachment.maxCount,
+              attachments.reduce(0, { $0 + $1.data.count }) <= ChatAttachment.codexByteLimit else {
+            throw CodexLiveError.rejected("A message can include up to four attachments and 8 MB total.")
+        }
+        guard let codexHome, codexHome.hasPrefix("/") else {
+            throw CodexLiveError.rejected("Update Codex on the paired host to send attachments.")
+        }
+        let directory = "\(codexHome)/attachments/\(UUID().uuidString.lowercased())"
+        do {
+            try await call("fs/createDirectory", ["path": .string(directory), "recursive": .boolean(true)])
+            for (index, attachment) in attachments.enumerated() {
+                let path = "\(directory)/\(index + 1)-\(attachment.hostFilename)"
+                try await call("fs/writeFile", ["path": .string(path), "dataBase64": .string(attachment.data.base64EncodedString())])
+                if attachment.imageMIMEType != nil {
+                    input.append(["type": "localImage", "path": .string(path)])
+                } else {
+                    input.append(["type": "text", "text": .string(attachment.reference(to: path))])
+                }
+            }
+        } catch {
+            await removeUnsentAttachments(directory)
+            throw error
+        }
+        return (.array(input), directory)
+    }
+
+    private func removeUnsentAttachments(_ directory: String?) async {
+        guard let directory else { return }
+        _ = try? await call("fs/remove", ["path": .string(directory), "recursive": .boolean(true)])
     }
 
     public func answer(_ approval: CodexChatApproval, allow: Bool) async throws {
@@ -396,12 +440,19 @@ public actor CodexLiveClient {
     }
 
     @discardableResult
-    public func steer(_ text: String, expected turn: CodexLiveTurn) async throws -> String {
-        guard threadID == turn.threadID, activeTurnID == turn.turnID else { throw CodexLiveError.noActiveTurn }
+    public func steer(_ text: String, expected turn: CodexLiveTurn, attachments: [ChatAttachment] = []) async throws -> String {
+        guard threadID == turn.threadID, activeTurnID == turn.turnID, !submitting else { throw CodexLiveError.noActiveTurn }
+        submitting = true
+        defer { submitting = false }
+        let (input, directory) = try await savedChatInput(text, attachments: attachments)
+        guard activeTurnID == turn.turnID, !closed else {
+            await removeUnsentAttachments(directory)
+            throw CodexLiveError.noActiveTurn
+        }
         let result = try await call("turn/steer", [
             "threadId": .string(turn.threadID),
             "expectedTurnId": .string(turn.turnID),
-            "input": .array([["type": "text", "text": .string(text)]])
+            "input": input
         ])
         guard result["turnId"]?.string == turn.turnID else { throw CodexLiveError.wrongTurn }
         return turn.turnID
@@ -507,7 +558,7 @@ public actor CodexLiveClient {
                 "capabilities": ["experimentalApi": .boolean(true), "requestAttestation": .boolean(false)]
             ]
         }
-        _ = try await call("initialize", parameters)
+        codexHome = try await call("initialize", parameters)["codexHome"]?.string
         try await send(["method": "initialized"])
     }
 

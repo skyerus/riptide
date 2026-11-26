@@ -1,6 +1,38 @@
+import UIKit
+import UniformTypeIdentifiers
 import XCTest
 
 final class HermesGroupsUITests: XCTestCase {
+    @MainActor
+    func testPastedPDFReachesTheGroupThread() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_HERMES_GROUP_FIXTURE"] = "1"
+        continueAfterFailure = false
+        app.launch()
+        app.buttons["sidebar-group-chats"].tap()
+        let editorial = app.buttons["hermes-group-row-editorial"]
+        XCTAssertTrue(editorial.waitForExistence(timeout: 8))
+        editorial.tap()
+        let composer = app.descendants(matching: .any).matching(identifier: "hermes-group-composer").firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        let attach = app.buttons["add-attachments"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: attach)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 8), .completed)
+        composer.tap()
+        UIPasteboard.general.setItems([[UTType.pdf.identifier: Data("%PDF-group fixture".utf8)]], options: [.localOnly: true])
+        composer.press(forDuration: 0.65)
+        let paste = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Paste")).firstMatch
+        XCTAssertTrue(paste.waitForExistence(timeout: 5))
+        paste.tap()
+        XCTAssertTrue(app.staticTexts["Pasted file.pdf"].waitForExistence(timeout: 8), app.debugDescription)
+        capture(app, "Riptide group attachment pasted")
+        app.buttons["send-hermes-group"].tap()
+        let sent = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", "Attached file: Pasted_file.pdf")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 10), app.debugDescription)
+    }
+
     @MainActor
     func testCreateDiscussAndReopenGroup() {
         let app = XCUIApplication()

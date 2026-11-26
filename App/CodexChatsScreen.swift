@@ -111,13 +111,14 @@ struct CodexSavedChatScreen: View {
     let onOpen: (CodexChatSummary) -> Void
     @State private var session: CodexWorkspaceSession?
     @State private var draft = ""
+    @State private var draftAttachments: [ChatAttachment] = []
     @State private var showChats = false
     @State private var showCall = false
     @State private var showModelPicker = false
     @State private var composerHeight: CGFloat = 0
     @State private var viewport = TranscriptViewport()
     @State private var showsCompletedToolCalls = false
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     @Environment(WorkspaceState.self) private var workspace
 
     private var chat: CodexChatSummary? { session?.chat }
@@ -148,6 +149,14 @@ struct CodexSavedChatScreen: View {
     private var editor: Binding<String> {
         guard let chatKey else { return $draft }
         return Binding(get: { workspace.drafts[chatKey] }, set: { workspace.drafts[chatKey] = $0 })
+    }
+
+    private var attachments: Binding<[ChatAttachment]> {
+        guard let chatKey else { return $draftAttachments }
+        return Binding(
+            get: { workspace.drafts[attachments: chatKey] },
+            set: { workspace.drafts[attachments: chatKey] = $0 }
+        )
     }
 
     var body: some View {
@@ -301,7 +310,7 @@ struct CodexSavedChatScreen: View {
         ChatComposer(
             prompt: working ? "Steer this turn" : "Message Codex",
             chatID: chatKey?.chat, fieldID: "codex-composer",
-            sendID: working ? "codex-steer-send" : "send-message", stopID: "stop-codex-turn", stopTitle: "Stop turn", draft: editor,
+            sendID: working ? "codex-steer-send" : "send-message", stopID: "stop-codex-turn", stopTitle: "Stop turn", draft: editor, attachments: attachments,
             modelPickerVisible: $showModelPicker, editorFocus: $composerFocused,
             settings: composerSettings, context: session?.context, canDictate: canSubmit, canSubmit: canSubmit,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
@@ -340,24 +349,21 @@ struct CodexSavedChatScreen: View {
 
     private func submitDraft(queue: Bool) {
         guard let session, canSubmit else { return }
-        let draft = editor
-        let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let message = ComposerDraft(text: editor, files: attachments)
+        guard message.hasContent else { return }
         composerFocused = false
         if let chatKey { workspace.rememberReadingOffset(nil, for: chatKey) }
         viewport.restore(nil)
         if queue {
-            session.enqueue(text)
-            draft.wrappedValue = ""
+            session.enqueue(message.text, attachments: message.attachments)
+            message.clear()
         } else {
             Task {
-                if await session.send(text) != nil,
-                   draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
-                    draft.wrappedValue = ""
-                }
+                if await session.send(message.text, attachments: message.attachments) != nil { message.clear() }
             }
         }
     }
+
 }
 
 private struct CodexInputCard: View {

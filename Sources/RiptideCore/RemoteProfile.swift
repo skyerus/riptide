@@ -78,7 +78,7 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
     public func makeACPClient(credential: String) -> ACPClient? {
         guard kind != .codex, mainSessionID != nil else { return nil }
         if sshHostFingerprint != nil {
-            return sshTransport(credential: credential, command: "riptide-acp").map(ACPClient.init(transport:))
+            return sshTransport(credential: credential, command: "riptide-acp").map { ACPClient(transport: $0, restrictedSSH: true) }
         }
         guard let url = Self.secureURL(address), Self.validBearer(credential) else { return nil }
         return ACPClient(transport: RemoteWebSocketTransport(url: url, bearer: credential))

@@ -8,9 +8,10 @@ from urllib.parse import urlunsplit
 import websockets
 
 from hermes_screen import ScreenError, attach
+from ssh_acp import MAX_FRAME, STAGE_ATTACHMENTS, stage_attachments
 
 
-MAX_REQUEST = 512 * 1024
+MAX_REQUEST = MAX_FRAME
 MAX_REPLY = 2 * 1024 * 1024
 METHODS = {
     "profiles.list": {"include_sessions"},
@@ -20,6 +21,7 @@ METHODS = {
     "groups.state": {"room_id"},
     "groups.log": {"room_id", "since_seq", "limit"},
     "groups.send": {"room_id", "event_id", "payload"},
+    STAGE_ATTACHMENTS: {"files"},
     "groups.stop": {"room_id", "cancel_id"},
     "groups.continue": {"room_id", "discussion_event_id"},
     "groups.rename": {"room_id", "event_id", "name"},
@@ -78,11 +80,19 @@ async def relay(reader, gateway):
                 "data": {"admitted": False},
             }})
             continue
+        if packet["method"] == STAGE_ATTACHMENTS:
+            write(stage_attachments(packet))
+            continue
         await gateway.send(json.dumps(packet, allow_nan=False))
         async with asyncio.timeout(24):
             while True:
                 reply = json.loads(await gateway.recv())
                 if isinstance(reply, dict) and reply.get("id") == packet["id"] and "method" not in reply:
+                    result = reply.get("result")
+                    if packet["method"] == "groups.capabilities" and isinstance(result, dict):
+                        methods = result.get("methods")
+                        if isinstance(methods, list) and STAGE_ATTACHMENTS not in methods:
+                            methods.append(STAGE_ATTACHMENTS)
                     write(reply)
                     break
 

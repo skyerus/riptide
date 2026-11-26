@@ -22,6 +22,7 @@ final class HermesGroupSession {
     private var disbandID: String?
     private var journalUnreadable = false
     var draft = ""
+    var attachments: [ChatAttachment] = []
     var reply: HermesGroupEvent?
 
     init(client: HermesGroupsClient, roomID: String, workspaceID: String) {
@@ -63,9 +64,12 @@ final class HermesGroupSession {
 
     var members: [HermesGroup.Member] { snapshot?.room.members ?? [] }
     var driver: HermesGroupState.Driver? { snapshot?.driverStatus }
+    var supportsAttachments: Bool { capabilities?.supportsAttachments == true }
     var canSend: Bool {
         driver != nil && driver?.running != false && offers("send") && !sending && !acting && !journalUnreadable &&
-        (pending != nil || (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.utf8.count <= 64 * 1024))
+        (pending != nil || ((supportsAttachments && !attachments.isEmpty
+                            || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                           && draft.utf8.count <= 64 * 1024))
     }
 
     func offers(_ method: String) -> Bool { capabilities?.offers(method) == true }
@@ -126,21 +130,37 @@ final class HermesGroupSession {
 
     func send() async {
         guard canSend else { return }
-        let message = pending ?? HermesGroupSend(text: draft.trimmingCharacters(in: .whitespacesAndNewlines),
-                                                thread: reply?.payload.threadId)
-        do {
-            if pending == nil {
-                try FileManager.default.createDirectory(at: pendingFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try JSONEncoder().encode(message).write(to: pendingFile, options: [.atomic, .completeFileProtection])
-                pending = message
-            }
-        } catch {
-            actionError = "Riptide couldn’t save this message for a safe retry."
-            return
-        }
         sending = true
         actionError = nil
         defer { sending = false }
+
+        let message: HermesGroupSend
+        if let pending {
+            message = pending
+        } else {
+            let text: String
+            do {
+                let files = attachments
+                if !files.isEmpty, !supportsAttachments {
+                    actionError = "This group’s host bridge needs an update to send attachments."
+                    return
+                }
+                text = try await client.stageAttachments(files, text: draft.trimmingCharacters(in: .whitespacesAndNewlines))
+            } catch {
+                actionError = error.localizedDescription
+                return
+            }
+            message = HermesGroupSend(text: text, thread: reply?.payload.threadId)
+            do {
+                try FileManager.default.createDirectory(at: pendingFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try JSONEncoder().encode(message).write(to: pendingFile, options: [.atomic, .completeFileProtection])
+                pending = message
+            } catch {
+                actionError = "Riptide couldn’t save this message for a safe retry."
+                return
+            }
+        }
+
         do {
             try await client.send(message, room: roomID)
             finishSend()
@@ -206,6 +226,7 @@ final class HermesGroupSession {
     private func finishSend() {
         guard removePending() else { return }
         draft = ""
+        attachments = []
         reply = nil
         actionError = nil
     }

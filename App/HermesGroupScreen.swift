@@ -310,7 +310,7 @@ struct HermesGroupScreen: View {
     let session: HermesGroupSession
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
-    @FocusState private var composing: Bool
+    @State private var composing = false
     @State private var showingMembers = false
     @State private var renaming = false
     @State private var disbanding = false
@@ -586,7 +586,9 @@ struct HermesGroupScreen: View {
             ChatComposer(prompt: "Message group", chatID: session.roomID,
                          fieldID: "hermes-group-composer", sendID: "send-hermes-group",
                          stopID: "stop-hermes-group", stopTitle: "Stop discussion",
-                         draft: $session.draft, modelPickerVisible: .constant(false), editorFocus: $composing,
+                         draft: $session.draft, attachments: $session.attachments,
+                         modelPickerVisible: .constant(false), editorFocus: $composing,
+                         attachmentByteLimit: ChatAttachment.acpByteLimit, attachmentsAvailable: session.supportsAttachments,
                          ready: session.pending == nil && !session.sending,
                          canDictate: false, canSubmit: session.canSend, transcribe: nil,
                          retrying: session.pending != nil,

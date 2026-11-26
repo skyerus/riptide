@@ -36,6 +36,8 @@ public struct HermesGroupCapabilities: Decodable, Sendable {
     public let maxLogLimit: Int?
 
     public func offers(_ method: String) -> Bool { methods?.contains("groups.\(method)") ?? true }
+
+    public var supportsAttachments: Bool { methods?.contains("riptide/stageAttachments") == true }
 }
 
 public struct HermesGroupState: Decodable, Sendable {
@@ -232,6 +234,33 @@ public struct HermesGroupsClient: Sendable {
 
     public func log(room id: String, after seq: Int, limit: Int) async throws -> HermesGroupLog {
         try await request("groups.log", ["room_id": .string(id), "since_seq": .integer(seq), "limit": .integer(limit)])
+    }
+
+    public func stageAttachments(_ attachments: [ChatAttachment], text: String) async throws -> String {
+        guard !attachments.isEmpty else { return text }
+        guard attachments.count <= ChatAttachment.maxCount,
+              attachments.reduce(0, { $0 + $1.data.count }) <= ChatAttachment.acpByteLimit else {
+            throw HermesGroupError.rejected("A group message can include up to four attachments and 1 MB total.",
+                                            admittedNothing: true)
+        }
+        struct StagedFiles: Decodable { let paths: [String] }
+        let files: [JSON] = attachments.map { [
+            "name": .string($0.hostFilename), "dataBase64": .string($0.data.base64EncodedString()),
+        ] }
+        let result: StagedFiles = try await request("riptide/stageAttachments", ["files": .array(files)])
+        guard result.paths.count == attachments.count,
+              result.paths.allSatisfy({ $0.hasPrefix("/") && !$0.contains(where: \.isNewline) }) else {
+            throw HermesGroupError.invalidReply
+        }
+        // Use the safe host filenames in message text so metadata never becomes a group mention.
+        let references = zip(attachments, result.paths).map { file, path in
+            "Attached file: \(file.hostFilename)\nHost path: \(path)"
+        }
+        let message = ([text] + references).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        guard message.utf8.count <= 64 * 1024 else {
+            throw HermesGroupError.rejected("Shorten the message before adding these attachments.", admittedNothing: true)
+        }
+        return message
     }
 
     public func send(_ message: HermesGroupSend, room id: String) async throws {

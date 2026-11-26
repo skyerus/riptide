@@ -4,32 +4,58 @@ import SwiftUI
 
 typealias DictationTranscriber = @Sendable (Data) async throws -> String
 
-struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
-    let focused: Bool
-    let showsOptions: Bool
+struct MessageComposer<Options: View, Actions: View>: View {
+    @Binding var focused: Bool
+    let prompt: String
+    let editorIdentifier: String
+    let editorEnabled: Bool
     let chatID: String?
     let canDictate: Bool
     @Binding var draft: String
+    @Binding var attachments: [ChatAttachment]
+    let acceptsImages: Bool
+    let attachmentByteLimit: Int
+    let canAttach: Bool
     let transcribe: DictationTranscriber?
     let dismissKeyboard: () -> Void
     let canSubmit: Bool
     let submitDraft: () -> Void
-    var queueDraft: (() -> Void)? = nil
-    @ViewBuilder let field: () -> Field
+    let queueDraft: (() -> Void)?
     @ViewBuilder let options: () -> Options
-    @ViewBuilder let actions: () -> Actions
+    @ViewBuilder let actions: (_ canSend: Bool) -> Actions
 
     @Environment(\.scenePhase) private var scenePhase
     @State private var dictation = ComposerDictation()
+    @State private var importingAttachments = false
+    @State private var clipboard: [NSItemProvider] = []
 
     var body: some View {
-        ComposerSurface(focused: focused && !dictation.active, showsOptions: showsOptions && !dictation.active) {
+        ComposerSurface(focused: focused && !dictation.active, showsOptions: !dictation.active) {
             if dictation.active {
                 recordingDisplay
             } else {
-                field()
+                VStack(alignment: .leading, spacing: 0) {
+                    ComposerAttachmentStrip(attachments: $attachments)
+                        .disabled(!editorEnabled)
+                    ComposerEditor(text: $draft, focused: $focused, prompt: prompt,
+                                   identifier: editorIdentifier, enabled: editorEnabled) { providers in
+                        if canAttach { clipboard.append(contentsOf: providers) }
+                    }
+                    .overlay(alignment: .topLeading) {
+                        if draft.isEmpty {
+                            Text(prompt)
+                                .font(.body)
+                                .foregroundStyle(ChatTheme.muted)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                }
             }
         } options: {
+            ComposerAttachmentPicker(attachments: $attachments, isImporting: $importingAttachments,
+                                     clipboard: $clipboard, acceptsImages: acceptsImages, byteLimit: attachmentByteLimit, disabled: !canAttach)
+                .id(chatID)
             options()
         } actions: {
             if dictation.active {
@@ -41,19 +67,20 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
                     let queue = queueDraft.map { enqueue in
                         { finish(transcribe, then: enqueue) }
                     }
-                    ComposerAction("Send", symbol: "arrow.up", disabled: !canSubmit, queue: queue) {
+                    ComposerAction("Send", symbol: "arrow.up", disabled: !canSubmit || importingAttachments, queue: queue) {
                         finish(transcribe, then: submitDraft)
                     }
                     .accessibilityIdentifier("dictation-send")
                 }
             } else {
                 if transcribe != nil {
-                    control("Dictate", symbol: "mic", identifier: "dictation-start", disabled: !canDictate) {
+                    control("Dictate", symbol: "mic", identifier: "dictation-start", disabled: !canDictate || importingAttachments) {
                         dismissKeyboard()
                         dictation.start()
                     }
                 }
-                actions()
+                actions(canSubmit && !importingAttachments &&
+                        (!attachments.isEmpty || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
             }
         }
         .task(id: dictation.recording) {
@@ -65,7 +92,10 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
                 do { try await Task.sleep(for: .milliseconds(90)) } catch { break }
             }
         }
-        .onChange(of: chatID) { reset() }
+        .onChange(of: chatID) {
+            clipboard = []
+            reset()
+        }
         .onChange(of: canDictate) { if !canDictate { reset() } }
         .onChange(of: scenePhase) { if scenePhase == .background { reset() } }
         .onDisappear(perform: reset)
@@ -152,6 +182,7 @@ struct DictatingComposer<Field: View, Options: View, Actions: View>: View {
             action()
         }
     }
+
 
     private func reset() {
         dictation.cancel()
@@ -322,4 +353,27 @@ enum DictationFixture {
         #endif
         return nil
     }()
+}
+
+@MainActor
+struct ComposerDraft {
+    let text: String
+    let attachments: [ChatAttachment]
+    private let editor: Binding<String>
+    private let files: Binding<[ChatAttachment]>
+
+    init(text: Binding<String>, files: Binding<[ChatAttachment]>) {
+        editor = text
+        self.files = files
+        self.text = text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        attachments = files.wrappedValue
+    }
+
+    var hasContent: Bool { !text.isEmpty || !attachments.isEmpty }
+
+    func clear() {
+        if editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text { editor.wrappedValue = "" }
+        let sent = Set(attachments.map(\.id))
+        files.wrappedValue.removeAll { sent.contains($0.id) }
+    }
 }

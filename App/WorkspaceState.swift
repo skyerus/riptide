@@ -35,13 +35,22 @@ struct WorkspaceVisit: Identifiable, Codable, Equatable {
 @MainActor @Observable
 final class WorkspaceDrafts {
     private var values: [WorkspaceChatID: String] = [:]
+    private var files: [WorkspaceChatID: [ChatAttachment]] = [:]
 
     subscript(id: WorkspaceChatID) -> String {
         get { values[id] ?? "" }
         set { values[id] = newValue.isEmpty ? nil : newValue }
     }
 
-    func remove(workspace: String) { values = values.filter { $0.key.workspace != workspace } }
+    subscript(attachments id: WorkspaceChatID) -> [ChatAttachment] {
+        get { files[id] ?? [] }
+        set { files[id] = newValue.isEmpty ? nil : newValue }
+    }
+
+    func remove(workspace: String) {
+        values = values.filter { $0.key.workspace != workspace }
+        files = files.filter { $0.key.workspace != workspace }
+    }
 }
 
 @MainActor @Observable

@@ -134,4 +134,5 @@ public struct OpenedSession: Sendable {
     public let events: [ACPEvent]
     public var nativeSessionKey: String? = nil
     var reportedModelName: String? = nil
+    var acceptsImages = false
 }

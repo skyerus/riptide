@@ -20,7 +20,7 @@ struct ChatScreen: View {
     @State private var focusAfterHandback: String?
     @State private var connectingHermes: UUID?
     @State private var hermesPairingAttempt: HermesPairingAttempt?
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     @State private var safariApproval = SafariChatApproval()
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
@@ -244,10 +244,12 @@ struct ChatScreen: View {
         }
     }
 
-    private func sendMessage(_ text: String) -> Bool {
-        guard safariApproval.pending != nil, let agent = safariAgent else { return model.submit(text) }
+    private func sendMessage(_ text: String, attachments: [ChatAttachment], onSent: (@MainActor () -> Void)?) -> Bool {
+        guard safariApproval.pending != nil, let agent = safariAgent else {
+            return model.submit(text, attachments: attachments, onSent: onSent)
+        }
         let chatID = model.selectedID
-        return model.submit(text) {
+        return model.submit(text, attachments: attachments, onSent: onSent) {
             await safariApproval.prepareTurn(agent: agent, chatID: chatID, stillInChat: {
                 model.selectedID == chatID && !model.selected.stopping
             }, turnWorking: {
@@ -256,24 +258,24 @@ struct ChatScreen: View {
         }
     }
 
-    private func submitDraft(_ draft: Binding<String>, in chat: WorkspaceChatID, queue: Bool) {
-        let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func submitDraft(_ draft: Binding<String>, attachments: Binding<[ChatAttachment]>,
+                             in chat: WorkspaceChatID, queue: Bool) {
+        let message = ComposerDraft(text: draft, files: attachments)
         let selected = model.selected
         guard model.selectedID == chat.chat, selected.loaded, !selected.loading, !selected.configuring,
-              !selected.stopping, !selected.steering, !text.isEmpty else { return }
+              !selected.stopping, !selected.steering, message.hasContent else { return }
         workspace.rememberReadingOffset(nil, for: chat)
         viewport.restore(nil)
-        if queue || (selected.working && !selected.canStop) {
-            if model.enqueue(text, in: chat.chat) { draft.wrappedValue = "" }
+        if queue || (selected.working && (!selected.canStop || !message.attachments.isEmpty)) {
+            if model.enqueue(message.text, attachments: message.attachments, in: chat.chat) { message.clear() }
         } else if selected.working {
             Task {
-                if await model.steer(text, in: chat.chat),
-                   draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text {
-                    draft.wrappedValue = ""
-                }
+                if await model.steer(message.text, in: chat.chat) { message.clear() }
             }
-        } else if sendMessage(text) {
-            draft.wrappedValue = ""
+        } else if message.attachments.isEmpty {
+            if sendMessage(message.text, attachments: [], onSent: nil) { message.clear() }
+        } else {
+            _ = sendMessage(message.text, attachments: message.attachments, onSent: message.clear)
         }
     }
 
@@ -281,7 +283,10 @@ struct ChatScreen: View {
         let chatKey = self.chatKey
         let settings = resolvingInitialChat ? ChatComposerSettings() : composerSettings
         let selected = model.selected
-        let submission: ChatComposer.Submission = selected.canStop ? .steer : selected.working ? .queue : .send
+        let attachments = Binding(get: { workspace.drafts[attachments: chatKey] },
+                                  set: { workspace.drafts[attachments: chatKey] = $0 })
+        let canSteer = selected.canStop && attachments.wrappedValue.isEmpty
+        let submission: ChatComposer.Submission = canSteer ? .steer : selected.working ? .queue : .send
         let prompt = switch submission {
         case .send: "Message \(model.target.name)"
         case .steer: "Steer this reply"
@@ -301,7 +306,7 @@ struct ChatScreen: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !resolvingInitialChat {
                 VStack(spacing: 0) {
-                    ComposerQueue(messages: model.selected.queuedMessages, sendingID: nil,
+                    ComposerQueue(messages: selected.queuedMessages, sendingID: selected.sendingQueuedID,
                                   paused: model.selected.queuePaused, canResume: model.selected.loaded,
                                   remove: { model.removeQueuedMessage($0, in: chatKey.chat) },
                                   resume: { model.resumeQueue(in: chatKey.chat) })
@@ -325,8 +330,11 @@ struct ChatScreen: View {
                         prompt: prompt,
                         chatID: chatKey.chat,
                         draft: draft,
+                        attachments: attachments,
                         modelPickerVisible: $showModelPicker,
                         editorFocus: $composerFocused,
+                        acceptsImages: selected.acceptsImages,
+                        attachmentByteLimit: ChatAttachment.acpByteLimit,
                         settings: settings,
                         context: selected.context,
                         ready: selected.loaded,
@@ -336,9 +344,9 @@ struct ChatScreen: View {
                         transcribe: dictationTranscriber,
                         submission: submission, stopping: selected.stopping,
                         stop: selected.canStop ? { Task { await model.stop() } } : nil,
-                        enqueue: selected.canStop ? { submitDraft(draft, in: chatKey, queue: true) } : nil
+                        enqueue: canSteer ? { submitDraft(draft, attachments: attachments, in: chatKey, queue: true) } : nil
                     ) {
-                        submitDraft(draft, in: chatKey, queue: submission == .queue)
+                        submitDraft(draft, attachments: attachments, in: chatKey, queue: submission == .queue)
                     }
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }

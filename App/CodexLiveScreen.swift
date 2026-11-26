@@ -12,6 +12,7 @@ struct CodexLiveScreen: View {
     @State private var failure: String?
     @State private var attempt = 0
     @State private var draft = ""
+    @State private var attachments: [ChatAttachment] = []
     @State private var receipt: String?
     @State private var output = ""
     @State private var outputEvents = 0
@@ -19,7 +20,7 @@ struct CodexLiveScreen: View {
     @State private var patch: String?
     @State private var context: ContextUsage?
     @State private var viewport = TranscriptViewport()
-    @FocusState private var editorFocused: Bool
+    @State private var editorFocused = false
 
     private struct Reply: Identifiable {
         let id: String
@@ -140,7 +141,7 @@ struct CodexLiveScreen: View {
         let canSubmit = !session.sending && !session.stopping && !session.configuring
         return ChatComposer(
             prompt: session.working ? "Steer this turn" : "Message Codex",
-            chatID: turn?.threadID, fieldID: "codex-steer-input", sendID: "codex-steer-send", draft: $draft,
+            chatID: turn?.threadID, fieldID: "codex-steer-input", sendID: "codex-steer-send", draft: $draft, attachments: $attachments,
             modelPickerVisible: .constant(false), editorFocus: $editorFocused, context: session.context ?? context,
             canDictate: canSubmit, canSubmit: canSubmit,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
@@ -216,17 +217,17 @@ struct CodexLiveScreen: View {
     }
 
     private func submitDraft(queue: Bool) {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let session, session.ready, !session.sending, !session.stopping, !session.configuring, !text.isEmpty else { return }
+        let message = ComposerDraft(text: $draft, files: $attachments)
+        guard let session, session.ready, !session.sending, !session.stopping, !session.configuring, message.hasContent else { return }
         editorFocused = false
         if queue {
-            session.enqueue(text)
-            draft = ""
+            session.enqueue(message.text, attachments: message.attachments)
+            message.clear()
         } else {
             Task {
-                guard let delivery = await session.send(text) else { return }
+                guard let delivery = await session.send(message.text, attachments: message.attachments) else { return }
                 if case .steered(let id) = delivery { receipt = "Steering accepted · Turn \(id.suffix(8))" }
-                if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
+                message.clear()
             }
         }
     }
