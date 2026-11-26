@@ -33,7 +33,15 @@ final class HermesSSHUITests: XCTestCase {
             + "Use only the paired Chrome tools.")
         app.buttons["send-message"].tap()
         let request = app.buttons["hermes-browser-request"]
-        XCTAssertTrue(request.waitForExistence(timeout: 105))
+        let allowInput = app.buttons.matching(NSPredicate(format: "label == %@", "Allow Chrome input")).firstMatch
+        let deadline = Date().addingTimeInterval(135)
+        while Date() < deadline && !request.exists {
+            if allowInput.waitForExistence(timeout: 1), allowInput.isHittable {
+                allowInput.tap()
+                _ = allowInput.waitForNonExistence(timeout: 3)
+            }
+        }
+        XCTAssertTrue(request.exists)
         request.tap()
         let takeover = app.buttons["hermes-take-over"]
         let streaming = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"), object: takeover)
