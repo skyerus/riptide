@@ -49,6 +49,20 @@ class BrowserWindowTests(unittest.TestCase):
 
         self.browser.send_window_message.assert_called_once_with(2, "_NET_ACTIVE_WINDOW", 2)
 
+    def test_chrome_mapped_after_launch_is_activated_before_measuring(self):
+        self.browser.properties = Mock(side_effect=[
+            "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x0, 0x0",
+            "_NET_CLIENT_LIST_STACKING(WINDOW): window id # 0x2",
+            'WM_CLASS(STRING) = "chrome", "Google-chrome"',
+            "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x2",
+            'WM_CLASS(STRING) = "chrome", "Google-chrome"\nminimum size: 500 by 350',
+        ])
+        self.browser.send_window_message = Mock(return_value=True)
+
+        self.assertIsNone(self.browser.minimum_width(activate=True))
+        self.browser.send_window_message.assert_called_once_with(2, "_NET_ACTIVE_WINDOW", 2)
+        self.assertEqual(self.browser.minimum_width(activate=True), 512)
+
 
 class DisplayTests(unittest.IsolatedAsyncioTestCase):
     async def test_takeover_prepares_a_browser_only_with_the_owning_lease(self):
