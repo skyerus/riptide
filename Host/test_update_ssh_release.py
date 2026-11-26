@@ -9,10 +9,27 @@ import unittest
 from unittest.mock import patch
 
 from install_safari import HOST, PAYLOAD
-from update_ssh_release import update
+from update_ssh_release import stage, update, verify
 
 
 class SSHReleaseTests(unittest.TestCase):
+    def test_staged_pairing_runs_with_only_the_versioned_host_payload(self):
+        home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        wrapper = stage(home, "b" * 40)
+        config = home / "pairing.json"
+        config.write_text('{"targets":{"bookkeeper":{"name":"Bookkeeper"}}}')
+        real_run = subprocess.run
+
+        def run(argv, **kwargs):
+            if kwargs.get("env", {}).get("SSH_ORIGINAL_COMMAND") == "riptide-hermes-screen":
+                return subprocess.CompletedProcess(argv, 0, stdout="")
+            return real_run(argv, **kwargs)
+
+        with patch("update_ssh_release.subprocess.run", side_effect=run):
+            verify([sys.executable, str(wrapper), "--workspace", str(home),
+                    "--hermes-screen", str(home), sys.executable,
+                    "--pairing-config", str(config), "--", sys.executable])
+
     def test_verifies_before_switching_and_preserves_the_pairing(self):
         home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         identity = home / "phone"
