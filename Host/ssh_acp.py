@@ -144,7 +144,7 @@ def admitted(packet, workspace, pending):
     return True
 
 
-async def serve(workspace, command, safari_mcp=None, attention_socket=None):
+async def serve(workspace, command, safari_mcp=None, attention_socket=None, pairing_config=None):
     loop = asyncio.get_running_loop()
     source = asyncio.StreamReader(limit=MAX_FRAME)
     stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
@@ -156,6 +156,14 @@ async def serve(workspace, command, safari_mcp=None, attention_socket=None):
     except BaseException:
         stdin.close()
         raise
+    connectors = [safari_mcp] if safari_mcp else []
+    if pairing_config is not None:
+        connectors.append({
+            "name": "riptide_pairing", "command": sys.executable,
+            "args": [str(Path(__file__).resolve().with_name("agent_pairing_mcp.py")),
+                     "--config", str(pairing_config)],
+            "env": [],
+        })
     pending = set()
     openings = {}
     opened = set()
@@ -186,10 +194,9 @@ async def serve(workspace, command, safari_mcp=None, attention_socket=None):
                             await exchange(attention_socket, {"operation": "watch", "chat": packet["params"]["sessionId"]})
                         except (OSError, ValueError, TimeoutError):
                             pass  # Alert availability must never interrupt a chat.
-                if safari_mcp and packet.get("method") in ("session/new", "session/load"):
-                    # The device can only send an empty MCP list. Supply this
-                    # administrator-configured connector after validating the request.
-                    packet["params"]["mcpServers"] = [safari_mcp]
+                if connectors and method in ("session/new", "session/load"):
+                    # Only the host can attach connectors to a validated ACP request.
+                    packet["params"]["mcpServers"] = connectors
                 agent.stdin.write(json.dumps(packet, allow_nan=False).encode() + b"\n")
                 await agent.stdin.drain()
             elif isinstance(packet, dict) and rpc_id(packet.get("id")):
@@ -278,6 +285,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     requested = os.environ.get("SSH_ORIGINAL_COMMAND")
+    if args.pairing_config and not args.pairing_config.is_absolute():
+        parser.error("An absolute pairing manifest path is required.")
     if args.attention_socket and not args.attention_socket.is_absolute():
         parser.error("An absolute notification relay socket path is required.")
     if requested == "riptide-pair-hermes":
@@ -352,6 +361,6 @@ if __name__ == "__main__":
             "env": [],
         }
     try:
-        asyncio.run(serve(args.workspace, command, safari_mcp, args.attention_socket))
+        asyncio.run(serve(args.workspace, command, safari_mcp, args.attention_socket, args.pairing_config))
     except (OSError, ValueError):
         parser.exit(1, "The ACP transport closed.\n")

@@ -4,6 +4,10 @@
 
 - Never infer user intent or trigger a workflow by matching words or phrases in chat messages. Pass natural-language messages to the agent and handle its decisions through structured tool calls or protocol events. Require explicit UI actions for consent where the app must verify it independently.
 
+## Cross-runtime features
+
+- Design user-facing agent features to be harness- and agent-agnostic. Put the workflow, consent, and result in a shared structured contract. Use runtime adapters for transport and capability discovery, and verify the complete workflow on each supported route before calling it done.
+
 ## UI changes
 
 - Prefer native iOS controls, pickers, and presentation styles wherever they meet the feature’s needs. Keep system defaults for appearance, navigation, and dismissal where possible.
