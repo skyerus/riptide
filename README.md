@@ -88,6 +88,30 @@ restrict,command="/usr/bin/python3 /usr/local/libexec/riptide/ssh_acp.py --works
 
 Use absolute paths for the regular agent account, workspace, and native ACP launcher. The key disallows SSH shell access, terminal allocation, and port forwarding. The launcher limits chat to the paired workspace and refuses client-supplied MCP servers and approval-policy changes. Use a trusted device and the least-privilege agent account available, since prompts reach the real agent with its configured tools. Removing the key on the host revokes access. The private key stays in the device’s Keychain. Voice keeps its separate native endpoint.
 
+### One-tap Hermes pairing
+
+An existing trusted Hermes-over-SSH pairing can offer a **Connect agent** button in chat for another Hermes profile on that host. Riptide creates a fresh key on-device only after the tap, sends just the public key over the current pinned SSH connection, checks the new connection, and saves it as a separate remote. It doesn't re-use the existing device key or let the invitation change the SSH host.
+
+To enable it, deploy the versioned Host payload and give the **existing pairing's** fixed `ssh_acp.py` command an additional `--pairing-config /absolute/path/to/hermes-pairing.json` before its `--` separator. For a versioned installation, pass that same option to `Host/update_ssh_release.py` when switching the existing pairing to this release. Keep its existing workspace, SSH restrictions and agent command. Only grant this option to devices allowed to connect the profiles in the list. Keep the config owner-controlled and do not add the option to the new child pairings. Example:
+
+```json
+{
+  "authorizedKeys": "/home/agent/.ssh/authorized_keys",
+  "hermes": "/home/agent/.local/bin/hermes",
+  "targets": {
+    "bookkeeper": {
+      "name": "Bookkeeper",
+      "workspace": "/srv/bookkeeper",
+      "mainSessionID": "an-existing-hermes-acp-chat-id"
+    }
+  }
+}
+```
+
+Use the precise directory and ID returned by `hermes -p bookkeeper acp`'s `session/list`; creating a plain CLI chat does not make it visible to that catalog. The host verifies the configured chat before registering any key. The new key is restricted to `hermes -p <profile> acp` in the configured workspace. Existing keys are preserved. As with manual pairing, remove the generated restricted entry from `authorized_keys` to revoke a device's host access.
+
+Install `Host/hermes-pairing/SKILL.md` under the source profile's `skills/riptide-hermes-pairing/` and enable native `clarify` there. Then ask that agent to connect the configured profile and tap **Connect agent** in chat.
+
 ### Hermes browser handoff over SSH
 
 Configure native [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) in the Hermes profile that owns the chat. Install its listed Linux packages, set `browser.headed` and `bot_desktop.auto_start` to `true`, and install the `websockets` Python package for the interpreter in the forced command. Install `Host/hermes_screen.py` and `Host/hermes_mobile.py` beside the updated `Host/ssh_acp.py` at the same trusted path. Add `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` before `--` in the authorized key’s fixed command. Give this option only to devices trusted to control that profile’s native desktop.
