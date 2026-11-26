@@ -62,7 +62,8 @@ def verify(argv):
                 "The selected Hermes gateway is not running a group chat driver.")
 
 
-def update(keys, fingerprint, releases, previous, revision, attention_socket=None, enable_hermes_groups=False):
+def update(keys, fingerprint, releases, previous, revision, attention_socket=None, pairing_config=None,
+           enable_hermes_groups=False):
     directory = releases.lstat()
     require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid() and not directory.st_mode & 0o022,
             "Use an existing release directory controlled by the deployment account.")
@@ -87,6 +88,13 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
                 prefix[prefix.index("--attention-socket") + 1] = str(attention_socket)
             else:
                 prefix.extend(["--attention-socket", str(attention_socket)])
+        if pairing_config is not None:
+            require(pairing_config.is_absolute() and read_owned(pairing_config)[0] is not None,
+                    "Use an existing absolute path to an owner-controlled pairing manifest.")
+            if "--pairing-config" in prefix:
+                prefix[prefix.index("--pairing-config") + 1] = str(pairing_config)
+            else:
+                prefix.extend(["--pairing-config", str(pairing_config)])
         if enable_hermes_groups and "--hermes-groups" not in prefix:
             screen = prefix.index("--hermes-screen")
             prefix.extend(["--hermes-groups", *prefix[screen + 1:screen + 3]])
@@ -107,6 +115,7 @@ def main():
     parser.add_argument("--previous", required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--attention-socket", type=Path)
+    parser.add_argument("--pairing-config", type=Path)
     parser.add_argument("--enable-hermes-groups", action="store_true",
                         help="Let this key access group chats on its paired Hermes gateway.")
     args = parser.parse_args()
@@ -116,7 +125,7 @@ def main():
         parser.error("Pass an absolute --releases-dir.")
     try:
         update(args.authorized_keys, args.fingerprint, args.releases_dir, args.previous, args.revision,
-               args.attention_socket, args.enable_hermes_groups)
+               args.attention_socket, args.pairing_config, args.enable_hermes_groups)
     except subprocess.TimeoutExpired:
         parser.exit(1, "The staged SSH command timed out during verification.\n")
     except (OSError, ValueError) as error:

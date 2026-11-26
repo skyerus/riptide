@@ -148,6 +148,48 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
         throw URLError(.cannotConnectToHost)
     }
 
+    /// Pair only through this profile's existing SSH endpoint and host-key pin.
+    public func authorizeHermesPairing(_ invitation: HermesPairingInvitation, credential: String,
+                                       identity: SSHDeviceIdentity) async throws -> RemoteProfile {
+        struct Request: Encodable {
+            let profile: String
+            let publicKey: String
+        }
+        struct Reply: Decodable {
+            let name: String?
+            let workspace: String?
+            let mainSessionID: String?
+            let error: String?
+        }
+        guard kind == .hermes, let sshHostFingerprint,
+              let transport = sshTransport(credential: credential, command: "riptide-pair-hermes") else {
+            throw HermesPairingError.unavailable
+        }
+        let deadline = Task {
+            do {
+                try await Task.sleep(for: .seconds(30))
+                await transport.close()
+            } catch {}
+        }
+        defer {
+            deadline.cancel()
+            Task { await transport.close() }
+        }
+        try await transport.send(JSONEncoder().encode(Request(profile: invitation.profile, publicKey: identity.publicKey)))
+        for try await data in transport.incoming {
+            let reply = try JSONDecoder().decode(Reply.self, from: data)
+            if let error = reply.error { throw HermesPairingError.rejected(error) }
+            guard let name = reply.name, let workspace = reply.workspace, let id = reply.mainSessionID,
+                  let remote = RemoteProfile(kind: .hermes, name: name, address: address,
+                                             workspace: workspace, mainSessionID: id,
+                                             sshHostFingerprint: sshHostFingerprint) else {
+                break
+            }
+            return remote
+        }
+        throw HermesPairingError.unavailable
+    }
+
     func safariSSHTransport(credential: String) -> SSHACPTransport? {
         sshTransport(credential: credential, command: "riptide-safari")
     }

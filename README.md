@@ -90,11 +90,35 @@ Use absolute paths for the regular agent account, workspace, and native ACP laun
 
 ### Hermes group chats over SSH
 
-In the paired Hermes workspace, open **Group chats → +**, name the group, and choose two to six bots from that gateway. Group chats created on that gateway in Hermes Desktop also appear here. Send to the group or use the **@** menu to address individual bots. Each reply shows its author, and **Reply in thread** continues a topic. Hermes stores the shared transcript and runs the turns while Riptide is closed.
+Open **Groups → +** in Riptide, choose the Hermes connection that serves your bots, name the group, and select two to six bots from that gateway. The Groups tab lists rooms from every paired Hermes connection with group access, including rooms created in Hermes Desktop. Each room names the connection that owns it. Send to the group or use the **@** menu to address individual bots. Each reply shows its author, and **Reply in thread** continues a topic. Hermes stores the shared transcript and runs the turns while Riptide is closed.
 
 Group chats require a running Hermes gateway that advertises a group driver. The picker uses its seatable profiles. If a profile-bound gateway leaves out a bot, configure it in the gateway’s `hosted_rooms.profiles` using the [Hermes Bot Mode guide](https://hermes-agent.nousresearch.com/docs/user-guide/bot-mode). Riptide can open existing gateway-owned rooms with peer members. Creating a room in Riptide uses bots from the selected gateway and supports text messages.
 
 Stage the versioned Riptide host payload and run `Host/update_ssh_release.py` with the existing pairing fingerprint and release arguments plus `--enable-hermes-groups`. The updater reuses the paired Hermes profile and launcher from the screen route and verifies `groups.capabilities` before changing the key. For a pairing without a screen route, install `hermes_groups.py`, `hermes_screen.py`, and `hermes_mobile.py` alongside the updated `ssh_acp.py`, with the `websockets` Python dependency. Add `--hermes-groups /absolute/hermes/profile/home /absolute/path/to/hermes` before `--` in the fixed command. Grant this option to devices trusted to read and operate the group chats accessible to that profile. It uses the existing authenticated SSH pairing and Hermes’s local gateway ticket.
+
+### One-tap Hermes pairing
+
+An existing trusted Hermes-over-SSH pairing can offer a **Connect agent** button in chat for another Hermes profile on that host. Riptide creates a fresh key on-device only after the tap, sends just the public key over the current pinned SSH connection, checks the new connection, and saves it as a separate remote. It doesn't re-use the existing device key or let the invitation change the SSH host.
+
+To enable it, deploy the versioned Host payload and give the **existing pairing's** fixed `ssh_acp.py` command an additional `--pairing-config /absolute/path/to/hermes-pairing.json` before its `--` separator. For a versioned installation, pass that same option to `Host/update_ssh_release.py` when switching the existing pairing to this release. Keep its existing workspace, SSH restrictions and agent command. Only grant this option to devices allowed to connect the profiles in the list. Keep the config owner-controlled and do not add the option to the new child pairings. Example:
+
+```json
+{
+  "authorizedKeys": "/home/agent/.ssh/authorized_keys",
+  "hermes": "/home/agent/.local/bin/hermes",
+  "targets": {
+    "bookkeeper": {
+      "name": "Bookkeeper",
+      "workspace": "/srv/bookkeeper",
+      "mainSessionID": "an-existing-hermes-acp-chat-id"
+    }
+  }
+}
+```
+
+Use the precise directory and ID returned by `hermes -p bookkeeper acp`'s `session/list`; creating a plain CLI chat does not make it visible to that catalog. The host verifies the configured chat before registering any key. The new key is restricted to `hermes -p <profile> acp` in the configured workspace. Existing keys are preserved. As with manual pairing, remove the generated restricted entry from `authorized_keys` to revoke a device's host access.
+
+Install `Host/hermes-pairing/SKILL.md` under the source profile's `skills/riptide-hermes-pairing/` and enable native `clarify` there. Then ask that agent to connect the configured profile and tap **Connect agent** in chat.
 
 ### Hermes browser handoff over SSH
 
