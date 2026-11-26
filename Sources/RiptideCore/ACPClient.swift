@@ -48,6 +48,7 @@ public struct PermissionRequest: Identifiable, Sendable, Equatable {
 public enum ACPEvent: Sendable, Equatable {
     case message(sessionID: String, messageID: String?, role: ChatRole, text: String)
     case agentActivity(sessionID: String)
+    case turnActivity(sessionID: String, working: Bool)
     case tool(sessionID: String, activity: ToolActivity)
     case plan(sessionID: String, steps: [TurnPlanStep])
     case configOptions(sessionID: String, options: [SessionConfigOption])
@@ -59,7 +60,7 @@ public enum ACPEvent: Sendable, Equatable {
         switch self {
         case .message(let sessionID, _, _, _), .tool(let sessionID, _), .configOptions(let sessionID, _),
              .context(let sessionID, _), .permissionClosed(let sessionID, _), .plan(let sessionID, _),
-             .agentActivity(let sessionID):
+             .agentActivity(let sessionID), .turnActivity(let sessionID, _):
             sessionID
         case .permission(let request):
             request.sessionID
@@ -342,7 +343,7 @@ public actor ACPClient {
                         }, toolCallID: tool["toolCallId"]?.string
                     )
                     permissions[request.id] = (id, request)
-                    emit.yield(.permission(request))
+                    deliver(.permission(request))
                 } else {
                     try? await send(.failure(id, code: -32601, message: "Unsupported client request"))
                 }
@@ -355,8 +356,7 @@ public actor ACPClient {
                 if case .message(_, _, .assistant, let text) = event, let soFar = voiceReplies[sessionID] {
                     voiceReplies[sessionID] = String((soFar + text).suffix(4_800))
                 }
-                if replaying[sessionID] != nil { replaying[sessionID]?.append(event) }
-                else { emit.yield(event) }
+                deliver(event)
             }
         } else if let id = message["id"], let request = pending.removeValue(forKey: id) {
             if let error = message["error"]?["message"]?.string {
@@ -368,8 +368,16 @@ public actor ACPClient {
         }
     }
 
+    private func deliver(_ event: ACPEvent) {
+        if replaying[event.sessionID] != nil { replaying[event.sessionID]?.append(event) }
+        else { emit.yield(event) }
+    }
+
     private static func event(_ update: JSON, sessionID: String) -> ACPEvent? {
         switch update["sessionUpdate"]?.string {
+        case "session_info_update":
+            guard case .boolean(let working)? = update["_meta"]?["app.riptide.turnWorking"] else { return nil }
+            return .turnActivity(sessionID: sessionID, working: working)
         case "agent_thought_chunk":
             guard update["content"]?["type"] == "text", let text = update["content"]?["text"]?.string,
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
@@ -409,7 +417,7 @@ public actor ACPClient {
 
     private func closePermission(_ id: UUID, sessionID: String) {
         permissions.removeValue(forKey: id)
-        emit.yield(.permissionClosed(sessionID: sessionID, id: id))
+        deliver(.permissionClosed(sessionID: sessionID, id: id))
     }
 
     private func disconnect() {

@@ -1,0 +1,90 @@
+--- a/acp_adapter/gateway_server.py
++++ b/acp_adapter/gateway_server.py
+@@ -111,6 +111,8 @@
+         # Editor-held compression-tip id -> logical session id (see ``_resume``).
+         self._aliases = {}
+         self._form_elicitation = False
++        self._riptide_client = False
++        self._riptide_turns = {}
+         from hermes_cli.gateway_mutations import PreparedMutations
+         self._mutations = PreparedMutations()
+         # Session -> title the editor was last shown (``session_info_update`` fires on a change).
+@@ -135,7 +137,10 @@
+         if getattr(event, "direction", None) == "incoming" and isinstance(message, dict) \
+                 and message.get("method") == "initialize":
+             from acp_adapter.elicitation import client_supports_form_elicitation
+-            self._form_elicitation = client_supports_form_elicitation(message.get("params"))
++            params = message.get("params") or {}
++            self._form_elicitation = client_supports_form_elicitation(params)
++            client_info = params.get("clientInfo") if isinstance(params, dict) else None
++            self._riptide_client = isinstance(client_info, dict) and client_info.get("name") == "riptide"
+
+     async def initialize(self, **kwargs):
+         from hermes_cli import __version__
+@@ -192,6 +197,7 @@
+                 # editor's other sessions offline; its next prompt reports not_found.
+                 logger.info("ACP session %s not re-attached after reconnect", session_id, exc_info=True)
+                 self._snapshots.pop(session_id, None)
++                await self._publish_riptide_turn(session_id, None)
+                 continue
+             await self._adopt(session_id, snapshot, client=gateway)
+             # Before this session's cards are offered again: until ``_client`` returns, ``self._gateway`` is
+@@ -209,11 +215,32 @@
+         is projected from the snapshot itself: the editor is never left showing Default while the owner
+         enforces Accept Edits / Don't Ask (#141338 ACP-7)."""
+         async with self._changed:  # its pending rows and controls may settle or block a waiter
++            previous = self._snapshots.get(session_id, {})
+             self._snapshots[session_id] = snapshot
+             if resumes is not None:
+                 self._adopted[session_id] = resumes
+             self._changed.notify_all()
++        if (previous.get("replay_epoch") != snapshot.get("replay_epoch")
++                or previous.get("last_sequence", 0) <= snapshot.get("last_sequence", 0)):
++            active = next((row["admission_id"] for row in snapshot.get("pending", [])
++                           if row.get("status") == "started"), None)
++            await self._publish_riptide_turn(session_id, active)
+         await self._project_mode(session_id, self._editor_id(session_id), snapshot.get("info") or {}, client=client)
++
++    async def _publish_riptide_turn(self, session_id, admission):
++        if not self._riptide_client or self._conn is None:
++            return
++        previous = self._riptide_turns.pop(session_id, None)
++        if admission:
++            self._riptide_turns[session_id] = admission
++        if bool(previous) != bool(admission):
++            from acp.schema import SessionInfoUpdate
++            await self._conn.session_update(session_id=self._editor_id(session_id), update=SessionInfoUpdate(
++                session_update="session_info_update", field_meta={"app.riptide.turnWorking": bool(admission)}))
++
++    async def _finish_riptide_turn(self, session_id, admission):
++        if admission and self._riptide_turns.get(session_id) == admission:
++            await self._publish_riptide_turn(session_id, None)
+
+     async def _request_live_reasoning(self, client, session_id):
+         """Ask the owner to stream this session's reasoning (``show_reasoning``), as the CLI does.
+@@ -979,6 +1006,9 @@
+             return
+         if await self._gap_guard(kind, sid, aid):
+             return
++        if kind == "message.start" and aid:
++            await self._publish_riptide_turn(sid, aid)
++            return
+         if kind in {"approval.request", "clarify.request"}:
+             self._permission(sid, payload)
+             return
+@@ -1014,6 +1044,7 @@
+                 # A retry's terminal receipt claimed this reply; it is shown once, from there.
+                 self._streamed.pop(aid, None)
+                 self._segments.pop(aid, None)
++                await self._finish_riptide_turn(sid, aid)
+                 return
+             self._settling.add(aid)
+             try:
+@@ -1025,6 +1056,7 @@
+                     self._changed.notify_all()
+             finally:
+                 self._settling.discard(aid)
++            await self._finish_riptide_turn(sid, aid)
+
+     async def _gap_guard(self, kind, sid, aid):
+         """What a replay gap changes in the projection; True when the frame is consumed here."""
