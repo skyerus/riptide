@@ -22,11 +22,11 @@ final class HermesGroupsUITests: XCTestCase {
         let create = app.buttons["create-hermes-group"]
         XCTAssertFalse(create.isEnabled)
         chooser.tap()
-        app.buttons["Hermes Studio"].tap()
+        app.collectionViews.buttons["Hermes Studio"].tap()
         XCTAssertTrue(app.buttons["hermes-group-bot-editor"].waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["hermes-group-bot-sable-accountant"].exists)
         chooser.tap()
-        app.buttons["Hermes VPS"].tap()
+        app.collectionViews.buttons["Hermes VPS"].tap()
         let sable = app.buttons["hermes-group-bot-sable-accountant"]
         XCTAssertTrue(sable.waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["hermes-group-bot-editor"].exists)
