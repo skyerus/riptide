@@ -151,15 +151,15 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
             screen = prefix.index("--hermes-screen")
             prefix.extend(["--hermes-groups", *prefix[screen + 1:screen + 3]])
         if browser_mcp is not None:
-            python, source = browser_mcp
-            require("--hermes-screen" in prefix and python.is_absolute() and os.access(python, os.X_OK)
-                    and source.is_absolute() and source.is_dir(),
+            browser_python, browser_source = browser_mcp
+            require("--hermes-screen" in prefix and browser_python.is_absolute() and os.access(browser_python, os.X_OK)
+                    and browser_source.is_absolute() and browser_source.is_dir(),
                     "The Chrome connector needs the paired screen and absolute Hermes Python and source paths.")
             if "--hermes-browser-mcp" in prefix:
-                start = prefix.index("--hermes-browser-mcp")
-                prefix[start + 1:start + 3] = [str(python), str(source)]
+                option = prefix.index("--hermes-browser-mcp")
+                prefix[option + 1:option + 3] = [str(browser_python), str(browser_source)]
             else:
-                prefix.extend(["--hermes-browser-mcp", str(python), str(source)])
+                prefix.extend(["--hermes-browser-mcp", str(browser_python), str(browser_source)])
         argv = [*prefix, "--", *agent]
         verify(argv)
         command = shlex.join(argv).replace('"', r'\"')
