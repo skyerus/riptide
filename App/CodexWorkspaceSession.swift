@@ -246,6 +246,8 @@ final class CodexWorkspaceSession {
                 workspace?.pruneCodexSessions()
             case .diff(_, let patch):
                 diff = patch.isEmpty ? nil : patch
+            case .context(_, let usage):
+                context = usage
             case .output:
                 break
             }

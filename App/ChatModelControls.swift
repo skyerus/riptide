@@ -53,14 +53,10 @@ struct FastModeButton: View {
             Button {
                 Task { await settings.select(option.id, enabled ? standard : "fast") }
             } label: {
-                Label("Fast", systemImage: enabled ? "bolt.fill" : "bolt")
-                    .font(.subheadline.weight(.semibold))
+                Image(systemName: enabled ? "bolt.fill" : "bolt")
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(enabled ? ChatTheme.sidebarAccent : ChatTheme.muted)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(enabled ? ChatTheme.sidebarAccent.opacity(0.12) : ChatTheme.inset, in: Capsule())
-                    .fixedSize(horizontal: true, vertical: false)
-                    .frame(minHeight: 44)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

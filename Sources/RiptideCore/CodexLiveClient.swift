@@ -51,11 +51,12 @@ public enum CodexLiveEvent: Equatable, Sendable {
     case assistantDelta(turnID: String, itemID: String, text: String)
     case assistantCompleted(turnID: String, itemID: String, text: String)
     case diff(turnID: String, patch: String)
+    case context(turnID: String, usage: ContextUsage?)
     case completed(turnID: String, status: String)
 
     var turnID: String {
         switch self {
-        case .output(let turnID, _), .assistantDelta(let turnID, _, _), .diff(let turnID, _),
+        case .output(let turnID, _), .assistantDelta(let turnID, _, _), .diff(let turnID, _), .context(let turnID, _),
              .assistantCompleted(let turnID, _, _), .completed(let turnID, _): turnID
         }
     }
@@ -618,10 +619,6 @@ public actor CodexLiveClient {
         if method == "turn/completed", let reportedTurn = params["turn"]?["id"]?.string,
            reportedTurn == latestCompletedTurn || (activeTurnID != nil && reportedTurn != activeTurnID) { return }
         if let progress = CodexWorkDecoder.decode(method, params) { emitChat.yield(.progress(progress)) }
-        if method == "thread/tokenUsage/updated", let usage = params["tokenUsage"],
-           let used = usage["last"]?["totalTokens"]?.integer, let capacity = usage["modelContextWindow"]?.integer {
-            emitChat.yield(.context(ContextUsage(used: used, capacity: capacity)))
-        }
         if method == "error", let message = params["error"]?["message"]?.string {
             emitChat.yield(.issue(params["willRetry"] == .boolean(true)
                                   ? "Codex is reconnecting…" : String(message.prefix(600))))
@@ -657,6 +654,10 @@ public actor CodexLiveClient {
         }
         guard let turnID = params["turnId"]?.string else { return nil }
         switch method {
+        case "thread/tokenUsage/updated":
+            guard let usage = params["tokenUsage"], let used = usage["last"]?["totalTokens"]?.integer else { return nil }
+            let context = usage["modelContextWindow"]?.integer.flatMap { ContextUsage(used: used, capacity: $0) }
+            return .context(turnID: turnID, usage: context)
         case "turn/diff/updated":
             return params["diff"]?.string.map { .diff(turnID: turnID, patch: $0) }
         case "item/commandExecution/outputDelta":

@@ -22,12 +22,17 @@ MODELS = [
 ]
 
 
-async def fixture(socket):
+async def fixture(socket, watch=False):
     async def send(body):
         await socket.send(json.dumps(body))
 
     async def notify(method, params):
         await send({"method": method, "params": {"threadId": CHAT, **params}})
+
+    async def notify_usage():
+        await notify("thread/tokenUsage/updated", {"turnId": TURN, "tokenUsage": {
+            "last": {"totalTokens": 8_000}, "modelContextWindow": 32_000,
+        }})
 
     async def conclude(text):
         nonlocal started
@@ -72,7 +77,7 @@ async def fixture(socket):
         except ConnectionClosed:
             return
 
-    thread = {"id": CHAT, "name": "Busy Codex fixture", "cwd": WORKSPACE, "status": {"type": "idle"}}
+    thread = {"id": CHAT, "name": "Busy Codex fixture", "cwd": WORKSPACE, "status": {"type": "active" if watch else "idle"}}
     thread_settings = {"model": "gpt-6.2-sol", "effort": "xhigh", "serviceTier": None}
     approval = None
     started = False
@@ -113,11 +118,14 @@ async def fixture(socket):
                 await notify("thread/settings/updated", {"threadSettings": thread_settings})
                 result = {}
             elif method == "thread/turns/list":
-                result = {"data": []}
+                result = {"data": [{"id": TURN, "status": "inProgress"}] if watch else []}
+                if watch:
+                    await notify_usage()
             elif method == "turn/start":
                 started = True
                 result = {"turn": {"id": TURN}}
                 await notify("turn/started", {"turn": {"id": TURN}})
+                await notify_usage()
                 inputs = packet.get("params", {}).get("input", [])
                 await notify("item/completed", {"turnId": TURN, "item": {
                     "id": "fixture-user-message", "type": "userMessage", "content": inputs,
@@ -136,12 +144,15 @@ async def fixture(socket):
             approval.cancel()
 
 
-async def run(port_file, tls=None):
+async def run(port_file, tls=None, watch=False):
     def authenticate(connection, request):
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return connection.respond(HTTPStatus.UNAUTHORIZED, "Fixture credential required.\n")
 
-    async with serve(fixture, "127.0.0.1", 0, process_request=authenticate, ssl=tls) as service:
+    async def handler(socket):
+        await fixture(socket, watch)
+
+    async with serve(handler, "127.0.0.1", 0, process_request=authenticate, ssl=tls) as service:
         port_file.write_text(str(service.sockets[0].getsockname()[1]), encoding="utf-8")
         await service.serve_forever()
 
@@ -151,6 +162,7 @@ if __name__ == "__main__":
     parser.add_argument("--port-file", required=True, type=Path)
     parser.add_argument("--tls-cert", type=Path)
     parser.add_argument("--tls-key", type=Path)
+    parser.add_argument("--watch", action="store_true", help="Report an active desktop turn with token usage.")
     args = parser.parse_args()
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key must be used together")
@@ -158,4 +170,4 @@ if __name__ == "__main__":
     if args.tls_cert:
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(args.tls_cert, args.tls_key)
-    asyncio.run(run(args.port_file, tls))
+    asyncio.run(run(args.port_file, tls, args.watch))

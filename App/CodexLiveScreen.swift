@@ -17,6 +17,7 @@ struct CodexLiveScreen: View {
     @State private var outputEvents = 0
     @State private var replies: [Reply] = []
     @State private var patch: String?
+    @State private var context: ContextUsage?
     @State private var viewport = TranscriptViewport()
     @FocusState private var editorFocused: Bool
 
@@ -117,7 +118,7 @@ struct CodexLiveScreen: View {
     private var composer: some View {
         ChatComposer(
             prompt: "Steer this turn", chatID: turn?.turnID, fieldID: "codex-steer-input", draft: $draft,
-            modelPickerVisible: .constant(false), editorFocus: $editorFocused,
+            modelPickerVisible: .constant(false), editorFocus: $editorFocused, context: context,
             canDictate: active && !steering, canSubmit: active && !steering,
             transcribe: DictationFixture.transcribe ?? endpoint.dictation.transcribe,
             steering: true, submit: submitDraft
@@ -137,6 +138,7 @@ struct CodexLiveScreen: View {
         outputEvents = 0
         replies = []
         patch = nil
+        context = nil
         do {
             let joined = try await peer.attach()
             turn = joined
@@ -153,6 +155,8 @@ struct CodexLiveScreen: View {
                     updateReply(itemID, text: text, appending: false)
                 case .diff(_, let update):
                     patch = update
+                case .context(_, let usage):
+                    context = usage
                 case .completed(_, let outcome):
                     status = outcome == "completed" ? "Turn completed" : "Turn \(outcome)"
                     active = false

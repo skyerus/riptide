@@ -8,6 +8,14 @@ final class WorkspaceUXUITests: XCTestCase {
         let fast = app.buttons["fast-mode"]
         let model = app.buttons["model-options"]
         XCTAssertTrue(fast.waitForExistence(timeout: 8))
+        let context = app.buttons["context-usage"]
+        XCTAssertEqual(context.value as? String, "Usage unavailable")
+        context.tap()
+        let unavailable = app.staticTexts["context-unavailable"]
+        XCTAssertTrue(unavailable.waitForExistence(timeout: 5))
+        capture(app, as: "Codex context unavailable")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        XCTAssertTrue(unavailable.waitForNonExistence(timeout: 5))
         XCTAssertEqual(model.value as? String, "6.2 Sol, Extra High")
         XCTAssertEqual(fast.value as? String, "Off")
         capture(app, as: "Codex Fast mode off")
@@ -35,6 +43,21 @@ final class WorkspaceUXUITests: XCTestCase {
         let updated = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "6.2 Astra, Medium"), object: model)
         XCTAssertEqual(XCTWaiter.wait(for: [updated], timeout: 5), .completed)
         XCTAssertTrue(fast.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(context.exists)
+    }
+
+    @MainActor
+    func testCodexDesktopWatcherShowsReportedContextUsage() throws {
+        continueAfterFailure = false
+        let app = try launchCodexFixture(portKey: "RIPTIDE_WATCH_FIXTURE_PORT")
+        app.buttons["watch-desktop-codex"].tap()
+        let context = app.buttons["context-usage"]
+        XCTAssertTrue(context.waitForExistence(timeout: 8))
+        context.tap()
+        let values = app.staticTexts["context-values"]
+        XCTAssertTrue(values.waitForExistence(timeout: 5))
+        XCTAssertEqual(values.label, "\(8_000.formatted()) of \(32_000.formatted()) tokens used")
+        capture(app, as: "Codex desktop watch context usage")
     }
 
     @MainActor
@@ -46,6 +69,7 @@ final class WorkspaceUXUITests: XCTestCase {
         openMainChat(in: app, agent: "hermes")
         let fast = app.buttons["fast-mode"]
         XCTAssertTrue(fast.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["context-usage"].exists)
         XCTAssertTrue(app.buttons["model-options"].exists)
         XCTAssertEqual(fast.value as? String, "Off")
         for value in ["On", "Off"] {
@@ -366,6 +390,12 @@ final class WorkspaceUXUITests: XCTestCase {
         let message = app.staticTexts["finish without approval Add a quick summary of the open items."]
         XCTAssertTrue(message.waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["A reply finished in the other workspace."].waitForExistence(timeout: 10))
+        let context = app.buttons["context-usage"]
+        XCTAssertEqual(context.value as? String, 0.25.formatted(.percent) + " used")
+        context.tap()
+        let values = app.staticTexts["context-values"]
+        XCTAssertTrue(values.waitForExistence(timeout: 5))
+        XCTAssertEqual(values.label, "\(8_000.formatted()) of \(32_000.formatted()) tokens used")
     }
 
     @MainActor
@@ -442,9 +472,9 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
-    private func openCodexFixture(dictation: Bool = false) throws -> (XCUIApplication, XCUIElement) {
-        guard let port = ProcessInfo.processInfo.environment["RIPTIDE_UX_FIXTURE_PORT"] else {
-            throw XCTSkip("Start Host/ux_codex_fixture.py and export the port to the test runner.")
+    private func launchCodexFixture(portKey: String = "RIPTIDE_UX_FIXTURE_PORT", dictation: Bool = false) throws -> XCUIApplication {
+        guard let port = ProcessInfo.processInfo.environment[portKey] else {
+            throw XCTSkip("Start Host/ux_codex_fixture.py and pass \(portKey) to the test runner.")
         }
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
@@ -454,6 +484,12 @@ final class WorkspaceUXUITests: XCTestCase {
         if dictation { app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE"] = "1" }
         app.launch()
         app.buttons["sidebar-agent-local-codex"].tap()
+        return app
+    }
+
+    @MainActor
+    private func openCodexFixture(dictation: Bool = false) throws -> (XCUIApplication, XCUIElement) {
+        let app = try launchCodexFixture(dictation: dictation)
         let row = app.buttons["sidebar-chat-busy-fixture-thread"]
         XCTAssertTrue(row.waitForExistence(timeout: 8))
         row.tap()

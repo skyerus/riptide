@@ -29,7 +29,7 @@ struct ChatComposer: View {
             }
             DictatingComposer(
                 focused: editorFocus.wrappedValue,
-                showsOptions: context != nil || settings.hasChoices || settings.modelName != nil,
+                showsOptions: true,
                 chatID: chatID,
                 canDictate: canDictate,
                 draft: $draft,
@@ -48,7 +48,7 @@ struct ChatComposer: View {
                     .disabled(!ready)
                     .accessibilityIdentifier(fieldID)
             } options: {
-                if let context { contextButton(context) }
+                contextButton
                 ChatModelControls(settings: settings, isExpanded: $modelPickerVisible)
                 FastModeButton(settings: settings)
             } actions: {
@@ -64,16 +64,18 @@ struct ChatComposer: View {
         }
     }
 
-    private func contextButton(_ usage: ContextUsage) -> some View {
+    private var contextButton: some View {
         Button {
             modelPickerVisible = false
             showContext = true
         } label: {
             ZStack {
                 Circle().strokeBorder(ChatTheme.border, lineWidth: 2)
-                Circle().trim(from: 0, to: usage.fraction)
-                    .stroke(ChatTheme.sidebarAccent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
+                if let context {
+                    Circle().trim(from: 0, to: context.fraction)
+                        .stroke(ChatTheme.sidebarAccent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
             }
             .frame(width: 17, height: 17)
             .frame(width: 44, height: 44)
@@ -81,20 +83,25 @@ struct ChatComposer: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Context window")
-        .accessibilityValue(usage.fraction.formatted(.percent.precision(.fractionLength(0))) + " used")
+        .accessibilityValue(context.map { $0.fraction.formatted(.percent.precision(.fractionLength(0))) + " used" } ?? "Usage unavailable")
         .accessibilityIdentifier("context-usage")
         .popover(isPresented: $showContext, arrowEdge: .bottom) {
-            if let current = context {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Context window").font(.headline)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Context window").font(.headline)
+                if let current = context {
                     Text("\(current.used.formatted()) of \(current.capacity.formatted()) tokens used")
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("context-values")
+                } else {
+                    Text("Token usage is unavailable for this chat.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("context-unavailable")
                 }
-                .padding(16)
-                .presentationCompactAdaptation(.popover)
             }
+            .padding(16)
+            .presentationCompactAdaptation(.popover)
         }
     }
 
