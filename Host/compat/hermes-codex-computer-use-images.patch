@@ -1,0 +1,14 @@
+diff --git a/tools/computer_use/tool.py b/tools/computer_use/tool.py
+index c9c1e54..a6a7745 100644
+--- a/tools/computer_use/tool.py
++++ b/tools/computer_use/tool.py
+@@ -851,6 +851,9 @@ def _should_route_through_aux_vision() -> bool:
+     config read is the signature-cached ``load_config_readonly``), so ``/model``, a profile switch or an
+     ``image_input_mode`` edit applies to the next screenshot instead of a stale verdict."""
+     stage = "import"
++    # The Riptide MCP subprocess sends screenshots directly to the current Codex turn.
++    if os.environ.get("RIPTIDE_CODEX_COMPUTER_USE") == "1":
++        return False
+     try:
+         from agent.auxiliary_client import _read_main_model, _read_main_provider
+         from hermes_cli.config import load_config_readonly

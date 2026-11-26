@@ -156,7 +156,7 @@ class Chrome:
                 raise ScreenError("Chrome control changed. Capture it again after handback.")
             payload = {**args, "app": "chrome"}
             if capture:
-                payload.update(pid=pid, window_id=window_id)
+                payload.update(mode=args.get("mode", "vision"), pid=pid, window_id=window_id)
             result = tool_result(self.native.handle_computer_use(payload, session_id=SERVER))
         finally:
             self.native.set_approval_callback(None)
@@ -174,7 +174,7 @@ def main():
     args = parser.parse_args()
     if not all(path.is_absolute() and path.is_dir() for path in (args.hermes_source, args.profile)):
         parser.error("Use the installed Hermes source and the paired profile’s absolute paths.")
-    os.environ.update(HERMES_HOME=str(args.profile), HERMES_INTERACTIVE="1")
+    os.environ.update(HERMES_HOME=str(args.profile), HERMES_INTERACTIVE="1", RIPTIDE_CODEX_COMPUTER_USE="1")
     sys.path.insert(0, str(args.hermes_source))
     writer = sys.stdout.buffer
     with redirect_stdout(sys.stderr):

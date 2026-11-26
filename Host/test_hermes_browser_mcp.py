@@ -20,7 +20,7 @@ class ChromeComputerUseTests(unittest.TestCase):
         self.native.handle_computer_use.assert_not_called()
         self.assertTrue(self.chrome.call("computer_use", {"action": "capture"}, None)["ok"])
         self.native.handle_computer_use.assert_called_once_with(
-            {"action": "capture", "app": "chrome", "window_id": 33, "pid": 123}, session_id="riptide_hermes_browser"
+            {"action": "capture", "app": "chrome", "mode": "vision", "window_id": 33, "pid": 123}, session_id="riptide_hermes_browser"
         )
         self.state.epoch += 2
         self.assertIn("error", self.chrome.call("computer_use", {"action": "key", "keys": "ctrl+l"}, None))
