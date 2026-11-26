@@ -7,32 +7,40 @@ struct WorkspaceSidebar: View {
     @State private var editing = false
     @State private var creatingGroup = false
 
+    private var title: String {
+        switch workspace.sidebarTab {
+        case .inbox: "Inbox"
+        case .agents: "Agents"
+        case .groups: "Group chats"
+        }
+    }
+
     var body: some View {
-        let selectedAgent = workspace.sidebarTab.agentID.flatMap { workspace.agent($0) }
-        let showingGroups = workspace.sidebarTab == .groups
         VStack(spacing: 0) {
-            header(title: showingGroups ? "Group chats" : selectedAgent?.name ?? "Inbox")
-            WorkspaceRail(selected: workspace.sidebarTab)
-            if showingGroups {
-                HermesGroupCatalog(sources: workspace.hermesGroupSources, creating: $creatingGroup)
-            } else if let selectedAgent {
-                SidebarAgentChats(agent: selectedAgent).id(selectedAgent.id)
-            } else {
-                WorkspaceInboxList().id(workspace.inboxReset)
-            }
+            header(title: title)
+            content
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    WorkspaceTabBar(selected: workspace.sidebarTab)
+                }
         }
         .frame(maxWidth: ChatTheme.readingWidth)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ChatTheme.background.ignoresSafeArea())
         .navigationTitle("Workspaces")
         .toolbar(.hidden, for: .navigationBar)
-        .onChange(of: workspace.railAgents(selected: nil).map(\.id)) { _, available in
-            if let id = workspace.sidebarTab.agentID, !available.contains(id) {
-                workspace.showSidebar(.inbox)
-            }
-        }
         .sheet(isPresented: $editing) { WorkspaceEditor().environment(workspace) }
+    }
 
+    @ViewBuilder
+    private var content: some View {
+        switch workspace.sidebarTab {
+        case .inbox:
+            WorkspaceInboxList().id(workspace.inboxReset)
+        case .agents:
+            AgentGrid()
+        case .groups:
+            HermesGroupCatalog(sources: workspace.hermesGroupSources, creating: $creatingGroup)
+        }
     }
 
     private func header(title: String) -> some View {
@@ -49,8 +57,10 @@ struct WorkspaceSidebar: View {
                     .accessibilityIdentifier("inbox-notifications")
             }
             if workspace.sidebarTab == .groups {
-                sidebarAction("New group chat", symbol: "plus") { creatingGroup = true }
-                    .accessibilityIdentifier("new-hermes-group")
+                if !workspace.hermesGroupSources.isEmpty {
+                    sidebarAction("New group chat", symbol: "plus") { creatingGroup = true }
+                        .accessibilityIdentifier("new-hermes-group")
+                }
             } else {
                 sidebarAction("Manage agents", symbol: "pencil") { editing = true }
                     .accessibilityIdentifier("edit-roster")
@@ -77,13 +87,14 @@ struct WorkspaceSidebar: View {
     }
 }
 
-private struct SidebarAgentChats: View {
+struct AgentWorkspaceScreen: View {
     let agent: WorkspaceAgent
     @Environment(WorkspaceState.self) private var workspace
     @State private var loading = true
     @State private var failure: String?
     @State private var voiceEndpoint: CodexLocalEndpoint?
     @State private var showingCall = false
+    @State private var editingPhoto = false
 
     private var isCodex: Bool { agent.id == WorkspaceState.localID || workspace.profile(agent.id)?.kind == .codex }
 
@@ -151,6 +162,27 @@ private struct SidebarAgentChats: View {
         .listSectionSpacing(12)
         .scrollContentBackground(.hidden)
         .background(ChatTheme.background)
+        .navigationTitle(agent.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Button {
+                    editingPhoto = true
+                } label: {
+                    HStack(spacing: 8) {
+                        AgentAvatar(agent: agent, size: 30)
+                        Text(agent.name).font(.headline).lineLimit(1)
+                    }
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Edit profile photo")
+                .accessibilityIdentifier("agent-workspace-heading")
+            }
+        }
+        .sheet(isPresented: $editingPhoto) {
+            AgentAvatarEditor(agent: agent).environment(workspace)
+        }
         .task { await reload() }
         .refreshable { await reload() }
         .sheet(isPresented: $showingCall) {

@@ -4,6 +4,18 @@ import XCTest
 
 final class HermesGroupsUITests: XCTestCase {
     @MainActor
+    func testGroupsShowsPairingPromptWithoutHermes() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launch()
+
+        app.buttons["sidebar-group-chats"].tap()
+        XCTAssertTrue(app.staticTexts["Connect a Hermes agent"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["new-hermes-group"].exists)
+        capture(app, "riptide-group-list-no-connection")
+    }
+
+    @MainActor
     func testPastedPDFReachesTheGroupThread() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
@@ -95,7 +107,7 @@ final class HermesGroupsUITests: XCTestCase {
         app.buttons["sidebar-group-chats"].tap()
         let saved = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Month-end review")).firstMatch
         XCTAssertTrue(saved.waitForExistence(timeout: 8))
-        XCTAssertTrue(saved.label.contains("Hermes VPS"))
+        XCTAssertTrue(saved.label.contains("2 bots · Hermes VPS"))
         XCTAssertTrue(editorial.exists)
         capture(app, "riptide-group-list")
         saved.tap()

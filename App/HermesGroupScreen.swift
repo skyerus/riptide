@@ -46,46 +46,36 @@ struct HermesGroupCatalog: View {
     var body: some View {
         let rooms = rooms
         List {
-            ForEach(rooms) { link in
-                Button {
-                    workspace.openHermesGroup(link.room.id, in: link.source.id)
-                } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        WorkspaceRow(title: link.room.name,
-                                     subtitle: link.room.members.map(\.label).joined(separator: ", "),
-                                     symbol: "person.2")
-                        Text(link.source.name)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(ChatTheme.muted)
-                            .padding(.leading, WorkspaceRow.textInset)
+            Section {
+                ForEach(rooms) { link in
+                    Button {
+                        workspace.openHermesGroup(link.room.id, in: link.source.id)
+                    } label: {
+                        WorkspaceRow(
+                            title: link.room.name,
+                            subtitle: groupByline(botCount: link.room.members.count, workspaceName: link.source.name),
+                            symbol: "person.2",
+                            color: ChatTheme.muted
+                        )
+                        .accessibilityElement(children: .combine)
                     }
-                    .accessibilityElement(children: .combine)
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("hermes-group-row-\(link.room.id)")
+                    .sidebarRowStyle(divider: link.id != rooms.last?.id)
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("hermes-group-row-\(link.room.id)")
-                .sidebarRowStyle(divider: link.id != rooms.last?.id)
-            }
-            ForEach(sources) { source in
-                if let failure = snapshots[source.id]?.failure {
-                    Text("\(source.name) · \(failure)")
-                        .foregroundStyle(ChatTheme.muted).font(.footnote).sidebarRowStyle()
+                ForEach(sources) { source in
+                    if let failure = snapshots[source.id]?.failure {
+                        WorkspaceRow(title: source.name, subtitle: failure,
+                                     symbol: "exclamationmark.circle", color: ChatTheme.warning)
+                            .sidebarRowStyle()
+                    }
                 }
+                if rooms.isEmpty { emptyRows }
             }
-            if rooms.isEmpty {
-                if sources.contains(where: { snapshots[$0.id] == nil }) {
-                    ProgressView("Loading group chats…").sidebarRowStyle()
-                } else if availableSources.isEmpty {
-                    ContentUnavailableView("Group chats unavailable", systemImage: "person.2",
-                                           description: Text("Enable group chat access on a paired Hermes connection."))
-                        .sidebarRowStyle()
-                } else if availableSources.contains(where: { snapshots[$0.id]?.failure == nil }) {
-                    ContentUnavailableView("No group chats yet", systemImage: "person.2",
-                                           description: Text("Tap + to start a conversation with your bots."))
-                        .sidebarRowStyle()
-                }
-            }
+            .listSectionSeparator(.hidden)
         }
         .listStyle(.plain)
+        .listSectionSpacing(12)
         .scrollContentBackground(.hidden)
         .background(ChatTheme.background)
         .refreshable { await reload() }
@@ -97,7 +87,7 @@ struct HermesGroupCatalog: View {
             .environment(workspace)
         }
         .task(id: scenePhase == .active && workspace.path.isEmpty ? sources.map(\.id) : nil) {
-            guard scenePhase == .active, workspace.path.isEmpty else { return }
+            guard !sources.isEmpty, scenePhase == .active, workspace.path.isEmpty else { return }
             while !Task.isCancelled {
                 await reload()
                 try? await Task.sleep(for: .seconds(15))
@@ -105,8 +95,27 @@ struct HermesGroupCatalog: View {
         }
     }
 
+    @ViewBuilder
+    private var emptyRows: some View {
+        if sources.isEmpty {
+            groupStatusRow("Connect a Hermes agent", detail: "Pair a Hermes agent to start a group chat.")
+        } else if sources.contains(where: { snapshots[$0.id] == nil }) {
+            ProgressView("Loading group chats…").sidebarRowStyle()
+        } else if availableSources.isEmpty {
+            groupStatusRow("Group chats unavailable", detail: "Enable group chat access on a paired Hermes connection.")
+        } else if availableSources.contains(where: { snapshots[$0.id]?.failure == nil }) {
+            groupStatusRow("No group chats yet", detail: "Tap + to start a conversation with your bots.")
+        }
+    }
+
+    private func groupStatusRow(_ title: String, detail: String) -> some View {
+        WorkspaceRow(title: title, subtitle: detail, symbol: "person.2", color: ChatTheme.muted)
+            .padding(.vertical, 8)
+            .sidebarRowStyle()
+    }
+
     private func reload() async {
-        guard !loading else { return }
+        guard !sources.isEmpty, !loading else { return }
         loading = true
         defer { loading = false }
         await withTaskGroup(of: (String, Snapshot).self) { requests in
@@ -401,8 +410,7 @@ struct HermesGroupScreen: View {
     }
 
     private var roomByline: String {
-        if session.members.isEmpty { return workspaceName }
-        return "\(session.members.count) bots · \(workspaceName)"
+        groupByline(botCount: session.members.count, workspaceName: workspaceName)
     }
 
     private var transcript: some View {
@@ -642,4 +650,10 @@ private struct GroupIdentityIcon: View {
             .background(ChatTheme.sidebarAccent.opacity(0.13), in: Circle())
             .accessibilityHidden(true)
     }
+}
+
+private func groupByline(botCount: Int, workspaceName: String) -> String {
+    guard botCount > 0 else { return workspaceName }
+    let bots = botCount == 1 ? "1 bot" : "\(botCount) bots"
+    return "\(bots) · \(workspaceName)"
 }

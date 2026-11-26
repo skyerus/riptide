@@ -91,7 +91,9 @@ private struct WorkspaceDestination: View {
 
     @ViewBuilder
     private var destination: some View {
-        if let id = route.hermesGroup {
+        if route.showsAgentWorkspace, let agent = workspace.agent(route.workspace) {
+            AgentWorkspaceScreen(agent: agent)
+        } else if let id = route.hermesGroup {
             if let session = workspace.hermesGroupSession(roomID: id, workspaceID: route.workspace) {
                 HermesGroupScreen(workspaceName: workspace.agent(route.workspace)?.name ?? "Hermes", session: session)
             } else {
@@ -159,9 +161,8 @@ struct WorkspaceSwitcherButton: View {
                     Button("Back to \(previous.name)", systemImage: "arrow.uturn.backward") { workspace.open(previous.id) }
                 }
                 Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
-                if !workspace.hermesGroupSources.isEmpty {
-                    Button("Open Group chats", systemImage: "person.2") { workspace.showSidebar(.groups) }
-                }
+                Button("Open Agents", systemImage: "person.crop.circle") { workspace.showSidebar(.agents) }
+                Button("Open Group chats", systemImage: "person.2") { workspace.showSidebar(.groups) }
             }
     }
 }
@@ -208,93 +209,91 @@ private struct WorkspaceFlickNavigation: ViewModifier {
     }
 }
 
-struct WorkspaceRail: View {
+struct WorkspaceTabBar: View {
     let selected: WorkspaceTab
     @Environment(WorkspaceState.self) private var workspace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selection
 
     var body: some View {
-        let waiting = workspace.inboxRows.count
-        let urgent = Set(workspace.approvalIDs.map(\.chat.workspace))
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal) {
-                HStack(spacing: 4) {
-                    tab(.inbox, title: "Inbox", symbol: "tray", identifier: "sidebar-inbox",
-                        value: waiting == 0 ? "All caught up" : "\(waiting) waiting") {
-                        if waiting > 0 {
-                            Text(waiting > 99 ? "99+" : waiting.formatted())
-                                .font(.caption2.weight(.semibold).monospacedDigit())
-                                .foregroundStyle(ChatTheme.sidebarAccent)
-                                .accessibilityHidden(true)
-                        }
-                    }
-                    .padding(.leading, ChatTheme.gutter)
-                    .id(WorkspaceTab.inbox)
-                    if !workspace.hermesGroupSources.isEmpty {
-                        tab(.groups, title: "Groups", symbol: "person.2", identifier: "sidebar-group-chats", value: "") {
-                            EmptyView()
-                        }
-                        .id(WorkspaceTab.groups)
-                    }
-                    ForEach(workspace.railAgents(selected: selected.agentID)) { agent in
-                        tab(.agent(agent.id), title: agent.name, symbol: agent.symbol,
-                            identifier: "sidebar-agent-\(agent.id)",
-                            value: urgent.contains(agent.id) ? "Needs attention" : "") {
-                            if urgent.contains(agent.id) {
-                                Circle().fill(ChatTheme.attention).frame(width: 5, height: 5)
-                                    .accessibilityHidden(true)
-                            }
-                        }
-                        .id(WorkspaceTab.agent(agent.id))
-                    }
-                }
-                .padding(.trailing, ChatTheme.gutter)
-            }
-            .scrollIndicators(.hidden)
-            .accessibilityIdentifier("sidebar-workspace-tabs")
-            .onAppear { proxy.scrollTo(selected, anchor: selected == .inbox ? .leading : .center) }
-            .onChange(of: selected) {
-                withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
-                    proxy.scrollTo(selected, anchor: selected == .inbox ? .leading : .center)
-                }
+        ViewThatFits(in: .horizontal) {
+            tabs(expand: true)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) { tabs(expand: false) }
+                    .scrollIndicators(.hidden)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onAppear { proxy.scrollTo(selected, anchor: .center) }
+                    .onChange(of: selected) { proxy.scrollTo(selected, anchor: .center) }
             }
         }
-        .padding(.bottom, 10)
-        .background(ChatTheme.background)
+        .padding(4)
+        .chatGlass(in: Capsule())
+        .padding(.horizontal, ChatTheme.gutter)
+        .padding(.top, 8)
+        .padding(.bottom, 3)
         .sensoryFeedback(.selection, trigger: selected)
     }
 
-    private func tab<Accessory: View>(
-        _ target: WorkspaceTab, title: String, symbol: String, identifier: String, value: String,
-        @ViewBuilder accessory: () -> Accessory
+    private func tabs(expand: Bool) -> some View {
+        let waiting = workspace.inboxRows.count
+        return HStack(spacing: 3) {
+            tab(.inbox, title: "Inbox", symbol: "tray", selectedSymbol: "tray.fill",
+                identifier: "sidebar-inbox", expand: expand, waiting: waiting)
+            tab(.agents, title: "Agents", symbol: "person.crop.circle", selectedSymbol: "person.crop.circle.fill",
+                identifier: "sidebar-agents", expand: expand)
+            tab(.groups, title: "Groups", symbol: "person.2", selectedSymbol: "person.2.fill",
+                identifier: "sidebar-group-chats", expand: expand)
+        }
+        .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: selected)
+    }
+
+    private func tab(
+        _ target: WorkspaceTab, title: String, symbol: String, selectedSymbol: String,
+        identifier: String, expand: Bool, waiting: Int? = nil
     ) -> some View {
         let isSelected = selected == target
         return Button {
-            guard !isSelected else { return }
-            workspace.showSidebar(target)
+            if !isSelected { workspace.showSidebar(target) }
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: symbol)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(isSelected ? ChatTheme.sidebarAccent : ChatTheme.muted)
+            VStack(spacing: 3) {
+                Image(systemName: isSelected ? selectedSymbol : symbol)
+                    .font(.system(size: 19, weight: .medium))
+                    .frame(width: 28, height: 22)
+                    .overlay(alignment: .trailing) {
+                        if let waiting, waiting > 0 {
+                            Text(waiting > 99 ? "99+" : waiting.formatted())
+                                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                                .padding(.horizontal, 4)
+                                .frame(minWidth: 16, minHeight: 16)
+                                .foregroundStyle(ChatTheme.background)
+                                .background(ChatTheme.sidebarAccent, in: Capsule())
+                                .offset(x: 13, y: -6)
+                        }
+                    }
                     .accessibilityHidden(true)
-                Text(title).lineLimit(1)
-                accessory()
+                Text(title)
+                    .font(.footnote.weight(.medium))
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .font(.subheadline.weight(isSelected ? .semibold : .medium))
-            .foregroundStyle(isSelected ? ChatTheme.ink : ChatTheme.muted)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 8)
-            .frame(minHeight: 36)
-            .background(isSelected ? ChatTheme.raised : .clear, in: Capsule())
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
+            .foregroundStyle(isSelected ? ChatTheme.ink : ChatTheme.ink.opacity(0.76))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(minWidth: 44, maxWidth: expand ? .infinity : nil, minHeight: 49)
+            .background {
+                if isSelected {
+                    Capsule().fill(.black.opacity(0.54))
+                        .matchedGeometryEffect(id: "selected-workspace-tab", in: selection)
+                        .transition(.identity)
+                }
+            }
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
-        .accessibilityValue(value)
+        .accessibilityValue(waiting.map { $0 == 0 ? "All caught up" : "\($0) waiting" } ?? "")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier(identifier)
+        .id(target)
     }
 }
 
@@ -349,15 +348,20 @@ private struct WorkspaceSwitcher: View {
                         Label("Inbox", systemImage: "tray")
                     }
                     .accessibilityIdentifier("switcher-inbox")
-                    if !workspace.hermesGroupSources.isEmpty {
-                        Button {
-                            workspace.sidebarRequested = .groups
-                            dismiss()
-                        } label: {
-                            Label("Group chats", systemImage: "person.2")
-                        }
-                        .accessibilityIdentifier("switcher-group-chats")
+                    Button {
+                        workspace.sidebarRequested = .agents
+                        dismiss()
+                    } label: {
+                        Label("Agents", systemImage: "person.crop.circle")
                     }
+                    .accessibilityIdentifier("switcher-agents")
+                    Button {
+                        workspace.sidebarRequested = .groups
+                        dismiss()
+                    } label: {
+                        Label("Group chats", systemImage: "person.2")
+                    }
+                    .accessibilityIdentifier("switcher-group-chats")
                 }
                 if parsed.isEmpty { liveSection(names: names) }
                 if parsed.isEmpty && !matchingChats.isEmpty { chats(matchingChats, names: names, recent: true) }

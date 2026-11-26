@@ -9,10 +9,10 @@ final class HermesSSHUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launch()
-        let hermes = app.scrollViews["sidebar-workspace-tabs"].buttons
+        let hermes = app.showAgentGrid().buttons
             .matching(NSPredicate(format: "label == %@", label)).firstMatch
         XCTAssertTrue(hermes.waitForExistence(timeout: 12))
-        if !hermes.isSelected { hermes.tap() }
+        hermes.tap()
         let main = app.buttons["sidebar-main-chat"]
         XCTAssertTrue(main.waitForExistence(timeout: 10))
         main.tap()
@@ -56,10 +56,10 @@ final class HermesSSHUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launch()
-        let hermes = app.scrollViews["sidebar-workspace-tabs"].buttons
+        let hermes = app.showAgentGrid().buttons
             .matching(NSPredicate(format: "label == %@", label)).firstMatch
         XCTAssertTrue(hermes.waitForExistence(timeout: 12))
-        if !hermes.isSelected { hermes.tap() }
+        hermes.tap()
         let main = app.buttons["sidebar-main-chat"]
         XCTAssertTrue(main.waitForExistence(timeout: 10))
         main.tap()
@@ -95,10 +95,10 @@ final class HermesSSHUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launch()
-        let hermes = app.scrollViews["sidebar-workspace-tabs"].buttons
+        let hermes = app.showAgentGrid().buttons
             .matching(NSPredicate(format: "label == %@", label)).firstMatch
         XCTAssertTrue(hermes.waitForExistence(timeout: 12))
-        if !hermes.isSelected { hermes.tap() }
+        hermes.tap()
         let main = app.buttons["sidebar-main-chat"]
         XCTAssertTrue(main.waitForExistence(timeout: 10))
         main.tap()
@@ -178,10 +178,10 @@ final class HermesSSHUITests: XCTestCase {
         if !onboarding { app.navigationBars["Manage agents"].buttons["Done"].tap() }
 
         func openHermes() {
-            let hermes = app.scrollViews["sidebar-workspace-tabs"].buttons
+            let hermes = app.showAgentGrid().buttons
                 .matching(NSPredicate(format: "label == %@", label)).firstMatch
             XCTAssertTrue(hermes.waitForExistence(timeout: 12))
-            if !hermes.isSelected { hermes.tap() }
+            hermes.tap()
             button("sidebar-main-chat").tap()
         }
 

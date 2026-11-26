@@ -46,13 +46,14 @@ final class FirstAgentOnboardingUITests: XCTestCase {
         form.buttons["Pair"].tap()
 
         let inbox = app.buttons["sidebar-inbox"]
-        let agent = app.scrollViews["sidebar-workspace-tabs"].buttons["My Codex"]
+        let agent = app.scrollViews["agent-grid"].buttons["My Codex"]
         guard inbox.waitForExistence(timeout: 15) else {
             let issue = app.staticTexts["pair-error"]
             XCTFail(issue.exists ? issue.label : "Pairing did not open Inbox.")
             return
         }
         XCTAssertTrue(inbox.isSelected)
+        app.showAgentGrid()
         XCTAssertTrue(agent.exists)
         XCTAssertFalse(app.buttons["sidebar-agent-hermes"].exists)
         XCTAssertFalse(app.buttons["sidebar-agent-openclaw"].exists)
@@ -60,6 +61,7 @@ final class FirstAgentOnboardingUITests: XCTestCase {
         app.terminate()
         app.launch()
         XCTAssertTrue(inbox.waitForExistence(timeout: 8))
+        app.showAgentGrid()
         XCTAssertTrue(agent.exists)
         XCTAssertFalse(app.staticTexts["Connect your first agent"].exists)
         agent.tap()
