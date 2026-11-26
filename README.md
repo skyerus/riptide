@@ -113,7 +113,7 @@ With the updated iPhone app and host payload, create a directory owned by the ag
 
 - **SSH** — Add `--agent-profile-state /absolute/path/to/agent.json` before the `--` separator in the paired key’s fixed `ssh_acp.py` command. For an existing versioned pairing, pass the same option to `Host/update_ssh_release.py`. Repeat for each agent you want to enable, with its own file.
 - **Private WebSocket ACP** — Pass `--agent-profile-state /absolute/path/to/agent.json` to `Host/acp_bridge.py` before the fixed agent command.
-- **Hermes using Codex App Server** — Apply [the agent profile adapter](Host/compat/hermes-gateway-agent-profile.patch) on top of [the Hermes gateway pairing adapter](Host/compat/hermes-gateway-pairing.md). Reconnect the chat after enabling the feature. The native Hermes MCP route uses the shared tool directly.
+- **Hermes using Codex App Server** — Apply [the Hermes gateway pairing adapter](Host/compat/hermes-gateway-pairing.md). Reconnect the chat after enabling the feature. The native Hermes MCP route uses the shared tool directly.
 
 ### Hermes group chats over SSH
 
@@ -149,81 +149,30 @@ The SSH launcher adds the `riptide_pairing` MCP server to the paired chat when `
 
 Hermes' native runtime uses MCP form elicitation. For Hermes chats running through Codex App Server, apply [the gateway pairing adapter](Host/compat/hermes-gateway-pairing.md) to route the same form into the current Riptide chat. Install or update `Host/hermes-pairing/SKILL.md` under the source profile's `skills/riptide-hermes-pairing/` for pairing guidance and the native `clarify` fallback on older trusted connections.
 
-For a gateway-managed Hermes chat, [the reconnect status patch](Host/compat/hermes-acp-turn-status.patch) lets Riptide recover the **Working** indicator from the same chat when SSH reconnects. Apply the patch from the Riptide release to the Hermes source at revision `8fc0374447313e276f6b9a2764bfc750190c966a`. Run `git apply --check /path/to/riptide/Host/compat/hermes-acp-turn-status.patch` before applying it with `git apply`. The next SSH connection starts a fresh ACP process and picks up the patch. Use `git apply -R` with the same patch to roll back. The patch can be applied alongside the Hermes Safari and ACP steering compatibility patches.
+For a gateway-managed Hermes chat, [the reconnect status patch](Host/compat/hermes-acp-turn-status.patch) lets Riptide recover the **Working** indicator from the same chat when SSH reconnects. Apply the patch from the Riptide release to the Hermes source at revision `8fc0374447313e276f6b9a2764bfc750190c966a`. Run `git apply --check /path/to/riptide/Host/compat/hermes-acp-turn-status.patch` before applying it with `git apply`. The next SSH connection starts a fresh ACP process and picks up the patch. Use `git apply -R` with the same patch to roll back. The patch can be applied alongside the gateway pairing and ACP steering compatibility patches.
 
 ### Hermes browser handoff over SSH
 
-Configure native [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) in the Hermes profile that owns the chat. Install its listed Linux packages, set `browser.headed` and `bot_desktop.auto_start` to `true`, and install the `websockets` Python package for the interpreter in the forced command. Install `Host/hermes_screen.py` and `Host/hermes_mobile.py` beside the updated `Host/ssh_acp.py` at the same trusted path. Add `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` before `--` in the authorized key’s fixed command. Give this option only to devices trusted to control that profile’s native desktop.
+Configure [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) on the Linux gateway. Install its desktop packages, set `bot_desktop.auto_start: true` and `model.openai_runtime: codex_app_server` in the paired profile, and apply [the Hermes gateway patches](Host/compat/hermes-gateway-pairing.md). The SSH wrapper needs `websockets` and `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` in the key’s forced command. Give this option only to devices trusted to control the profile’s desktop.
 
-On a Debian or Ubuntu gateway host, run the following from the Riptide release as the owner of the Hermes profile. It installs Google Chrome Stable through APT, selects it for both Hermes and the Bot Screen launcher, and refreshes Bot Screen. The browser keeps the profile already configured in Hermes. Hand back control before running the update.
+On Debian or Ubuntu, run this from the exact Riptide release as the owner of the Hermes profile. It installs Google Chrome Stable and Hermes’s native desktop driver. The desktop launcher opens Chrome with the existing profile and its sessions.
 
 ```sh
 bash Host/deploy/install-hermes-stable-chrome.sh /absolute/path/to/hermes /absolute/hermes/profile/home
 ```
 
-In a paired chat, open **Chat actions → Open Hermes browser** and tap **Take over**. On resizable Bot Screen hosts, Riptide fits the display to the iPhone and enables Chrome’s mobile viewport, touch emulation, and mobile browser identity while you have control. Chrome uses the mobile identity for subsequent requests. If the site had already served desktop-specific HTML, use Chrome’s reload button when it’s safe to refresh the page. Swipe to scroll the page, or tap **Show keyboard** to type. To use a saved password, focus the password field on the remote page and open **Passwords** in Riptide. Use the iOS keyboard’s Password AutoFill picker and tap **Send** to enter it in the remote browser. Riptide sends it over the active SSH connection and does not save it. For arbitrary websites, use the picker to select the credential.
-
-**Hand back** returns control to Hermes and focuses the message field in the same chat. A handoff requested by Hermes also completes its pending browser request. If the connection drops while you are typing, reopen the browser, take over again, then hand back when ready. The adapter uses Hermes’s owner-only gateway ticket and its native control lease and display stream. It uses the existing SSH port and the phone’s existing device key. The viewer uses [noVNC 1.7.0](https://github.com/novnc/noVNC/tree/v1.7.0).
-
-Install `Host/hermes-browser-handoff/SKILL.md` under the Hermes profile’s `skills/riptide-browser-handoff/` to teach Hermes to request the handoff in chat. Riptide recognises the skill’s native `clarify` request and answers it only after Hermes confirms handback. These notifications use the active chat connection.
-
-For an existing SSH deployment laid out as `<releases-dir>/<git-sha>/Host`, use `Host/update_ssh_release.py` from a checkout or archive of the exact release. Run it as the OS account that owns the pairing. It stages the versioned payload, verifies the existing routes, and switches the selected key while keeping its SSH options and agent command.
+For an existing versioned SSH deployment, stage the matching release and enable the Chrome connector for the paired device:
 
 ```sh
 python3 -B Host/update_ssh_release.py --fingerprint 'SHA256:…' \
   --releases-dir /absolute/riptide/releases \
-  --previous "$previous_sha" --revision "$release_sha"
+  --previous "$previous_sha" --revision "$release_sha" \
+  --hermes-browser-mcp /absolute/hermes/venv/bin/python /absolute/path/to/hermes-source
 ```
 
-For agent-driven handoffs, use Hermes’s default tool runtime (`model.openai_runtime: auto`) and enable `browser` and `clarify` for ACP, alongside the profile’s existing toolsets. Hermes can use the `openai-codex` subscription provider in that runtime. A separate Hermes profile lets you keep browser work and its login sessions separate from chats using the optional Codex App Server runtime.
+Install `Host/hermes-browser-handoff/SKILL.md` under the profile’s `skills/riptide-browser-handoff/` and reopen the paired chat. Codex App Server uses Chrome through Hermes’s Linux computer-use driver. Its browser tool is scoped to the paired profile and follows the Bot Screen control lease.
 
-### Safari handoff through MCP
-
-The Riptide iPhone app bundles a Safari extension that lets an agent continue in the exact tab where you sign in. The agent requests an HTTPS site, waits for you to share the tab, then reads the page and clicks or fills its controls through MCP. Safari uses the existing Riptide SSH pairing and keeps the sign-in session on your phone. Keep the shared tab visible until the agent finishes. **Take back control** stops sharing from Safari at any time. Device builds sign the extension’s bundle ID, app.riptide.client.safari, with the same team as Riptide.
-
-#### Install on an existing Linux SSH host
-
-Pair the agent over SSH first. On the host, sign in as the same OS account that owns the pairing and run this from the Riptide checkout with Python 3.11+, Python’s `venv` module, OpenSSH and a running systemd user manager. Paste the public key shown in Riptide’s SSH setup, including its `ssh-ed25519` prefix.
-
-```sh
-python3 Host/install_safari.py --key 'ssh-ed25519 AAAA... riptide-device'
-```
-
-The installer starts a private user service, checks the Safari SSH route and updates the selected key’s existing forced command. It detects the configured runtime for Hermes. For a custom Hermes profile, pass `--hermes-config /absolute/profile/config.yaml`. For another agent, pass `--runtime stdio` and add the printed MCP server entry to that agent’s configuration. If a persistent Hermes gateway launches Codex, also follow the [Hermes gateway instructions](Host/compat/hermes-gateway-safari.md). The installer scopes the Codex launcher to the paired ACP process.
-
-For the relay to stay up after logout and start at boot, enable lingering for the agent’s OS account if it is not already enabled. An administrator can run `loginctl enable-linger <agent-account>`. Run the installer once per paired key. You can rerun it after updating Riptide. An existing manually configured Safari route stays under manual management. The manual setup below also works on hosts with a different service supervisor.
-
-Reopen the chat in Riptide after installation. In Safari, open **Manage Extensions**, enable **Riptide**, and select the paired agent in the extension if prompted.
-
-#### Manual host setup
-
-1. Put the files from `Host/` on the agent host and run the relay under the same OS account as the MCP process. Python 3.11 or newer is required. Keep this process running with your usual service supervisor.
-
-   ```sh
-   python3 Host/safari_bridge.py serve
-   ```
-
-2. Install `Host/safari_bridge.py` beside the updated `Host/ssh_acp.py` at a trusted path. In the existing Riptide device key’s OpenSSH forced command, add `--safari /absolute/state/dir/browser.sock <unique-device-id>` before `--` and keep its workspace and optional Bot Screen arguments. Use a different device ID per key, for example an OpenSSL-generated 32-character hex string. Point the flag at the relay’s `browser.sock` (default `~/.local/state/riptide-safari/browser.sock`). The relay has separate mode-0600 Unix sockets for the SSH browser channel and MCP. Run them under the same OS account and use distinct relay state for separate agent profiles.
-3. Launch Riptide once after updating to make its existing SSH pairings available to Safari from a device-only shared Keychain group. Enable **Riptide** in Safari’s **Manage Extensions**, then open the extension and choose an agent if prompted. To revoke a device, remove its existing OpenSSH key and end any active handoff. The MCP can end a share with `safari_finish`.
-4. Install the stdio connector with `python3 -m venv ~/.local/share/riptide-safari-mcp` and `~/.local/share/riptide-safari-mcp/bin/pip install -r Host/safari-requirements.txt`. Add that environment’s Python and the absolute path to `Host/safari_mcp.py` to your agent’s MCP configuration. For Hermes, add this entry to the paired profile’s `config.yaml`. If `platform_toolsets.acp` explicitly lists MCP servers, include `riptide_safari` there too. Use `--state-dir` on both commands when choosing a custom relay state directory. Reload the agent tools and start a new chat if your agent caches tool discovery.
-
-   ```yaml
-   mcp_servers:
-     riptide_safari:
-       command: /home/agent/.local/share/riptide-safari-mcp/bin/python
-       args: [/absolute/path/to/Host/safari_mcp.py]
-       timeout: 90
-   ```
-
-For Hermes ACP, you can also install `safari_mcp.py` beside `ssh_acp.py` and add `--safari-mcp-python /absolute/path/to/venv/bin/python` to the same forced command before `--`. Hermes receives the connector on new and reopened SSH chat sessions for that key. The phone still sends an empty MCP list.
-
-Hermes with `model.openai_runtime: codex_app_server` uses Codex’s own MCP configuration. Set `model.codex_bin` to a launcher that runs `python3 /absolute/path/to/Host/safari_codex.py /absolute/path/to/codex "$@"`. In the paired key’s ACP launch command, set `RIPTIDE_SAFARI_CODEX_PYTHON` to the MCP virtual environment’s Python and `RIPTIDE_SAFARI_CODEX_STATE_DIR` to the same relay state directory used by that key. The launcher attaches the connector only for that environment.
-
-When Hermes ACP forwards turns to a persistent gateway, the gateway owns the Codex process. On Hermes revision `8fc0374447313e276f6b9a2764bfc750190c966a`, use [the gateway compatibility patch](Host/compat/hermes-gateway-safari.md) with the paired key’s `--safari-mcp-python` option. That forwards the chat’s Safari connector to Codex.
-
-For an existing pairing, update both the iPhone app and the installed Riptide host files before using chat handback.
-
-Ask your agent to use **Riptide Safari** and post the sign-in link in the Riptide chat. Open the link, sign in, then return to the same chat and tell the agent when you’re ready. The agent calls `safari_confirm_handoff` after understanding your reply. Riptide accepts that confirmation for the message you just sent and checks the original Safari tab before sharing it. Set Safari as the default browser. On the first visit to a site, choose **Enable chat handoff for this site** from the Riptide extension and approve Safari’s site permission. You can also share directly from Safari with **Page Menu → Riptide → Hand back**. An installed agent can use `safari_request_handoff` to send the link and end the turn, then `safari_confirm_handoff` and `safari_wait_for_handoff` after the user confirms, followed by the page tools, and should call `safari_finish` when done. A handoff is limited to the chosen tab and HTTPS origin. Closing the tab or leaving the site releases it. A tab that stops responding expires after 25 seconds. Password fields stay with the person signing in. Page content returned to the agent can include sensitive information visible on that page, so share only with an agent you control.
+In Riptide, choose **Chat actions → Open Hermes browser** or open the browser from the agent’s handoff card. Tap **Take over** to sign in directly in Chrome. Riptide fits the desktop to the phone and provides a keyboard and Password AutoFill. Tap **Hand back** to restore agent control and resume the chat. If the connection drops, reopen the browser and take over again. The adapter streams the existing desktop over the paired SSH connection using [noVNC 1.7.0](https://github.com/novnc/noVNC/tree/v1.7.0).
 
 ## Local Codex handoff proof
 

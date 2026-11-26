@@ -9,7 +9,7 @@ import re
 import shlex
 import sys
 
-from install_safari import Edit, key_identity, read_owned, require
+from ssh_pairing_files import Edit, key_identity, read_owned, require
 
 PROFILE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 MAX_REQUEST = 4096

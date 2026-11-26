@@ -8,8 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from install_safari import HOST, PAYLOAD
-from update_ssh_release import stage, update, verify
+from update_ssh_release import HOST, PAYLOAD, stage, update, verify
 
 
 class SSHReleaseTests(unittest.TestCase):
@@ -58,8 +57,11 @@ class SSHReleaseTests(unittest.TestCase):
             update(keys, fingerprint, releases, previous, revision)
             update(keys, fingerprint, releases, previous, revision)
         argv[2] = str(new)
+        index = argv.index("--safari")
+        del argv[index:index + 3]
         self.assertEqual([call.args[0] for call in verify.call_args_list], [argv, argv])
-        self.assertEqual(keys.read_bytes(), original.replace(str(old), str(new)).encode())
+        expected = original.replace(str(old), str(new)).replace(" --safari /relay/browser.sock device", "")
+        self.assertEqual(keys.read_bytes(), expected.encode())
         self.assertEqual(keys.stat().st_mode & 0o777, 0o600)
         for name in PAYLOAD:
             self.assertEqual((new.parent / name).read_bytes(), (HOST / name).read_bytes())

@@ -1,0 +1,53 @@
+diff --git a/gateway/session_local_mcp.py b/gateway/session_local_mcp.py
+index ae7e241..9e5dc81 100644
+--- a/gateway/session_local_mcp.py
++++ b/gateway/session_local_mcp.py
+@@ -513,8 +513,6 @@ def _riptide_connector(spec):
+     if len(args) != 3 or not all(Path(path).is_absolute() for path in (command, args[0], args[2])):
+         return None
+     signature = (Path(args[0]).name, args[1])
+-    if name == 'riptide_safari' and signature == ('safari_mcp.py', '--state-dir'):
+-        return name
+     if name == 'riptide_pairing' and signature == ('agent_pairing_mcp.py', '--config'):
+         return name
+     if name == 'riptide_agent_profile' and signature == ('agent_profile.py', '--state'):
+@@ -539,7 +537,8 @@ def _riptide_mcp_scope(servers=(), connected=(), profile=None):
+         if name == 'riptide_hermes_browser':
+             if spec['args'][-1] != str(profile):
+                 continue
+-            settings.update(tool_timeout_sec=180)
++            settings.update(tool_timeout_sec=180, default_tools_approval_mode='approve',
++                            enabled_tools=['computer_use', 'chrome_handoff'])
+         if name == 'riptide_agent_profile':
+             settings.update(default_tools_approval_mode='approve', enabled_tools=['set_display_name'])
+         for key, value in settings.items():
+@@ -579,14 +578,15 @@ def answer_riptide_form(params, clarify):
+     if not callable(clarify) or params.get('mode') != 'form':
+         return declined
+     server = params.get('serverName')
+-    fields_by_server = {'riptide_pairing': 'pair', 'riptide_hermes_browser': 'browser'}
+-    field_name = fields_by_server.get(server)
+-    if field_name is None or not any(arg.startswith(f'mcp_servers.{server}.command=')
++    fields_by_server = {'riptide_pairing': {'pair'}, 'riptide_hermes_browser': {'browser', 'browser_input'}}
++    if server not in fields_by_server or not any(arg.startswith(f'mcp_servers.{server}.command=')
+                                      for arg in current_riptide_mcp_args()):
+         return declined
+     schema = params.get('requestedSchema')
+     fields = schema.get('properties') if isinstance(schema, dict) else None
+-    field = fields.get(field_name) if isinstance(fields, dict) and set(fields) == {field_name} else None
++    if not isinstance(fields, dict) or len(fields) != 1 or not fields.keys() <= fields_by_server[server]:
++        return declined
++    field_name, field = next(iter(fields.items()))
+     choices = field.get('enum') if isinstance(field, dict) and field.get('type') == 'string' else None
+     message = params.get('message')
+     if (not isinstance(message, str) or not 0 < len(message) <= 200 or not isinstance(choices, list)
+@@ -594,7 +594,8 @@ def answer_riptide_form(params, clarify):
+         return declined
+     if field_name == 'pair' and not re.fullmatch(r'Pair Hermes profile: [a-z0-9][a-z0-9_-]{0,63}', choices[0]):
+         return declined
+-    if field_name == 'browser' and choices[0] != 'Browser handoff complete':
++    browser_choices = {'browser': 'Browser handoff complete', 'browser_input': 'Allow Chrome input'}
++    if field_name in browser_choices and choices[0] != browser_choices[field_name]:
+         return declined
+     try:
+         reply = clarify([{'qid': 'q0', 'question': message, 'choices': choices,

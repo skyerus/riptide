@@ -205,10 +205,6 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
         throw HermesPairingError.unavailable
     }
 
-    func safariSSHTransport(credential: String) -> SSHACPTransport? {
-        sshTransport(credential: credential, command: "riptide-safari")
-    }
-
     public func makePrivateFileTransfer(credential: String) -> PrivateFileTransfer? {
         guard sshHostFingerprint != nil, SSHDeviceIdentity(privateCredential: credential) != nil else { return nil }
         return PrivateFileTransfer(destination: name) {

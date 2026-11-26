@@ -14,8 +14,32 @@ import subprocess
 import tempfile
 
 from agent_profile import RENAME, read_name
-from install_safari import Edit, HOST, PAYLOAD, key_command, read_owned, require
-from ssh_acp import PRIVATE_FILE_GREETING
+from ssh_pairing_files import Edit, key_command, read_owned, require
+
+
+HOST = Path(__file__).resolve().parent
+PAYLOAD = ("ssh_acp.py", "hermes_screen.py", "hermes_groups.py", "hermes_browser_mcp.py", "codex_dictation.py",
+           "attention_relay.py", "hermes_attention.py", "hermes_pairing.py", "agent_pairing_mcp.py",
+           "agent_profile.py", "mcp_stdio.py", "ssh_pairing_files.py")
+
+
+def retire_safari(prefix, agent):
+    # Migrate existing forced commands without touching other SSH options or env assignments.
+    for flag, count in (("--safari", 2), ("--safari-mcp-python", 1)):
+        if flag in prefix:
+            index = prefix.index(flag)
+            require(prefix.count(flag) == 1 and len(prefix) > index + count,
+                    "Invalid legacy Safari options in the pairing.")
+            del prefix[index:index + count + 1]
+    if Path(agent[0]).name == "env" and any(arg.startswith("RIPTIDE_SAFARI_CODEX_") for arg in agent[1:]):
+        index = 1
+        while index < len(agent) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", agent[index]):
+            if agent[index].startswith(("RIPTIDE_SAFARI_CODEX_PYTHON=", "RIPTIDE_SAFARI_CODEX_STATE_DIR=")):
+                del agent[index]
+            else:
+                index += 1
+        if len(agent) > 1 and index == 1 and Path(agent[1]).is_absolute():
+            del agent[0]
 
 
 def find_key(source, fingerprint):
@@ -53,13 +77,21 @@ def verify(argv):
         require(result.returncode == 0, f"The staged {route} command failed.")
         return result.stdout
 
-    require(json.loads(run("riptide-private-file", "")) == PRIVATE_FILE_GREETING,
-            "The private file transfer command did not confirm its protocol version.")
-    if "--safari" in argv:
-        state = json.loads(run("riptide-safari", '{"operation":"state","body":{}}\n'))
-        require(state.get("status") == 200, "The existing Safari SSH route did not respond.")
     if "--hermes-screen" in argv:
         require(run("riptide-hermes-screen", "") == "", "The Hermes screen command did not close cleanly.")
+    if "--hermes-browser-mcp" in argv:
+        start = argv.index("--hermes-browser-mcp")
+        python, source = argv[start + 1:start + 3]
+        profile = argv[argv.index("--hermes-screen") + 1]
+        wrapper = next(Path(arg) for arg in argv if Path(arg).name == "ssh_acp.py")
+        frame = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        result = subprocess.run([python, "-B", str(wrapper.with_name("hermes_browser_mcp.py")),
+                                 "--hermes-source", source, "--profile", profile],
+                                input=json.dumps(frame) + "\n", text=True, capture_output=True, timeout=12)
+        require(result.returncode == 0, "The staged Chrome connector could not start.")
+        tools = json.loads(result.stdout).get("result", {}).get("tools", [])
+        require({"computer_use", "chrome_handoff"} <= {tool.get("name") for tool in tools},
+                "The staged Chrome connector is missing required tools.")
     if "--pairing-config" in argv:
         prefix = argv[:argv.index("--")]
         wrapper = next(Path(arg) for arg in prefix if Path(arg).name == "ssh_acp.py")
@@ -100,7 +132,7 @@ def verify(argv):
 
 
 def update(keys, fingerprint, releases, previous, revision, attention_socket=None, pairing_config=None,
-           enable_hermes_groups=False, agent_profile_state=None):
+           enable_hermes_groups=False, agent_profile_state=None, browser_mcp=None, previous_releases=None):
     directory = releases.lstat()
     require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid() and not directory.st_mode & 0o022,
             "Use an existing release directory controlled by the deployment account.")
@@ -111,9 +143,10 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
         require(original is not None, "The paired authorized_keys file does not exist.")
         source = original.decode()
         start, end, prefix, script, agent = key_command(source, find_key(source, fingerprint))
-        old = releases / previous / "Host" / "ssh_acp.py"
+        old = (previous_releases or releases) / previous / "Host" / "ssh_acp.py"
         new = releases / revision / "Host" / "ssh_acp.py"
         require(Path(prefix[script]) in (old, new), "The pairing points to an unexpected SSH release.")
+        retire_safari(prefix, agent)
         prefix[script] = str(stage(releases, revision))
         if attention_socket is not None:
             from hermes_attention import exchange
@@ -140,6 +173,16 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
             require("--hermes-screen" in prefix, "The paired key has no Hermes screen profile for groups.")
             screen = prefix.index("--hermes-screen")
             prefix.extend(["--hermes-groups", *prefix[screen + 1:screen + 3]])
+        if browser_mcp is not None:
+            browser_python, browser_source = browser_mcp
+            require("--hermes-screen" in prefix and browser_python.is_absolute() and os.access(browser_python, os.X_OK)
+                    and browser_source.is_absolute() and browser_source.is_dir(),
+                    "The Chrome connector needs the paired screen and absolute Hermes Python and source paths.")
+            if "--hermes-browser-mcp" in prefix:
+                option = prefix.index("--hermes-browser-mcp")
+                prefix[option + 1:option + 3] = [str(browser_python), str(browser_source)]
+            else:
+                prefix.extend(["--hermes-browser-mcp", str(browser_python), str(browser_source)])
         argv = [*prefix, "--", *agent]
         verify(argv)
         command = shlex.join(argv).replace('"', r'\"')
@@ -155,21 +198,25 @@ def main():
     parser.add_argument("--fingerprint", required=True)
     parser.add_argument("--releases-dir", type=Path, required=True)
     parser.add_argument("--previous", required=True)
+    parser.add_argument("--previous-releases-dir", type=Path)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--attention-socket", type=Path)
     parser.add_argument("--pairing-config", type=Path)
     parser.add_argument("--agent-profile-state", type=Path,
                         help="Absolute per-agent display name file inside a private directory.")
+    parser.add_argument("--hermes-browser-mcp", type=Path, nargs=2, metavar=("PYTHON", "HERMES_SOURCE"),
+                        help="Give Codex access to this pairing's existing Hermes Bot Screen Chrome.")
     parser.add_argument("--enable-hermes-groups", action="store_true",
                         help="Let this key access group chats on its paired Hermes gateway.")
     args = parser.parse_args()
     if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (args.previous, args.revision)):
         parser.error("Pass full Git revisions for --previous and --revision.")
-    if not args.releases_dir.is_absolute():
-        parser.error("Pass an absolute --releases-dir.")
+    if not args.releases_dir.is_absolute() or (args.previous_releases_dir and not args.previous_releases_dir.is_absolute()):
+        parser.error("Use absolute release directories.")
     try:
         update(args.authorized_keys, args.fingerprint, args.releases_dir, args.previous, args.revision,
-               args.attention_socket, args.pairing_config, args.enable_hermes_groups, args.agent_profile_state)
+               args.attention_socket, args.pairing_config, args.enable_hermes_groups, args.agent_profile_state,
+               args.hermes_browser_mcp, args.previous_releases_dir)
     except subprocess.TimeoutExpired:
         parser.exit(1, "The staged SSH command timed out during verification.\n")
     except (OSError, ValueError) as error:

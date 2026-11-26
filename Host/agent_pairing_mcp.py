@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 from hermes_pairing import PROFILE
-from install_safari import read_owned
+from ssh_pairing_files import read_owned
 from mcp_stdio import MCPServer
 
 SERVER = "riptide_pairing"

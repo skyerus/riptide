@@ -160,10 +160,9 @@ private final class ScreenConnection {
     private(set) var isChangingControl = false
     private(set) var inUse = false
     private(set) var error: String?
-    private var mobileViewUnavailable = false
     var controlStatus: String {
         if isControlling {
-            return mobileViewUnavailable ? "Mobile view unavailable" : "You’re in control"
+            return "You’re in control"
         }
         return inUse ? "Someone else has control" : "Hermes is in control"
     }
@@ -189,7 +188,6 @@ private final class ScreenConnection {
         let in_use: Bool?
         let browser_visible: Bool?
         let minimum_browser_width: Int?
-        let mobile: Bool?
         let message: String?
     }
 
@@ -272,7 +270,6 @@ private final class ScreenConnection {
                 arguments: ["held": isControlling, "minimumWidth": canFitWindow ? minimum : 0], contentWorld: .page
             )
         case "fitted":
-            mobileViewUnavailable = message.mobile == false
             fitTimeout?.cancel()
             fitTimeout = nil
             isChangingControl = false
@@ -294,7 +291,6 @@ private final class ScreenConnection {
 
     func acquire() {
         guard isReady, !isChangingControl else { return }
-        mobileViewUnavailable = false
         isChangingControl = true
         send("acquire")
     }

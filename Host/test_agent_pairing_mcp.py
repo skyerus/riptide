@@ -95,21 +95,21 @@ class PairingMCPTests(unittest.TestCase):
         self.assertEqual(self.tool_result(self.receive(mcp))["status"], "cancelled")
         self.assertEqual(self.call(mcp, 3, "ping"), {})
 
-    def test_ssh_connector_scope_preserves_safari_and_stays_stable_across_reconnects(self):
+    def test_ssh_connector_scope_preserves_chrome_and_stays_stable_across_reconnects(self):
         agent = ("import json, sys\n"
                  "for line in sys.stdin:\n"
                  "    frame = json.loads(line)\n"
                  "    print(json.dumps({'id': frame['id'], 'result': frame['params']}), flush=True)\n")
         wrapper = HOST / "ssh_acp.py"
-        browser = self.root / "browser.sock"
-        flags = ["--safari", str(browser), "device", "--safari-mcp-python", sys.executable]
+        flags = ["--hermes-screen", str(self.root), sys.executable,
+                 "--hermes-browser-mcp", sys.executable, str(self.root)]
         previous = None
         for pairing in (True, True, False):
             args = [*flags, "--pairing-config", str(self.config)] if pairing else flags
             acp = self.start([sys.executable, str(wrapper), "--workspace", str(self.root), *args,
                               "--", sys.executable, "-c", agent], {**os.environ, "SSH_ORIGINAL_COMMAND": "riptide-acp"})
             enabled = self.call(acp, 2, "session/load", cwd=str(self.root), sessionId="main", mcpServers=[])["mcpServers"]
-            self.assertEqual([server["name"] for server in enabled], ["riptide_safari", SERVER] if pairing else ["riptide_safari"])
+            self.assertEqual([server["name"] for server in enabled], ["riptide_hermes_browser", SERVER] if pairing else ["riptide_hermes_browser"])
             if pairing:
                 self.assertEqual(enabled[1]["args"], [str(HOST / "agent_pairing_mcp.py"), "--config", str(self.config)])
                 if previous is not None:

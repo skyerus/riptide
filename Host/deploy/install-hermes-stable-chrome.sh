@@ -49,7 +49,9 @@ dock_uses_stable() {
     [[ -r "$panel/.hermes-browser-launcher" ]] || return 1
     launcher_id=$(<"$panel/.hermes-browser-launcher")
     [[ "$launcher_id" =~ ^[0-9]{1,8}$ ]] || return 1
-    grep -q "^Exec=\"${chrome}\" " "$panel/launcher-$launcher_id/hermes.desktop"
+    local entry="$panel/launcher-$launcher_id/hermes.desktop"
+    grep -q "^Exec=\"${chrome}\" " "$entry" \
+        && ! grep -Eq '^Exec=.*--(remote-debugging|enable-automation|test-type)' "$entry"
 }
 
 scratch=$(mktemp -d)
@@ -58,6 +60,7 @@ if [[ ! -x "$chrome" ]]; then
     install_chrome
 fi
 "$chrome" --version
+"$hermes" computer-use install
 
 previous=$("$hermes" config get "$setting")
 if [[ "$previous" == "$chrome" ]] && dock_uses_stable; then
@@ -71,7 +74,7 @@ if "$hermes" config set "$setting" "$chrome" \
     && [[ $("$hermes" config get "$setting") == "$chrome" ]] \
     && "$hermes" computer-use screen start \
     && dock_uses_stable; then
-    echo "Hermes Bot Screen and browser tools now use Google Chrome Stable."
+    echo "Hermes Bot Screen now launches Google Chrome Stable for desktop computer use."
     exit 0
 fi
 

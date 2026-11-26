@@ -140,7 +140,7 @@ class SSHACPPolicyTests(unittest.TestCase):
             with self.subTest(method=method):
                 self.assertFalse(admitted({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, workspace, set()))
 
-    def test_safari_mcp_is_only_injected_into_admitted_sessions_for_an_enabled_key(self):
+    def test_chrome_mcp_is_only_injected_into_admitted_sessions_for_an_enabled_key(self):
         wrapper = Path(__file__).with_name("ssh_acp.py").resolve()
         agent = (
             "import json, sys\n"
@@ -149,8 +149,8 @@ class SSHACPPolicyTests(unittest.TestCase):
             "    print(json.dumps({'id': packet['id'], 'result': packet['params']}), flush=True)\n"
         )
         with tempfile.TemporaryDirectory() as workspace:
-            socket = str(Path(workspace) / "browser.sock")
-            options = ["--safari", socket, "test-riptide-device", "--safari-mcp-python", sys.executable]
+            options = ["--hermes-screen", workspace, sys.executable,
+                       "--hermes-browser-mcp", sys.executable, workspace]
             for flags in ([], options):
                 with self.subTest(registered=bool(flags)):
                     process = subprocess.Popen(
@@ -182,8 +182,9 @@ class SSHACPPolicyTests(unittest.TestCase):
                             expected = dict(params)
                             if flags and "mcpServers" in expected:
                                 expected["mcpServers"] = [{
-                                    "name": "riptide_safari", "command": sys.executable,
-                                    "args": [str(wrapper.with_name("safari_mcp.py")), "--state-dir", workspace],
+                                    "name": "riptide_hermes_browser", "command": sys.executable,
+                                    "args": [str(wrapper.with_name("hermes_browser_mcp.py")), "--hermes-source", workspace,
+                                             "--profile", str(Path(workspace).resolve())],
                                     "env": [],
                                 }]
                             self.assertEqual(reply["result"], expected)
