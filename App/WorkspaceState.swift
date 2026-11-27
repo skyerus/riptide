@@ -13,7 +13,7 @@ struct WorkspaceRoute: Hashable {
     var chat: String?
     var startsNewChat = false
     var hermesGroup: String?
-    var showsAgentWorkspace = false
+    var opensMainChat = false
 }
 
 struct WorkspaceAgent: Identifiable, Equatable {
@@ -86,6 +86,8 @@ final class WorkspaceState {
     private var remoteModels: [String: AgentChatModel] = [:]
     private var codexChats: [String: [CodexChatSummary]] = [:]
     private var codexSearchCatalog: [String: [CodexChatSummary]] = [:]
+    private var codexMainChats: [String: String]
+    @ObservationIgnored private var pendingCodexMainSessions: [String: CodexWorkspaceSession] = [:]
     private var lastCatalogRefresh: Date?
     private(set) var indexingChats = false
     private struct LiveCodexAttention {
@@ -120,6 +122,7 @@ final class WorkspaceState {
                                                    from: defaults.data(forKey: "workspace.attention") ?? Data())) ?? []
         readRelayReplies = defaults.stringArray(forKey: "workspace.relay-read") ?? []
         favorites = defaults.stringArray(forKey: "workspace.favorites") ?? []
+        codexMainChats = defaults.dictionary(forKey: "workspace.codex-main-chats") as? [String: String] ?? [:]
         let availableDemos = Set(roster.map(\.target.id))
         let storedPins = (try? JSONDecoder().decode([String].self, from: defaults.data(forKey: "roster.pinned") ?? Data()))
             ?? Array(roster.prefix(4).map(\.target.id))
@@ -263,10 +266,11 @@ final class WorkspaceState {
     }
 
     func mainChatID(for workspaceID: String) -> String? {
-        roster.first { $0.target.id == workspaceID }?.target.mainSessionID ?? profile(workspaceID)?.mainSessionID
+        roster.first { $0.target.id == workspaceID }?.target.mainSessionID ?? profile(workspaceID)?.mainSessionID ??
+            codexMainChats[workspaceID]
     }
 
-    func sidebarChats(for workspaceID: String) -> [WorkspaceVisit] {
+    func sideChats(for workspaceID: String) -> [WorkspaceVisit] {
         knownChats.filter { $0.id.workspace == workspaceID && !isMainChat($0.id) }
     }
 
@@ -276,9 +280,10 @@ final class WorkspaceState {
         return CodexLocalEndpoint(remote: profile, bearer: bearer)
     }
 
-    func sidebarACPModel(for workspaceID: String) -> AgentChatModel? {
+    func agentChatModel(for workspaceID: String) -> AgentChatModel? {
         if let demo = roster.first(where: { $0.target.id == workspaceID }) { return demo }
-        guard let profile = profile(workspaceID), let bearer = remotes.bearer(for: profile) else { return nil }
+        guard let profile = profile(workspaceID), profile.kind != .codex,
+              let bearer = remotes.bearer(for: profile) else { return nil }
         return configuredModel(profile, bearer: bearer)
     }
 
@@ -287,7 +292,7 @@ final class WorkspaceState {
         attemptedMainChatPreload = true
         guard path.isEmpty, let chat = recent.first?.id,
               mainChatID(for: chat.workspace) == chat.chat,
-              let model = sidebarACPModel(for: chat.workspace) else { return }
+              let model = agentChatModel(for: chat.workspace) else { return }
         await model.preloadMain()
     }
 
@@ -328,16 +333,14 @@ final class WorkspaceState {
         return model
     }
 
-    func open(_ workspaceID: String, chat: String? = nil, resume: Bool = true) {
+    func open(_ workspaceID: String, chat: String) {
         guard agent(workspaceID) != nil else { return }
-        let cachedChat = resume ? recent.first { $0.id.workspace == workspaceID }?.id.chat : nil
-        push(WorkspaceRoute(workspace: workspaceID, chat: chat ?? cachedChat))
+        if isMainChat(.init(workspace: workspaceID, chat: chat)) { openMainChat(workspaceID) }
+        else { open(WorkspaceRoute(workspace: workspaceID, chat: chat)) }
     }
 
-    func openAgentWorkspace(_ workspaceID: String) {
-        guard agent(workspaceID) != nil else { return }
-        sidebarTab = .agents
-        push(WorkspaceRoute(workspace: workspaceID, showsAgentWorkspace: true))
+    func openMainChat(_ workspaceID: String) {
+        open(WorkspaceRoute(workspace: workspaceID, opensMainChat: true))
     }
 
     var hermesGroupSources: [WorkspaceAgent] { agents.filter { supportsHermesGroups($0.id) } }
@@ -375,24 +378,15 @@ final class WorkspaceState {
 
     func openHermesGroup(_ roomID: String, in workspaceID: String) {
         guard supportsHermesGroups(workspaceID) else { return }
-        push(WorkspaceRoute(workspace: workspaceID, hermesGroup: roomID))
+        open(WorkspaceRoute(workspace: workspaceID, hermesGroup: roomID))
     }
 
-    func startCodexChat(_ workspaceID: String) {
-        guard codexEndpoint(for: workspaceID) != nil else { return }
-        push(WorkspaceRoute(workspace: workspaceID, chat: nil, startsNewChat: true))
-    }
-
-    private func push(_ route: WorkspaceRoute) {
+    func open(_ route: WorkspaceRoute) {
+        guard agent(route.workspace) != nil else { return }
         showingSwitcher = false
-        var destination = [route]
-        if let overview = path.first, overview.showsAgentWorkspace, overview.workspace == route.workspace,
-           !route.showsAgentWorkspace, route.hermesGroup == nil {
-            destination.insert(overview, at: 0)
-        }
-        if path != destination {
+        if path != [route] {
             visibleChat = nil
-            path = destination
+            path = [route]
         }
     }
 
@@ -404,18 +398,12 @@ final class WorkspaceState {
         if !path.isEmpty { path = [] }
     }
 
-    func step(from workspaceID: String, by direction: Int) {
-        let list = rosterAgents(including: workspaceID)
-        guard list.count > 1, let index = list.firstIndex(where: { $0.id == workspaceID }) else { return }
-        open(list[(index + direction + list.count) % list.count].id)
-    }
-
-    func rosterAgents(including selected: String? = nil) -> [WorkspaceAgent] {
+    func rosterAgents() -> [WorkspaceAgent] {
         let all = agents
         let paired = all.filter { $0.connector != "Demo" }
         let demos = all.filter { $0.connector == "Demo" }
         guard remotes.profiles.isEmpty || showDemoAgents else {
-            return paired + demos.filter { $0.id == selected }
+            return paired
         }
         let byID = Dictionary(uniqueKeysWithValues: demos.map { ($0.id, $0) })
         return paired + demoPins.compactMap { byID[$0] } + demos.filter { !demoPins.contains($0.id) }
@@ -432,7 +420,9 @@ final class WorkspaceState {
     }
 
     func visit(_ chat: WorkspaceChatID, title: String) {
-        guard path.last?.workspace == chat.workspace else { return }
+        guard let route = path.last, route.workspace == chat.workspace else { return }
+        if route.opensMainChat, !isMainChat(chat) { return }
+        if let expected = route.chat, expected != chat.chat { return }
         visibleChat = chat
         let title = String(title.prefix(180))
         let entry = WorkspaceVisit(id: chat, title: title)
@@ -485,6 +475,8 @@ final class WorkspaceState {
         remoteModels.removeValue(forKey: workspaceID)
         codexChats.removeValue(forKey: workspaceID)
         codexSearchCatalog.removeValue(forKey: workspaceID)
+        if codexMainChats.removeValue(forKey: workspaceID) != nil { persistCodexMainChats() }
+        pendingCodexMainSessions.removeValue(forKey: workspaceID)?.detach()
         lastCatalogRefresh = nil
         liveCodexAttention = liveCodexAttention.filter { $0.key.workspace != workspaceID }
         runningCodexChats = runningCodexChats.filter { $0.workspace != workspaceID }
@@ -566,18 +558,35 @@ final class WorkspaceState {
         else { runningCodexChats.remove(chat) }
     }
 
-    func codexSession(endpoint: CodexLocalEndpoint, initialChat: CodexChatSummary?, workspaceID: String) -> CodexWorkspaceSession {
+    func useCodexMainChat(_ id: String, workspaceID: String) {
+        guard agent(workspaceID) != nil, codexMainChats[workspaceID] == nil else { return }
+        codexMainChats[workspaceID] = id
+        persistCodexMainChats()
+    }
+
+    private func persistCodexMainChats() {
+        defaults.set(codexMainChats, forKey: "workspace.codex-main-chats")
+    }
+
+    func codexSession(endpoint: CodexLocalEndpoint, initialChat: CodexChatSummary?, workspaceID: String,
+                      isMainChat: Bool = false) -> CodexWorkspaceSession {
         if let initialChat, let existing = codexSessions[.init(workspace: workspaceID, chat: initialChat.id)] {
             retain(existing)
             return existing
         }
+        if isMainChat, let pending = pendingCodexMainSessions[workspaceID] { return pending }
         let session = CodexWorkspaceSession(endpoint: endpoint, chat: initialChat, workspaceID: workspaceID, workspace: self)
+        if isMainChat, initialChat == nil { pendingCodexMainSessions[workspaceID] = session }
         retain(session)
         return session
     }
 
     func retain(_ session: CodexWorkspaceSession) {
         guard let key = session.locator else { return }
+        if pendingCodexMainSessions[key.workspace] === session {
+            useCodexMainChat(key.chat, workspaceID: key.workspace)
+            pendingCodexMainSessions[key.workspace] = nil
+        }
         codexSessions[key] = session
         codexRecency.removeAll { $0 == key }
         codexRecency.insert(key, at: 0)
