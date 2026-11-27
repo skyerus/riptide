@@ -342,8 +342,8 @@ public final class AgentChatModel {
                 steerAdmissionID = admissionID
                 guard wasWorking != working else { return }
                 turnStartedAt = working ? .now : nil
-                guard !replaying else { return }
                 if working {
+                    guard !replaying else { return }
                     replyTimedOut = false
                     uncertainFollowUp = nil
                     transcript.beginObservedTurn()

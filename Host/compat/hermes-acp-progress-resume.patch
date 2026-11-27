@@ -1,0 +1,361 @@
+diff --git a/acp_adapter/gateway_server.py b/acp_adapter/gateway_server.py
+index 75975ba..afb023c 100644
+--- a/acp_adapter/gateway_server.py
++++ b/acp_adapter/gateway_server.py
+@@ -583,6 +583,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+                     await self._conn.ext_notification("riptide/session/history", {
+                         "sessionId": held_id, "update": _riptide_history_update(update)})
+                 history = {"riptide_history": {"checkpoint": checkpoint, "reuseHistory": reuse}}
++            await self._restore_assistant_progress(session_id, held_id, snapshot)
+             last_message = next((m for m in reversed(live) if m.get("role") in {"user", "assistant"}), {})
+             if (last_message.get("display_kind") == "failed_turn"
+                     and isinstance(meta := last_message.get("display_metadata"), dict)
+@@ -594,6 +595,23 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         await self._request_live_reasoning(client, session_id)
+         return {**await self._session_fields(session_id, {**info, **(snapshot.get("info") or {})}, held_id), **history}
+ 
++    async def _restore_assistant_progress(self, sid, editor_id, snapshot):
++        progress = snapshot.get("assistant_progress")
++        if (not self._assistant_progress or not progress or self._snapshots.get(sid) is not snapshot
++                or snapshot.get("_live_assistant_progress")):
++            return
++        generation = snapshot.get("execution_generation")
++        active = self._riptide_turns.get(sid)
++        if not active or not any(row["admission_id"] == active and row["status"] == "started"
++                                 and row.get("execution_generation") == generation
++                                 for row in snapshot.get("pending", [])):
++            return
++        # History comes first. This annotated chunk belongs only to the active turn.
++        update = acp.update_agent_message_text(progress["text"])
++        update.message_id = f'riptide-progress:{active}:{progress["id"]}'
++        update.field_meta = {ASSISTANT_PROGRESS: True}
++        await self._conn.session_update(session_id=editor_id, update=update)
++
+     @staticmethod
+     def _moved(info, cwd):
+         return "cwd" in info and _normalize_cwd_for_compare(info["cwd"]) != _normalize_cwd_for_compare(_translate_acp_cwd(cwd))
+@@ -1267,6 +1285,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+             self._close_segment(aid)
+             self._end_message(sid)
+         if text and self._conn:
++            # A live update that arrived during history replay is newer than the snapshot.
++            if snapshot := self._snapshots.get(sid):
++                snapshot["_live_assistant_progress"] = True
+             update = self._chunk(sid, text)
+             if message_id is not None:
+                 update.message_id = message_id
+diff --git a/apps/shared/src/gateway-contract.generated.ts b/apps/shared/src/gateway-contract.generated.ts
+index 591584f..a370456 100644
+--- a/apps/shared/src/gateway-contract.generated.ts
++++ b/apps/shared/src/gateway-contract.generated.ts
+@@ -5279,6 +5279,8 @@ export interface CanonicalSnapshot {
+   pending: CanonicalPendingAdmission[]
+   prompts: CanonicalPendingPrompt[]
+   info: CanonicalSnapshotInfo
++  context_compaction?: CanonicalContextCompaction | null
++  assistant_progress?: CanonicalAssistantProgress | null
+   pending_connection?: ConnectionRequestPayload | null
+   todo_state?: TodoState | null
+   open_requests?: OpenRequestEntry[] | null
+@@ -5350,6 +5352,17 @@ export interface CanonicalSnapshotInfo {
+   credential_hint?: string | null
+   config_warning?: string | null
+ }
++export interface CanonicalContextCompaction {
++  type: 'contextCompaction'
++  id: string
++  running: boolean
++  startedAtMs?: number | null
++  completedAtMs?: number | null
++}
++export interface CanonicalAssistantProgress {
++  id: string
++  text: string
++}
+ export interface CanonicalResumeParams {
+   profile?: string | null
+   session_id?: string
+diff --git a/apps/shared/src/gateway-contract.openrpc.json b/apps/shared/src/gateway-contract.openrpc.json
+index 00d9b71..2e49473 100644
+--- a/apps/shared/src/gateway-contract.openrpc.json
++++ b/apps/shared/src/gateway-contract.openrpc.json
+@@ -8028,6 +8028,25 @@
+         "title": "CanonicalApprovalParams",
+         "type": "object"
+       },
++      "CanonicalAssistantProgress": {
++        "additionalProperties": false,
++        "properties": {
++          "id": {
++            "title": "Id",
++            "type": "string"
++          },
++          "text": {
++            "title": "Text",
++            "type": "string"
++          }
++        },
++        "required": [
++          "id",
++          "text"
++        ],
++        "title": "CanonicalAssistantProgress",
++        "type": "object"
++      },
+       "CanonicalAttachedImageResult": {
+         "additionalProperties": false,
+         "properties": {
+@@ -8811,6 +8830,55 @@
+         "title": "CanonicalConfigSetParams",
+         "type": "object"
+       },
++      "CanonicalContextCompaction": {
++        "additionalProperties": false,
++        "properties": {
++          "type": {
++            "const": "contextCompaction",
++            "title": "Type",
++            "type": "string"
++          },
++          "id": {
++            "title": "Id",
++            "type": "string"
++          },
++          "running": {
++            "title": "Running",
++            "type": "boolean"
++          },
++          "startedAtMs": {
++            "anyOf": [
++              {
++                "type": "integer"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null,
++            "title": "Startedatms"
++          },
++          "completedAtMs": {
++            "anyOf": [
++              {
++                "type": "integer"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null,
++            "title": "Completedatms"
++          }
++        },
++        "required": [
++          "type",
++          "id",
++          "running"
++        ],
++        "title": "CanonicalContextCompaction",
++        "type": "object"
++      },
+       "CanonicalControlParams": {
+         "additionalProperties": false,
+         "properties": {
+@@ -11339,6 +11407,28 @@
+           "info": {
+             "$ref": "#/components/schemas/CanonicalSnapshotInfo"
+           },
++          "context_compaction": {
++            "anyOf": [
++              {
++                "$ref": "#/components/schemas/CanonicalContextCompaction"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null
++          },
++          "assistant_progress": {
++            "anyOf": [
++              {
++                "$ref": "#/components/schemas/CanonicalAssistantProgress"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null
++          },
+           "pending_connection": {
+             "anyOf": [
+               {
+diff --git a/gateway/session_authority.py b/gateway/session_authority.py
+index ee6d09c..62f6a2e 100644
+--- a/gateway/session_authority.py
++++ b/gateway/session_authority.py
+@@ -415,7 +415,8 @@ class SessionAuthority:
+             snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
+                                         tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts,
+                                         transcript_target=target,
+-                                        context_compaction=live.event_stream.compaction_for(active_generation))
++                                        context_compaction=live.event_stream.compaction_for(active_generation),
++                                        assistant_progress=live.event_stream.assistant_progress_for(active_generation))
+         from gateway.session_viewer_close import cancel_persisted_close
+         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
+         from gateway.session_deferred_pick import reask_on_attach
+diff --git a/gateway/session_contract.py b/gateway/session_contract.py
+index 4cbf52a..47d27f5 100644
+--- a/gateway/session_contract.py
++++ b/gateway/session_contract.py
+@@ -83,6 +83,7 @@ class SubscriptionSnapshot:
+     # The physical transcript a history-less attach resolved under the stream lock (``history=False``).
+     transcript_target: str | None = None
+     context_compaction: JsonObject | None = None
++    assistant_progress: JsonObject | None = None
+ 
+ 
+ class SessionAuthority(Protocol):
+diff --git a/gateway/session_controls.py b/gateway/session_controls.py
+index 0b5f69c..739de6c 100644
+--- a/gateway/session_controls.py
++++ b/gateway/session_controls.py
+@@ -777,6 +777,7 @@ class AuthorityConnection:
+                 'pending': [asdict(r) for r in snapshot.pending],
+                 'prompts': list(snapshot.prompts), 'info': info,
+                 'context_compaction': snapshot.context_compaction,
++                **({'assistant_progress': snapshot.assistant_progress} if snapshot.assistant_progress else {}),
+                 'pending_connection': pending_connection(self.authority, ref.session_id),
+                 # Still-waiting server→client requests: the event ring cannot say "still open".
+                 'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
+diff --git a/gateway/session_events.py b/gateway/session_events.py
+index 08e9d96..0f9a952 100644
+--- a/gateway/session_events.py
++++ b/gateway/session_events.py
+@@ -50,8 +50,19 @@ class SessionEvents:
+                 progress['context_compaction'] = payload
+             elif (progress.get('context_compaction') or {}).get('id') == payload.get('id'):
+                 progress.pop('context_compaction', None)
++        elif event_type == 'message.interim':
++            item_id, text = payload.get('codex_item_id'), payload.get('text')
++            if isinstance(item_id, str) and item_id and isinstance(text, str) and text.strip():
++                progress['assistant_progress'] = {'id': item_id, 'text': text[:16_384]}
+         progress['at'] = time.time()
+ 
++    def assistant_progress_for(self, generation):
++        with self.lock:
++            progress = self._progress
++            if progress is None or progress['generation'] != generation:
++                return None
++            return progress.get('assistant_progress')
++
+     def compaction_for(self, generation):
+         with self.lock:
+             progress = self._progress
+diff --git a/tests/acp_adapter/test_riptide_progress_resume.py b/tests/acp_adapter/test_riptide_progress_resume.py
+new file mode 100644
+index 0000000..91c0eec
+--- /dev/null
++++ b/tests/acp_adapter/test_riptide_progress_resume.py
+@@ -0,0 +1,67 @@
++from unittest.mock import AsyncMock
++
++import pytest
++
++from acp_adapter.gateway_server import GatewayACPAgent
++from agent.transports.codex_event_projector import ASSISTANT_PROGRESS
++from gateway.session_events import SessionEvents
++from tests.acp_adapter.test_gateway_sessions import viewer
++from tui_gateway.contracts.canonical_sessions import CanonicalSnapshot
++
++
++@pytest.mark.asyncio
++async def test_resume_snapshot_matches_the_canonical_wire_contract(daemon, tmp_path):
++    async with viewer(daemon) as client:
++        session = await client.rpc("session.create", request_id="riptide-progress", cwd=str(tmp_path))
++        response = await client.rpc("session.resume", session_id=session["session_id"])
++    snapshot = CanonicalSnapshot.model_validate(response)
++    assert snapshot.context_compaction is None
++    assert snapshot.assistant_progress is None
++
++
++def test_only_latest_visible_progress_is_kept_for_the_active_generation():
++    events = SessionEvents()
++    with events.lock:
++        events.note_progress(1, "message.interim", {"codex_item_id": "first", "text": "Starting"})
++        events.note_progress(1, "message.interim", {"codex_item_id": "latest", "text": "Checking"})
++        events.note_progress(1, "message.interim", {"codex_item_id": "hidden", "text": ""})
++        events.note_progress(1, "message.interim", {"text": "An unclassified reply"})
++    assert events.assistant_progress_for(1) == {"id": "latest", "text": "Checking"}
++    assert events.assistant_progress_for(None) is None
++    assert events.assistant_progress_for(2) is None
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("opt_in,still_active,newer,restored", [
++    (True, True, False, True),
++    (False, True, False, False),
++    (True, False, False, False),
++    (True, True, True, False),
++])
++async def test_resume_only_projects_current_opted_in_progress(opt_in, still_active, newer, restored):
++    adapter = GatewayACPAgent()
++    adapter._riptide_client = True
++    adapter._assistant_progress = opt_in
++    adapter._conn = AsyncMock()
++    snapshot = {
++        "pending": [{"admission_id": "turn", "status": "started", "execution_generation": 4}],
++        "execution_generation": 4,
++        "assistant_progress": {"id": "progress", "text": "Checking the current changes."},
++    }
++    await adapter._adopt("session", snapshot)
++    if not still_active:
++        await adapter._finish_riptide_turn("session", "turn")
++    if newer:
++        await adapter._project({
++            "type": "message.interim", "session_id": "session", "admission_id": "turn",
++            "payload": {"codex_item_id": "newer", "text": "The checks passed."},
++        })
++    adapter._conn.reset_mock()
++    await adapter._restore_assistant_progress("session", "session", snapshot)
++    if restored:
++        adapter._conn.session_update.assert_awaited_once()
++        update = adapter._conn.session_update.await_args.kwargs["update"]
++        assert update.content.text == "Checking the current changes."
++        assert update.field_meta == {ASSISTANT_PROGRESS: True}
++    else:
++        adapter._conn.session_update.assert_not_called()
+diff --git a/tui_gateway/contracts/canonical_sessions.py b/tui_gateway/contracts/canonical_sessions.py
+index 6b31d1e..279ddd9 100644
+--- a/tui_gateway/contracts/canonical_sessions.py
++++ b/tui_gateway/contracts/canonical_sessions.py
+@@ -141,6 +141,19 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
+     config_warning: str | None = None
+ 
+ 
++class CanonicalContextCompaction(Result):
++    type: Literal['contextCompaction']
++    id: str
++    running: bool
++    startedAtMs: int | None = None
++    completedAtMs: int | None = None
++
++
++class CanonicalAssistantProgress(Result):
++    id: str
++    text: str
++
++
+ class CanonicalSnapshot(Result):
+     session_id: str
+     stored_session_id: str
+@@ -160,6 +173,9 @@ class CanonicalSnapshot(Result):
+     pending: list[CanonicalPendingAdmission]
+     prompts: list[CanonicalPendingPrompt]
+     info: CanonicalSnapshotInfo
++    # Ephemeral state from the current execution, available to a reconnecting viewer.
++    context_compaction: CanonicalContextCompaction | None = None
++    assistant_progress: CanonicalAssistantProgress | None = None
+     # The open ``manage_connections`` card, so a resume restores it while the tool waits.
+     pending_connection: ConnectionRequestPayload | None = None
+     # The session's todo snapshot (its transcript's newest todo result); null when it has none.
