@@ -49,14 +49,27 @@ final class RiptideNotificationDelegate: NSObject, UIApplicationDelegate, UNUser
 
 @MainActor @Observable
 final class WorkspaceAlerts {
+    private struct HermesRegistration: Codable, Equatable {
+        let tokenDigest: Data?
+        let environment: String
+        let policy: AttentionPolicy
+    }
+
+    private struct HermesRegistrationReceipt: Codable, Equatable {
+        let registration: HermesRegistration
+        let refreshed: Date
+    }
+
     private let defaults = UserDefaults.standard
     private let center = UNUserNotificationCenter.current()
+    private let hermesRegistrationKey = "alerts.hermes-registration-receipts"
     private let credentialID = UUID(uuidString: "00000000-0000-4000-8000-000000000021")!
     private let deviceID: UUID
     private var recent: [WorkspaceAttention.ID: Date] = [:]
     private var revision = 0
     private var token: String?
     @ObservationIgnored private var registrationTask: Task<Void, Never>?
+    @ObservationIgnored private var hermesRegistrations: [UUID: HermesRegistrationReceipt]
     @ObservationIgnored private var changingRelay = false
     private(set) var relayAddress: String
     private(set) var policy: AttentionPolicy
@@ -71,6 +84,9 @@ final class WorkspaceAlerts {
                                            from: defaults.data(forKey: "alerts.policy") ?? Data())) ?? .init()
         relayAddress = defaults.string(forKey: "alerts.relay-address") ?? ""
         deviceID = defaults.string(forKey: "alerts.device-id").flatMap(UUID.init(uuidString:)) ?? UUID()
+        hermesRegistrations = defaults.data(forKey: hermesRegistrationKey).flatMap {
+            try? JSONDecoder().decode([UUID: HermesRegistrationReceipt].self, from: $0)
+        } ?? [:]
         defaults.set(deviceID.uuidString, forKey: "alerts.device-id")
     }
 
@@ -240,21 +256,36 @@ final class WorkspaceAlerts {
             }
         }
         let profiles = hermesProfiles
+        let previousRegistrations = hermesRegistrations
+        defer {
+            if hermesRegistrations != previousRegistrations, let encoded = try? JSONEncoder().encode(hermesRegistrations) {
+                defaults.set(encoded, forKey: hermesRegistrationKey)
+            }
+        }
+        let profileIDs = Set(profiles.map(\.id))
+        hermesRegistrations = hermesRegistrations.filter { profileIDs.contains($0.key) }
         guard !profiles.isEmpty else {
             pushWorkspaces = []
             if relay == nil { pushEnabled = false }
             return
         }
         let hermesToken = relay == nil ? remoteToken : nil
+        let tokenDigest = hermesToken.map { Data(SHA256.hash(data: Data($0.utf8))) }
+        let registration = HermesRegistration(tokenDigest: tokenDigest, environment: environment, policy: value)
         var registered = Set<String>()
         for profile in profiles {
             guard revision == current else { return }
-            guard let credential = remotes?.bearer(for: profile) else { continue }
-            do {
-                try await profile.registerHermesNotifications(credential: credential, token: hermesToken,
-                                                               environment: environment, policy: value)
-                if hermesToken != nil { registered.insert(profile.id.uuidString) }
-            } catch { continue }
+            if hermesRegistrations[profile.id].map({
+                $0.registration == registration && (0..<3_600).contains(Date().timeIntervalSince($0.refreshed))
+            }) != true {
+                guard let credential = remotes?.bearer(for: profile) else { continue }
+                do {
+                    try await profile.registerHermesNotifications(credential: credential, token: hermesToken,
+                                                                   environment: environment, policy: value)
+                    hermesRegistrations[profile.id] = HermesRegistrationReceipt(registration: registration, refreshed: .now)
+                } catch { continue }
+            }
+            if hermesToken != nil { registered.insert(profile.id.uuidString) }
         }
         guard revision == current else { return }
         pushWorkspaces = registered

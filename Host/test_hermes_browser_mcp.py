@@ -196,6 +196,18 @@ class ChromeComputerUseTests(unittest.TestCase):
 
         self.assertEqual(self.chrome.call("chrome_handoff", args, hand_back), {"status": "handed_back"})
 
+    def test_handoff_preserves_cancellation_reasons(self):
+        for action, reason in [
+            (None, "client_does_not_support_handoff"),
+            ("decline", "declined"),
+            ("cancel", "request_ended_before_handback"),
+            ("accept", "no_valid_response"),
+        ]:
+            with self.subTest(action=action):
+                elicit = None if action is None else lambda _: {"action": action}
+                self.assertEqual(self.chrome.call("chrome_handoff", {"reason": "Sign in."}, elicit),
+                                 {"status": "cancelled", "reason": reason})
+
     def test_screenshots_use_mcp_image_content(self):
         response = tool_result({"_multimodal": True, "content": [
             {"type": "text", "text": "Chrome"},

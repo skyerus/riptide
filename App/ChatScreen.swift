@@ -20,6 +20,7 @@ struct ChatScreen: View {
     @State private var voiceError: String?
     @State private var browserHandoff: BrowserHandoff?
     @State private var focusAfterHandback: String?
+    @State private var browserHandbackUnconfirmed = false
     @State private var connectingHermes: UUID?
     @State private var hermesPairingAttempt: HermesPairingAttempt?
     @State private var composerFocused = false
@@ -172,11 +173,15 @@ struct ChatScreen: View {
             HermesScreen(remote: handoff.remote, credential: handoff.credential) {
                 guard model.selectedID == handoff.chatID else { return }
                 focusAfterHandback = handoff.chatID
-                if let request = handoff.request, model.selected.permissions.contains(request),
-                   let option = browserCompletion(in: request) {
-                    Task { await model.answer(request, optionID: option.id) }
+                if let request = handoff.request {
+                    Task { await completeBrowserHandoff(request) }
                 }
             }
+        }
+        .alert("Browser handback unconfirmed", isPresented: $browserHandbackUnconfirmed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Chrome control was returned. Riptide couldn’t confirm handback with the agent.")
         }
         .sheet(isPresented: $showVoiceSettings, onDismiss: {
             if pairAfterVoiceSettings { pairAfterVoiceSettings = false; pairingVoice = true }
@@ -336,7 +341,23 @@ struct ChatScreen: View {
 
     private func openBrowser(_ remote: RemoteProfile, credential: String, request: PermissionRequest? = nil) {
         composerFocused = false
-        browserHandoff = BrowserHandoff(remote: remote, credential: credential, chatID: model.selectedID, request: request)
+        let pending = model.selected.permissions.filter { browserCompletion(in: $0) != nil }
+        let activeRequest = request ?? (pending.count == 1 ? pending.first : nil)
+        browserHandoff = BrowserHandoff(remote: remote, credential: credential, chatID: model.selectedID, request: activeRequest)
+    }
+
+    private func completeBrowserHandoff(_ request: PermissionRequest) async {
+        let deadline = ContinuousClock.now + .seconds(6)
+        while model.selectedID == request.sessionID {
+            if let current = model.currentPermission(matching: request), let option = browserCompletion(in: current) {
+                await model.answer(current, optionID: option.id)
+                return
+            }
+            guard model.selected.loading || model.selected.connectionLost, ContinuousClock.now < deadline else { break }
+            do { try await Task.sleep(for: .milliseconds(100)) }
+            catch { return }
+        }
+        if model.selectedID == request.sessionID { browserHandbackUnconfirmed = true }
     }
 
     private func browserCompletion(in request: PermissionRequest) -> PermissionRequest.Option? {

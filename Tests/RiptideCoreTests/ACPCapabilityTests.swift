@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import RiptideCore
 
@@ -354,6 +355,59 @@ struct ACPCapabilityTests {
         }
         try await next.resolve(current.id, optionID: "no")
         await next.close()
+    }
+
+    @MainActor
+    @Test func browserHandbackFindsOnlyTheReissuedPermissionForTheSameRequest() async throws {
+        let target = AgentTarget.demos[1]
+        let chat = target.mainSessionID
+        func connection(wireID: String) -> ACPClient {
+            ACPClient(transport: ScriptedTransport { message in
+                switch message["method"]?.string {
+                case "initialize":
+                    return [.reply(try #require(message["id"]), result: [
+                        "protocolVersion": .integer(1), "agentCapabilities": ["loadSession": .boolean(true)]
+                    ])]
+                case "session/load":
+                    return [
+                        .request("session/request_permission", id: .string(wireID), params: [
+                            "sessionId": .string(chat), "toolCall": ["toolCallId": "clarify-request", "title": "Sign in"],
+                            "options": .array([
+                                ["optionId": "choice-0", "name": "Browser handoff complete", "kind": "allow_once"],
+                                ["optionId": "skip", "name": "Skip", "kind": "reject_once"]
+                            ])
+                        ]),
+                        .reply(try #require(message["id"]), result: [:])
+                    ]
+                default:
+                    #expect(message["id"] == .string(wireID))
+                    #expect(message["result"]?["outcome"]?["optionId"] == "choice-0")
+                    return []
+                }
+            })
+        }
+        let first = connection(wireID: "old-permission")
+        let second = connection(wireID: "current-permission")
+        let clients = Mutex([first, second])
+        let model = AgentChatModel(target: target) { clients.withLock { $0.removeFirst() } }
+        await model.showMain()
+        let previous = try #require(model.selected.permissions.first)
+        await first.close()
+        let deadline = ContinuousClock.now + .seconds(1)
+        while !model.selected.connectionLost, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(model.selected.connectionLost)
+        #expect(model.currentPermission(matching: previous) == nil)
+        await model.showMain()
+
+        let current = try #require(model.currentPermission(matching: previous))
+        #expect(current.id != previous.id)
+        let unrelated = PermissionRequest(id: UUID(), sessionID: chat, title: previous.title,
+                                          options: previous.options, toolCallID: "clarify-other")
+        #expect(model.currentPermission(matching: unrelated) == nil)
+        await model.answer(current, optionID: "choice-0")
+        await second.close()
     }
 
     @Test func sameChatVoiceDoesNotReplaceApprovalConnection() async throws {

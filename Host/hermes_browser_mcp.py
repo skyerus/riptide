@@ -55,14 +55,21 @@ def tool_definitions(schema):
     ]
 
 
-def ask_handoff(elicit, message):
+def handoff_cancellation(elicit, message):
     if elicit is None:
-        return False
+        return "client_does_not_support_handoff"
     reply = elicit({"mode": "form", "message": message,
                    "requestedSchema": {"type": "object", "properties": {
                        "browser": {"type": "string", "enum": [HANDOFF]},
                    }}}) or {}
-    return reply.get("action") == "accept" and reply.get("content") == {"browser": HANDOFF}
+    action = reply.get("action")
+    if action == "accept" and reply.get("content") == {"browser": HANDOFF}:
+        return None
+    if action == "decline":
+        return "declined"
+    if action == "cancel":
+        return "request_ended_before_handback"
+    return "no_valid_response"
 
 
 def tool_result(result):
@@ -179,8 +186,8 @@ class Chrome:
                 return {"error": "Provide a short description of the manual step."}
             self.captured = None
             self.window(epoch, open_or_activate=True)
-            if not ask_handoff(elicit, reason.strip()):
-                return {"status": "cancelled"}
+            if cancellation := handoff_cancellation(elicit, reason.strip()):
+                return {"status": "cancelled", "reason": cancellation}
             if self.epoch() <= epoch:
                 return {"error": "Chrome was not handed back. Ask the user to take over and tap Hand back."}
             return {"status": "handed_back"}
