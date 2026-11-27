@@ -401,6 +401,14 @@ public final class AgentChatModel {
 
     public var selected: ChatState { chats[selectedID] ?? ChatState() }
 
+    public func currentPermission(matching request: PermissionRequest) -> PermissionRequest? {
+        guard request.sessionID == selectedID else { return nil }
+        return selected.permissions.first { current in
+            current == request || (request.toolCallID != nil && current.toolCallID == request.toolCallID &&
+                current.title == request.title && current.options == request.options)
+        }
+    }
+
     public func title(for sessionID: String) -> String {
         sessionID == target.mainSessionID ? "Main Chat" :
             sessions.first { $0.id == sessionID }?.title ?? "Untitled chat"
