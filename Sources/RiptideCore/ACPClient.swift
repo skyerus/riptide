@@ -3,6 +3,11 @@ import Foundation
 public protocol JSONMessageTransport: Sendable {
     var incoming: AsyncThrowingStream<Data, any Error> { get }
     func send(_ message: Data) async throws
+    func close() async
+}
+
+public extension JSONMessageTransport {
+    func close() async {}
 }
 
 public typealias ACPTransport = JSONMessageTransport
@@ -126,9 +131,10 @@ public actor ACPClient {
         try await initialize()["loadSession"] == .boolean(true)
     }
 
-    public func close() {
+    public func close() async {
         reader?.cancel()
         disconnect()
+        await transport.close()
     }
 
     public func sessions(maximumPages: Int? = nil) async throws -> [SessionSummary] {

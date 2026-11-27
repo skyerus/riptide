@@ -194,12 +194,9 @@ struct ChatScreen: View {
             if let id = initialChatID, id != model.target.mainSessionID {
                 landing = true
                 couldNotOpen = false
-                if !model.sessions.contains(where: { $0.id == id }) {
-                    await model.refreshSessions()
-                }
+                let opened = await model.openSavedChat(id)
                 guard !Task.isCancelled else { return }
-                if model.sessions.contains(where: { $0.id == id }) { await model.open(id) }
-                else { couldNotOpen = true }
+                couldNotOpen = !opened
             } else {
                 model.selectMain()
                 landing = false

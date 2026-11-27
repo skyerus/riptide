@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import NIOCore
 import NIOPosix
@@ -69,7 +70,7 @@ final class SSHACPTransport: ACPTransport {
         incoming = stream
         startup = Task {
             do {
-                let parent = try await ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+                let bootstrap = ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
                     .connectTimeout(.seconds(10))
                     .channelInitializer { channel in
                         channel.eventLoop.makeCompletedFuture {
@@ -84,7 +85,13 @@ final class SSHACPTransport: ACPTransport {
                             try channel.pipeline.syncOperations.addHandler(SSHConnectionErrors(output: output))
                         }
                     }
-                    .connect(host: host, port: port).get()
+                if command == "riptide-acp" {
+                    // Kernel keepalives can preserve the SSH socket while app code is suspended.
+                    _ = bootstrap
+                        .channelOption(ChannelOptions.socketOption(.so_keepalive), value: 1)
+                        .channelOption(ChannelOptions.tcpOption(.init(rawValue: TCP_KEEPALIVE)), value: 60)
+                }
+                let parent = try await bootstrap.connect(host: host, port: port).get()
                 let deadline = parent.eventLoop.scheduleTask(in: .seconds(12)) { parent.close(promise: nil) }
                 defer { deadline.cancel() }
                 do {

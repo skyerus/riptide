@@ -125,6 +125,52 @@ struct ChatTests {
         #expect(model.completedReplies[sideID]?.preview == WorkspaceAttention.preview(reply))
     }
 
+    @Test func coldSavedChatUsesOneConnectionForLookupAndHistory() async throws {
+        let target = AgentTarget.demos[1]
+        let fixture = try FixtureTransport(target: target, catalog: ["Saved Hermes chat"])
+        let spare = try FixtureTransport(target: target, catalog: ["Saved Hermes chat"])
+        let clients = Mutex([ACPClient(transport: fixture), ACPClient(transport: spare)])
+        let model = AgentChatModel(target: target, connect: { clients.withLock { $0.removeFirst() } })
+        let chatID = "\(target.id)-sample-1"
+
+        #expect(await model.openSavedChat(chatID))
+        #expect(model.selected.loaded)
+        #expect(model.selected.transcript.entries.map(\.content) == [.message(.assistant, "Fixture chat: Saved Hermes chat")])
+        #expect(clients.withLock { $0.count } == 1)
+        #expect(!(await model.openSavedChat("missing-chat")))
+        #expect(model.selectedID == chatID)
+        #expect(clients.withLock { $0.count } == 1)
+    }
+
+    @Test func warmChatStaysOpenUntilIdleAndThenRestoresFromOneNewConnection() async throws {
+        let first = try FixtureTransport(target: target)
+        let second = try FixtureTransport(target: target)
+        let clients = Mutex([ACPClient(transport: first), ACPClient(transport: second)])
+        let model = AgentChatModel(target: target, idleTimeout: .milliseconds(80),
+                                   connect: { clients.withLock { $0.removeFirst() } })
+        model.setConnectionInUse(true)
+        await model.showMain()
+        let transcript = model.selected.transcript.entries.map(\.content)
+
+        try await Task.sleep(for: .milliseconds(120))
+        #expect(model.selected.loaded)
+        model.setConnectionInUse(false)
+        await model.showMain()
+        #expect(model.selected.loaded)
+        #expect(clients.withLock { $0.count } == 1)
+
+        try await waitUntil { model.selected.connectionLost }
+        #expect(model.selected.error == nil)
+        #expect(model.selected.transcript.entries.map(\.content) == transcript)
+        #expect(clients.withLock { $0.count } == 1)
+
+        model.setConnectionInUse(true)
+        await model.showMain()
+        #expect(model.selected.loaded)
+        #expect(model.selected.transcript.entries.map(\.content) == transcript)
+        #expect(clients.withLock { $0.isEmpty })
+    }
+
     @Test func reopeningAfterDisconnectReplaysTheReplyWithoutSendingThePromptAgain() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let file = directory.appending(path: "fixture.json")
