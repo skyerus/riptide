@@ -16,7 +16,7 @@ class ChromeComputerUseTests(unittest.TestCase):
         self.lease.get.return_value = self.state
         self.native = Mock()
         self.native.handle_computer_use.return_value = '{"ok":true}'
-        self.chrome = Chrome("/profile", self.lease, None, None, self.native, codex_reviewed_input=True)
+        self.chrome = Chrome("/profile", self.lease, Mock(), None, self.native, codex_reviewed_input=True)
         self.chrome.window = Mock(return_value=(":20", 33, 123))
 
     def test_capture_targets_the_observed_chrome_window_and_fences_each_input(self):
@@ -195,6 +195,35 @@ class ChromeComputerUseTests(unittest.TestCase):
             return reply
 
         self.assertEqual(self.chrome.call("chrome_handoff", args, hand_back), {"status": "handed_back"})
+
+    def test_handoff_retains_desktop_activity_and_checks_the_returned_browser(self):
+        self.chrome.desktop = Mock()
+        self.chrome.desktop.is_running.return_value = True
+        args = {"reason": "Authorize the integration."}
+
+        def hand_back(_form):
+            self.chrome.desktop.touch_activity.assert_called()
+            self.state.epoch += 2
+            self.chrome.window.return_value = (":20", 34, 123)
+            return {"action": "accept", "content": {"browser": HANDOFF}}
+
+        self.assertEqual(self.chrome.call("chrome_handoff", args, hand_back), {"status": "handed_back"})
+        self.chrome.window.assert_called_with(3, open_or_activate=False, start_if_needed=False)
+        self.assertGreaterEqual(self.chrome.desktop.touch_activity.call_count, 2)
+
+    def test_handoff_does_not_claim_clipboard_survived_replaced_browser(self):
+        self.chrome.desktop = Mock()
+        self.chrome.desktop.is_running.return_value = True
+        args = {"reason": "Authorize the integration."}
+
+        def hand_back(_form):
+            self.state.epoch += 2
+            self.chrome.window.return_value = (":20", 34, 456)
+            return {"action": "accept", "content": {"browser": HANDOFF}}
+
+        result = self.chrome.call("chrome_handoff", args, hand_back)
+        self.assertEqual(result["code"], "browser_restarted")
+        self.assertNotIn("status", result)
 
     def test_screenshots_use_mcp_image_content(self):
         response = tool_result({"_multimodal": True, "content": [

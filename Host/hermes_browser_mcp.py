@@ -1,13 +1,14 @@
 """Give a paired Codex App Server chat access to Chrome through Hermes computer use."""
 
 import argparse
-from contextlib import nullcontext, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stdout
 from importlib import import_module
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+from threading import Event, Thread
 import time
 
 from hermes_chrome_profile import BrowserRoute, browser_route, profile_slug
@@ -18,6 +19,7 @@ SERVER = "riptide_hermes_browser"
 HANDOFF = "Browser handoff complete"
 INPUT_ACTIONS = {"click", "scroll", "type", "key"}
 INPUT_FIELDS = {"action", "element", "coordinate", "direction", "amount", "text", "keys"}
+HANDOFF_ACTIVITY_INTERVAL = 2
 
 
 def connector(python, source, home):
@@ -63,6 +65,25 @@ def ask_handoff(elicit, message):
                        "browser": {"type": "string", "enum": [HANDOFF]},
                    }}}) or {}
     return reply.get("action") == "accept" and reply.get("content") == {"browser": HANDOFF}
+
+
+@contextmanager
+def keep_desktop_active(desktop):
+    """Preserve the existing desktop during the bounded Riptide handoff only."""
+    finished = Event()
+
+    def refresh():
+        while not finished.wait(HANDOFF_ACTIVITY_INTERVAL):
+            desktop.touch_activity()
+
+    desktop.touch_activity()
+    heartbeat = Thread(target=refresh, name="riptide-chrome-handoff", daemon=True)
+    heartbeat.start()
+    try:
+        yield
+    finally:
+        finished.set()
+        heartbeat.join()
 
 
 def tool_result(result):
@@ -117,10 +138,13 @@ class Chrome:
             raise HumanControl("The user has control of Chrome. Wait for handback.")
         return current.epoch
 
-    def window(self, epoch, *, open_or_activate, fit_capture=False):
+    def window(self, epoch, *, open_or_activate, fit_capture=False, start_if_needed=True):
         if self.placement.resolve().where != self.placement.GATEWAY:
             raise ScreenError("Chrome computer use requires the paired Hermes gateway desktop.")
-        self.desktop.ensure_started_for_tool()
+        if start_if_needed:
+            self.desktop.ensure_started_for_tool()
+        elif not self.desktop.is_running():
+            raise ScreenError("The Chrome desktop stopped during the handoff.")
         view = self.desktop.status()
         window = BrowserWindow({"placement": "gateway", "display": view.display, "socket": view.socket}, self.home)
         if window.env is None:
@@ -178,11 +202,27 @@ class Chrome:
             if set(args) != {"reason"} or not isinstance(reason, str) or len(reason) > 120 or not reason.strip():
                 return {"error": "Provide a short description of the manual step."}
             self.captured = None
-            self.window(epoch, open_or_activate=True)
-            if not ask_handoff(elicit, reason.strip()):
+            display, _, pid = self.window(epoch, open_or_activate=True)
+            with keep_desktop_active(self.desktop):
+                accepted = ask_handoff(elicit, reason.strip())
+            if not accepted:
                 return {"status": "cancelled"}
-            if self.epoch() <= epoch:
+            returned_epoch = self.epoch()
+            if returned_epoch <= epoch:
                 return {"error": "Chrome was not handed back. Ask the user to take over and tap Hand back."}
+            try:
+                returned_display, _, returned_pid = self.window(
+                    returned_epoch, open_or_activate=False, start_if_needed=False)
+            except HumanControl:
+                raise
+            except ScreenError:
+                return {"error": "Control was returned, but the original Chrome window is unavailable. "
+                        "Do not assume one-time content or copied credentials survived.",
+                        "code": "browser_unavailable"}
+            if (returned_display, returned_pid) != (display, pid):
+                return {"error": "Chrome restarted during handoff. One-time content and clipboard data may be lost.",
+                        "code": "browser_restarted"}
+            self.desktop.touch_activity()
             return {"status": "handed_back"}
 
         action = args.get("action")

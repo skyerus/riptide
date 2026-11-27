@@ -202,6 +202,13 @@ Install `Host/hermes-browser-handoff/SKILL.md` under the profile’s `skills/rip
 
 In Riptide, choose **Chat actions → Open Hermes browser** or open the browser from the agent’s handoff card. Tap **Take over** to sign in directly in Chrome. Riptide fits the desktop to the phone and provides a keyboard and Password AutoFill. Tap **Hand back** to restore agent control and resume the chat. If the connection drops, reopen the browser and take over again. The adapter streams the existing desktop over the paired SSH connection using [noVNC 1.7.0](https://github.com/novnc/noVNC/tree/v1.7.0).
 
+The connector keeps the desktop active while a handoff is pending and checks
+that the same Chrome process is still available after handback. It does not
+restart an unavailable browser or claim that a one-time credential survived.
+Bot Screen copies into the remote desktop clipboard, not into Riptide chat.
+For credential setup, use the handoff skill's private transfer and verification
+workflow rather than copying a token into chat or a tool argument.
+
 #### Share one existing Chrome desktop among trusted agents
 
 By default every pairing uses its own Hermes desktop. To opt in on a VPS,
