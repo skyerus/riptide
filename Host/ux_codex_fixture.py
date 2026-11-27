@@ -67,6 +67,10 @@ async def fixture(socket, live=False, watch_progress=False, compaction=False):
 
     async def show_live_feedback():
         try:
+            await asyncio.sleep(3)
+            await notify("item/completed", {"turnId": turn_id, "item": {
+                "id": "fixture-note", "type": "agentMessage", "phase": "commentary", "text": "Checking the current changes.",
+            }})
             await asyncio.sleep(6)
             steps = [{"step": "Inspect the fixture workspace", "status": "inProgress"},
                      {"step": "Summarize the changes", "status": "pending"}]
@@ -76,9 +80,6 @@ async def fixture(socket, live=False, watch_progress=False, compaction=False):
             await notify("item/commandExecution/outputDelta", {
                 "turnId": turn_id, "itemId": command["id"], "delta": "Fixture output is ready.",
             })
-            await notify("item/completed", {"turnId": turn_id, "item": {
-                "id": "fixture-note", "type": "agentMessage", "phase": "commentary", "text": "Checking the current changes.",
-            }})
             await notify("turn/diff/updated", {"turnId": turn_id, "diff": "--- a/demo.txt\n+++ b/demo.txt\n@@ -1 +1 @@\n-old\n+new\n"})
             await asyncio.sleep(12)
             await notify("item/completed", {"turnId": turn_id, "item": {**command, "status": "completed", "exitCode": 0}})

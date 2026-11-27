@@ -256,7 +256,7 @@ struct ChatScreen: View {
         let submission: ChatComposer.Submission = canSteer ? .steer : selected.working ? .queue : .send
         let prompt = switch submission {
         case .send: "Message \(agentName)"
-        case .steer: "Steer this reply"
+        case .steer: "Follow up"
         case .queue: "Queue a message"
         }
         let draft = Binding(get: { workspace.drafts[chatKey] }, set: { workspace.drafts[chatKey] = $0 })
@@ -355,7 +355,9 @@ struct ChatScreen: View {
     }
 
     private var transcript: some View {
-        let latestUserMessageID = model.selected.transcript.latestUserMessageID
+        let chat = model.selected
+        let latestUserMessageID = chat.transcript.latestUserMessageID
+        let firstActiveOutputID = chat.transcript.firstActiveOutputID
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 if model.selected.loaded && model.selected.transcript.entries.isEmpty {
@@ -367,6 +369,9 @@ struct ChatScreen: View {
                         .accessibilityIdentifier("empty-chat")
                 }
                 ForEach(model.selected.transcript.visibleEntries(showCompletedToolCalls: showsCompletedToolCalls)) { entry in
+                    if entry.id == firstActiveOutputID, let startedAt = chat.turnStartedAt {
+                        WorkingTurnHeader(startedAt: startedAt)
+                    }
                     switch entry.content {
                     case .message(.user, let text):
                         TranscriptUserMessage(text: text, photos: entry.photos,
@@ -385,6 +390,9 @@ struct ChatScreen: View {
                     case .pairingReceipt(let name, let connected):
                         AgentPairingReceipt(name: name, connected: connected)
                     }
+                }
+                if firstActiveOutputID == nil, let startedAt = chat.turnStartedAt {
+                    WorkingTurnHeader(startedAt: startedAt)
                 }
                 ForEach(model.selected.permissions) { request in
                     permissionCard(request)

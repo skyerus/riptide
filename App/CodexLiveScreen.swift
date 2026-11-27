@@ -7,6 +7,7 @@ struct CodexLiveScreen: View {
     @State private var showVoice = false
     @State private var session: CodexWorkspaceSession?
     @State private var turn: CodexLiveTurn?
+    @State private var watchedTurnStartedAt: Date?
     @State private var status = "Joining the running turn…"
     @State private var active = false
     @State private var failure: String?
@@ -21,6 +22,12 @@ struct CodexLiveScreen: View {
     @State private var context: ContextUsage?
     @State private var viewport = TranscriptViewport()
     @State private var editorFocused = false
+
+    private var workingSince: Date? {
+        if active { return watchedTurnStartedAt }
+        guard session?.activeTurnID != turn?.turnID else { return nil }
+        return session?.activeTurnStartedAt
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,6 +49,9 @@ struct CodexLiveScreen: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
+                    }
+                    if let workingSince {
+                        WorkingTurnHeader(startedAt: workingSince)
                     }
                     if outputEvents > 0 {
                         VStack(alignment: .leading, spacing: 8) {
@@ -154,7 +164,7 @@ struct CodexLiveScreen: View {
     private func composer(_ session: CodexWorkspaceSession) -> some View {
         let canSubmit = !session.sending && !session.stopping && !session.configuring
         return ChatComposer(
-            prompt: session.working ? "Steer this turn" : "Message Codex",
+            prompt: session.working ? "Follow up" : "Message Codex",
             chatID: turn?.threadID, fieldID: "codex-steer-input", sendID: "codex-steer-send", draft: $draft, attachments: $attachments,
             modelPickerVisible: .constant(false), editorFocus: $editorFocused, context: session.context ?? context,
             canDictate: canSubmit, canSubmit: canSubmit,
@@ -170,6 +180,7 @@ struct CodexLiveScreen: View {
         let peer = endpoint.makeClient()
         session = nil
         turn = nil
+        watchedTurnStartedAt = nil
         active = false
         status = "Joining the running turn…"
         failure = nil
@@ -182,6 +193,8 @@ struct CodexLiveScreen: View {
         do {
             let joined = try await peer.attach()
             turn = joined
+            let now = Date.now
+            watchedTurnStartedAt = min(joined.startedAt ?? now, now)
             for compaction in joined.compactions { replies.upsert(compaction) }
             let saved = workspace.codexSession(endpoint: endpoint,
                                                initialChat: .init(id: joined.threadID, title: "Codex on this Mac"),

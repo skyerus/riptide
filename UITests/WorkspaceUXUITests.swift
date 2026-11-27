@@ -884,8 +884,7 @@ final class WorkspaceUXUITests: XCTestCase {
 
     @MainActor
     func testCodexShowsProgressAndToolOutputBeforeTheFinalReply() throws {
-        let (app, editor) = try openCodexFixture()
-        XCTAssertEqual(editor.frame.midY, app.buttons["Send"].frame.midY, accuracy: 8)
+        let (app, editor) = try openCodexFixture(dictation: true)
         editor.tap()
         editor.typeText("show live feedback")
         app.buttons["Send"].tap()
@@ -896,11 +895,31 @@ final class WorkspaceUXUITests: XCTestCase {
         let activity = app.buttons["live-turn-activity"]
         XCTAssertEqual(activity.label, "Thinking")
         XCTAssertLessThan(activity.frame.height, 44)
-        XCTAssertEqual(app.staticTexts["turn-working"].label, "Working")
-        capture(app, as: "Codex thinking")
+        let timer = app.staticTexts["turn-working"]
+        XCTAssertTrue(timer.waitForExistence(timeout: 4))
+        let firstReading = timer.label
+        let elapsedFormat = "Working for [0-9]+s"
+        XCTAssertTrue(NSPredicate(format: "SELF MATCHES %@", elapsedFormat).evaluate(with: firstReading))
+        let tick = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label MATCHES %@ AND label != %@", elapsedFormat, firstReading),
+            object: timer
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [tick], timeout: 4), .completed)
+        let commentary = app.staticTexts["Checking the current changes."]
+        XCTAssertTrue(commentary.waitForExistence(timeout: 5))
+        XCTAssertLessThan(timer.frame.maxY, commentary.frame.minY)
+        XCTAssertLessThan(commentary.frame.maxY, activity.frame.minY)
+        XCTAssertEqual(activity.label, "Thinking")
+        let stop = app.buttons["stop-codex-turn"]
+        XCTAssertEqual(editor.label, "Follow up")
+        XCTAssertEqual(editor.frame.midY, stop.frame.midY, accuracy: 8)
+        XCTAssertEqual(app.buttons["add-attachments"].frame.midY, stop.frame.midY, accuracy: 8)
+        XCTAssertEqual(app.buttons["dictation-start"].frame.midY, stop.frame.midY, accuracy: 8)
+        XCTAssertTrue(app.buttons["context-usage"].exists)
+        capture(app, as: "Codex working timer and commentary")
         let step = app.staticTexts["Inspect the fixture workspace"]
         XCTAssertTrue(step.waitForExistence(timeout: 8))
-        XCTAssertTrue(app.staticTexts["Checking the current changes."].exists)
+        XCTAssertTrue(commentary.exists)
         XCTAssertEqual(activity.label, "git status --short")
         let output = app.staticTexts["Fixture output is ready."]
         XCTAssertFalse(output.exists)
@@ -911,6 +930,7 @@ final class WorkspaceUXUITests: XCTestCase {
         capture(app, as: "Codex turn shows live plan and command output")
         XCTAssertTrue(app.staticTexts["The fixture turn is complete."].waitForExistence(timeout: 16))
         XCTAssertTrue(activity.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(timer.exists)
         XCTAssertTrue(output.waitForNonExistence(timeout: 5))
         app.buttons["codex-chat-actions"].tap()
         app.buttons["Show Tool Calls"].tap()

@@ -254,6 +254,26 @@ private struct TranscriptContact: UIGestureRecognizerRepresentable {
     }
 }
 
+struct WorkingTurnHeader: View {
+    let startedAt: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TimelineView(.periodic(from: startedAt, by: 1)) { timeline in
+                let elapsed = Duration.seconds(max(0, timeline.date.timeIntervalSince(startedAt).rounded(.down)))
+                Text("Working for \(elapsed, format: .units(allowed: [.hours, .minutes, .seconds], width: .narrow))")
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .foregroundStyle(ChatTheme.muted)
+                    .accessibilityIdentifier("turn-working")
+            }
+            Divider()
+                .overlay(ChatTheme.border)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
 struct LiveTurnActivity<Details: View>: View {
     let currentTool: String?
     let hasActivity: Bool
@@ -263,10 +283,6 @@ struct LiveTurnActivity<Details: View>: View {
     var body: some View {
         let title = currentTool ?? "Thinking"
         VStack(alignment: .leading, spacing: 4) {
-            Text("Working")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(ChatTheme.muted)
-                .accessibilityIdentifier("turn-working")
             Button {
                 expanded.toggle()
             } label: {

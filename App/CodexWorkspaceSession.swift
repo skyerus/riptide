@@ -12,6 +12,7 @@ final class CodexWorkspaceSession {
     private(set) var client: CodexLiveClient?
     private(set) var turns: [CodexTranscriptTurn] = []
     private(set) var activeTurnID: String?
+    private(set) var activeTurnStartedAt: Date?
     private(set) var approvals: [CodexChatApproval] = []
     private(set) var responding = Set<UUID>()
     private(set) var ready = false
@@ -88,7 +89,7 @@ final class CodexWorkspaceSession {
         listener = nil
         client = nil
         ready = false
-        activeTurnID = nil
+        setActiveTurn(nil)
         stopping = false
         sending = false
         clearConfiguration()
@@ -144,7 +145,7 @@ final class CodexWorkspaceSession {
             guard self.client === client else { return nil }
             if case .started(let id) = delivery, activeTurnID == nil || activeTurnID == previousTurnID,
                lastCompletedTurnID != id {
-                apply(.turnStarted(id))
+                apply(.turnStarted(id, startedAt: nil))
             }
             if let queuedID { queuedMessages.removeAll { $0.id == queuedID } }
             return delivery
@@ -205,7 +206,7 @@ final class CodexWorkspaceSession {
     private func setSnapshot(_ snapshot: CodexChatSnapshot, peer: CodexLiveClient) {
         guard client === peer else { return }
         turns = snapshot.turns
-        activeTurnID = snapshot.activeTurnID
+        setActiveTurn(snapshot.activeTurnID, startedAt: snapshot.activeTurnStartedAt)
         unscopedTurnID = nil
         hasOlderTurns = snapshot.hasOlderTurns
     }
@@ -227,7 +228,7 @@ final class CodexWorkspaceSession {
         listener = nil
         client = nil
         ready = false
-        activeTurnID = nil
+        setActiveTurn(nil)
         stopping = false
         clearConfiguration()
         sending = false
@@ -258,13 +259,21 @@ final class CodexWorkspaceSession {
         workspace?.setCodexRunning(working, chat: locator)
     }
 
+    private func setActiveTurn(_ id: String?, startedAt: Date? = nil) {
+        let now = Date.now
+        let previousStart = id == activeTurnID ? activeTurnStartedAt : nil
+        activeTurnStartedAt = id == nil ? nil : min(startedAt ?? previousStart ?? now, now)
+        activeTurnID = id
+    }
+
     private func apply(_ event: CodexChatEvent) {
         switch event {
         case .message(let message, let turnID):
             turns[turnIndex(for: turnID)].upsert(message)
-        case .turnStarted(let id):
-            guard activeTurnID != id else { return }
-            activeTurnID = id
+        case .turnStarted(let id, let startedAt):
+            let alreadyActive = activeTurnID == id
+            setActiveTurn(id, startedAt: startedAt)
+            guard !alreadyActive else { return }
             stopping = false
             diff = nil
             issue = nil
@@ -294,7 +303,7 @@ final class CodexWorkspaceSession {
                 turns[turnIndex(for: turn)].upsert(compaction)
             case .completed(let turn, let status):
                 lastCompletedTurnID = turn
-                activeTurnID = nil
+                setActiveTurn(nil)
                 publishAttention()
                 stopping = false
                 if status == "completed" { issue = nil }

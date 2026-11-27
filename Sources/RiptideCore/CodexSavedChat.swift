@@ -218,6 +218,7 @@ public struct CodexTranscriptTurn: Identifiable, Sendable {
 public struct CodexChatSnapshot: Sendable {
     public let turns: [CodexTranscriptTurn]
     public let activeTurnID: String?
+    public let activeTurnStartedAt: Date?
     public let hasOlderTurns: Bool
 
     public var messages: [CodexChatMessage] { turns.flatMap(\.messages) }
@@ -274,7 +275,7 @@ public struct CodexInputQuestion: Equatable, Identifiable, Sendable {
 
 public enum CodexChatEvent: Sendable {
     case message(CodexChatMessage, turnID: String?)
-    case turnStarted(String)
+    case turnStarted(String, startedAt: Date?)
     case live(CodexLiveEvent)
     case approval(CodexChatApproval)
     case approvalResolved(UUID)
