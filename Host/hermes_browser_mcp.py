@@ -95,7 +95,7 @@ class Chrome:
             raise HumanControl("The user has control of Chrome. Wait for handback.")
         return current.epoch
 
-    def window(self, epoch, *, open_or_activate):
+    def window(self, epoch, *, open_or_activate, fit_capture=False):
         if self.placement.resolve().where != self.placement.GATEWAY:
             raise ScreenError("Chrome computer use requires the paired Hermes gateway desktop.")
         self.desktop.ensure_started_for_tool()
@@ -108,13 +108,24 @@ class Chrome:
         if open_or_activate:
             window.open_or_activate()
         deadline = time.monotonic() + 8
+        fitting = set()
         while self.epoch() == epoch:
             if active := window.active_browser(activate=open_or_activate):
-                if pid := window.process_id(active[0]):
-                    return (view.display, active[0], pid)
+                window_id = active[0]
+                if pid := window.process_id(window_id):
+                    if not fit_capture or window.capture_fits(window_id):
+                        return (view.display, window_id, pid)
+                    if window_id not in fitting:
+                        if self.epoch() != epoch:
+                            break
+                        if not window.set_state(window_id, window.STATES, enable=True):
+                            raise ScreenError("Could not fit Chrome within the Hermes desktop for capture.")
+                        fitting.add(window_id)
             if not open_or_activate or time.monotonic() >= deadline:
                 break
             time.sleep(0.1)
+        if fitting and self.epoch() == epoch:
+            raise ScreenError("Chrome is partly outside the Hermes desktop. Open Hermes browser and fit the window.")
         raise ScreenError("Chrome is no longer in front. Capture it again before sending input.")
 
     def call(self, name, args, elicit):
@@ -152,7 +163,7 @@ class Chrome:
                 return {"error": "Invalid Chrome action or fields. Use computer_use to capture and chrome_input to act."}
             if not self.codex_reviewed_input:
                 return {"error": "Chrome input requires the paired Codex App Server approval route."}
-        target = self.window(epoch, open_or_activate=capture)
+        target = self.window(epoch, open_or_activate=capture, fit_capture=capture)
         was_captured, self.captured = self.captured, None
         if not capture and was_captured != (epoch, target):
             return {"error": "Capture the Chrome window again before sending input."}
