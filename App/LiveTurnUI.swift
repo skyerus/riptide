@@ -46,6 +46,18 @@ struct TranscriptUserMessage: View {
     }
 }
 
+extension BidirectionalCollection where Element == CodexTranscriptTurn {
+    func latestUserMessageLocation(activeTurnID: String?) -> (turnID: String, messageID: String)? {
+        for turn in reversed() {
+            let messages = turn.visibleMessages(isActive: turn.id == activeTurnID)
+            if let message = messages.last(where: { $0.role == .user }) {
+                return (turn.id, message.id)
+            }
+        }
+        return nil
+    }
+}
+
 struct ToolCallsMenuButton: View {
     @Binding var showsCompletedCalls: Bool
 

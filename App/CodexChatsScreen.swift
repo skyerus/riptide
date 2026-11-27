@@ -237,13 +237,18 @@ struct CodexSavedChatScreen: View {
     }
 
     private var transcript: some View {
-        TranscriptScrollView {
+        let latestUserMessage = turns.latestUserMessageLocation(activeTurnID: activeTurnID)
+        return TranscriptScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 if session?.hasOlderTurns == true {
                     Text("Showing the latest 30 turns.").font(.caption).foregroundStyle(.secondary)
                 }
                 ForEach(turns) { turn in
-                    ForEach(turn.visibleMessages(isActive: turn.id == activeTurnID)) { transcriptMessage($0) }
+                    ForEach(turn.visibleMessages(isActive: turn.id == activeTurnID)) { message in
+                        let showsReceipt = turn.id == latestUserMessage?.turnID &&
+                            message.id == latestUserMessage?.messageID
+                        transcriptMessage(message, showsReceipt: showsReceipt)
+                    }
                     if showsCompletedToolCalls && turn.id != activeTurnID && !turn.progress.items.isEmpty {
                         CodexActivityList(items: turn.progress.items)
                             .padding(12)
@@ -292,9 +297,9 @@ struct CodexSavedChatScreen: View {
     }
 
     @ViewBuilder
-    private func transcriptMessage(_ message: CodexChatMessage) -> some View {
+    private func transcriptMessage(_ message: CodexChatMessage, showsReceipt: Bool) -> some View {
         if message.role == .user {
-            TranscriptUserMessage(text: message.text, receipt: message.receipt)
+            TranscriptUserMessage(text: message.text, receipt: showsReceipt ? message.receipt : nil)
         } else if !message.text.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 if message.phase == .commentary {

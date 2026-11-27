@@ -43,6 +43,11 @@ public struct Transcript: Equatable, Sendable {
 
     public init() {}
 
+    public var latestUserMessageID: UUID? {
+        guard let latestPromptIndex else { return nil }
+        return entries[latestPromptIndex].id
+    }
+
     public var latestAssistantEntryID: UUID? {
         lastMessage(includingProgress: true)?.id
     }

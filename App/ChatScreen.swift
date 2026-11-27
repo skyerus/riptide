@@ -360,7 +360,8 @@ struct ChatScreen: View {
     }
 
     private var transcript: some View {
-        TranscriptScrollView {
+        let latestUserMessageID = model.selected.transcript.latestUserMessageID
+        return TranscriptScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 if model.selected.loaded && model.selected.transcript.entries.isEmpty {
                     Text("Start a conversation")
@@ -373,7 +374,7 @@ struct ChatScreen: View {
                 ForEach(model.selected.transcript.visibleEntries(showCompletedToolCalls: showsCompletedToolCalls)) { entry in
                     switch entry.content {
                     case .message(.user, let text):
-                        TranscriptUserMessage(text: text, receipt: entry.receipt)
+                        TranscriptUserMessage(text: text, receipt: entry.id == latestUserMessageID ? entry.receipt : nil)
                     case .message(.assistant, let text):
                         ChatMarkdown(
                             source: text,
