@@ -274,26 +274,7 @@ private struct AgentChatBar: View {
             if otherAgents.isEmpty {
                 Spacer(minLength: 0)
             } else {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 6) {
-                        ForEach(otherAgents) { other in
-                            Button { workspace.openMainChat(other.id) } label: {
-                                AgentAvatar(agent: other, size: 36)
-                                    .frame(width: 44, height: 44)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(other.name)
-                            .accessibilityHint("Opens Main Chat")
-                            .accessibilityIdentifier("main-chat-agent-\(other.id)")
-                        }
-                    }
-                    .padding(.leading, ChatTheme.gutter - 4)
-                }
-                .scrollIndicators(.hidden)
-                .frame(height: 44)
-                .contentShape(Rectangle())
-                .accessibilityIdentifier("main-chat-agents")
+                agentStrip(otherAgents)
             }
             Button("Side chats", systemImage: "bubble.left.and.bubble.right", action: showSideChats)
                 .buttonStyle(ChatNavigationButtonStyle())
@@ -301,6 +282,36 @@ private struct AgentChatBar: View {
                 .padding(.trailing, ChatTheme.gutter)
         }
         .background(ChatTheme.background)
+    }
+
+    @ViewBuilder
+    private func agentStrip(_ agents: [WorkspaceAgent]) -> some View {
+        let strip = ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(agents) { other in
+                    Button { workspace.openMainChat(other.id) } label: {
+                        AgentAvatar(agent: other, size: 36)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(other.name)
+                    .accessibilityHint("Opens Main Chat")
+                    .accessibilityIdentifier("main-chat-agent-\(other.id)")
+                }
+            }
+            .padding(.leading, ChatTheme.gutter - 4)
+        }
+        .scrollIndicators(.hidden)
+        .frame(height: 44)
+        .contentShape(Rectangle())
+        .accessibilityIdentifier("main-chat-agents")
+
+        if #available(iOS 26.0, *) {
+            strip.scrollEdgeEffectHidden(for: .vertical)
+        } else {
+            strip
+        }
     }
 }
 
