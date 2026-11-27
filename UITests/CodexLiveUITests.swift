@@ -44,7 +44,15 @@ final class CodexLiveUITests: XCTestCase {
         app.buttons["minimize-voice-call"].tap()
         let resume = app.buttons["resume-voice-call"]
         XCTAssertTrue(resume.waitForExistence(timeout: 5))
+        let back = app.navigationBars.buttons["BackButton"]
+        XCTAssertTrue(back.isHittable)
         capture(app, as: "Minimized call with chat composer")
+        back.tap()
+        XCTAssertTrue(resume.exists)
+        let sameChat = app.buttons["sidebar-chat-busy-fixture-thread"]
+        XCTAssertTrue(sameChat.waitForExistence(timeout: 5))
+        sameChat.tap()
+        XCTAssertTrue(resume.exists)
 
         XCUIDevice.shared.press(.home)
         app.activate()

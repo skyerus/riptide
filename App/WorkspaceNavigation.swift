@@ -7,16 +7,16 @@ struct WorkspaceNavigation: View {
     @State private var alerts = WorkspaceAlerts()
 
     var body: some View {
-        NavigationStack(path: $workspace.path) {
-            WorkspaceSidebar()
-                .navigationDestination(for: WorkspaceRoute.self) { route in
-                    WorkspaceDestination(route: route)
-                        .id(route)
-                }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
+        VStack(spacing: 0) {
             if let call = workspace.calls.active, workspace.calls.presentation == nil, !call.finished {
                 VoiceCallBar(call: call, resume: workspace.calls.resume)
+            }
+            NavigationStack(path: $workspace.path) {
+                WorkspaceSidebar()
+                    .navigationDestination(for: WorkspaceRoute.self) { route in
+                        WorkspaceDestination(route: route)
+                            .id(route)
+                    }
             }
         }
         .sheet(item: Binding(
