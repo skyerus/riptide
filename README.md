@@ -159,6 +159,8 @@ Update trusted Hermes SSH pairings to the versioned wrapper that admits assistan
 
 ACP clients opt in with `clientCapabilities._meta["app.riptide.assistantProgress"] = true`. An `agent_message_chunk` with the same flag in `_meta` carries a complete progress update and uses the same `messageId` as any earlier deltas for that item. The app shows it until the turn ends. Connectors omit those updates from completed history. Codex App Server connections use the native message phase directly.
 
+Apply [the screenshot transcript patch](Host/compat/hermes-codex-image-view-transcript.patch) after the assistant progress patch. It keeps Codex screenshot viewing activity out of new assistant replies and omits legacy screenshot records when ACP reopens a chat. Use the same apply, restart, and rollback procedure.
+
 ### Hermes browser handoff over SSH
 
 Configure [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) on the Linux gateway. Install its desktop packages, set `bot_desktop.auto_start: true` and `model.openai_runtime: codex_app_server` in the paired profile, and apply [the Hermes gateway patches](Host/compat/hermes-gateway-pairing.md). The SSH wrapper needs `websockets` and `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` in the key’s forced command. Give this option only to devices trusted to control the profile’s desktop.

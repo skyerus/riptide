@@ -1,0 +1,104 @@
+diff --git a/acp_adapter/server.py b/acp_adapter/server.py
+index 9b52e82..8f76373 100644
+--- a/acp_adapter/server.py
++++ b/acp_adapter/server.py
+@@ -39,6 +39,7 @@ from acp_adapter.provenance import session_provenance_meta
+ from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+ from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
+ from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
++from agent.transports.codex_event_projector import is_legacy_image_view_text
+ from agent.turn_failure_copy import (
+     CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY, CONTENT_REFUSED_NOTICE)
+ from agent.interrupt_compat import request_hard_interrupt
+@@ -117,7 +118,7 @@ def _history_tool_call_name_args(tool_call: dict[str, Any]) -> tuple[str, dict[s
+
+ def _history_message_chunk(role: str, message: dict[str, Any]) -> UserMessageChunk | AgentMessageChunk | None:
+     text = _flatten_history_text(message.get("content"))
+-    if not text:
++    if not text or (role == "assistant" and is_legacy_image_view_text(text)):
+         return None
+     cls, session_update = _HISTORY_CHUNK_TYPES[role]
+     return cls(
+diff --git a/agent/transports/codex_event_projector.py b/agent/transports/codex_event_projector.py
+index 4648964..de624d8 100644
+--- a/agent/transports/codex_event_projector.py
++++ b/agent/transports/codex_event_projector.py
+@@ -15,6 +15,20 @@ from dataclasses import dataclass, field
+ from typing import Any, Callable, Optional
+
+ ASSISTANT_PROGRESS = "app.riptide.assistantProgress"
++_IMAGE_VIEW = "imageView"
++
++
++def is_legacy_image_view_text(text: str) -> bool:
++    """Identify a screenshot item serialized by the old opaque-item projection."""
++    payload = text.removeprefix(f"[codex {_IMAGE_VIEW}] ")
++    if payload == text or len(payload) > 1500:
++        return False
++    try:
++        item = json.loads(payload)
++    except (ValueError, RecursionError):
++        return False
++    return (isinstance(item, dict) and item.get("type") == _IMAGE_VIEW
++            and all(isinstance(item.get(key), str) and item[key] for key in ("id", "path")))
+
+
+ def _deterministic_call_id(item_type: str, item_id: str) -> str:
+@@ -54,6 +68,9 @@ class CodexEventProjector:
+         item = (notification.get("params", {}) or {}).get("item") or {}
+         item_type = item.get("type") or ""
+         item_id = item.get("id") or ""
++        if item_type == _IMAGE_VIEW:
++            # Viewing a screenshot is internal activity, not an assistant message.
++            return ProjectionResult()
+         if item_type == "agentMessage":
+             return self._project_agent_message(item)
+         if item_type == "reasoning":
+diff --git a/tests/acp_adapter/test_riptide_codex_image_view.py b/tests/acp_adapter/test_riptide_codex_image_view.py
+new file mode 100644
+index 0000000..6db7574
+--- /dev/null
++++ b/tests/acp_adapter/test_riptide_codex_image_view.py
+@@ -0,0 +1,42 @@
++"""Screenshot activity stays out of the assistant conversation."""
++
++import json
++
++from acp_adapter.server import _history_replay_updates
++from agent.transports.codex_event_projector import CodexEventProjector
++
++
++IMAGE_VIEW = {"type": "imageView", "id": "exec-fixture",
++              "path": "/fixture/browser-screenshot.png", "startedAtMs": 1, "completedAtMs": 1}
++
++
++def test_screenshot_item_does_not_materialize_as_an_assistant_message():
++    projector = CodexEventProjector()
++    method = "item/completed"
++    screenshot = projector.project({"method": method, "params": {"item": IMAGE_VIEW}})
++    assert screenshot.messages == []
++    assert screenshot.final_text is None
++    final = projector.project({"method": method, "params": {"item": {
++        "type": "agentMessage", "id": "reply", "phase": "final_answer", "text": "Browser checked.",
++    }}})
++    assert final.messages == [{"role": "assistant", "content": "Browser checked."}]
++    assert final.final_text == "Browser checked."
++
++
++def test_replay_omits_only_legacy_image_view_records():
++    legacy = "[codex imageView] " + json.dumps(IMAGE_VIEW)
++    quoted = "Here is the record: " + legacy
++    incomplete = "[codex imageView] This is a regular note."
++    other_item = '[codex imageView] {"type": "agentMessage", "id": "text", "path": "source"}'
++    updates = list(_history_replay_updates([
++        {"role": "user", "content": "Check the example page."},
++        {"role": "assistant", "content": legacy},
++        {"role": "assistant", "content": "Browser checked."},
++        {"role": "assistant", "content": incomplete},
++        {"role": "assistant", "content": other_item},
++        {"role": "assistant", "content": quoted},
++        {"role": "user", "content": legacy},
++    ]))
++    assert [update.content.text for update in updates] == [
++        "Check the example page.", "Browser checked.", incomplete, other_item, quoted, legacy,
++    ]
