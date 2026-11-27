@@ -145,7 +145,7 @@ async def fixture(socket, live=False, watch_progress=False):
                 result = {"data": history}
                 if live:
                     await notify_usage()
-                    if watch_progress and params.get("limit") == 3 and approval is None:
+                    if watch_progress and params.get("limit") in (3, 30) and approval is None:
                         approval = asyncio.create_task(show_live_feedback())
             elif method == "turn/start" and not started:
                 started = True

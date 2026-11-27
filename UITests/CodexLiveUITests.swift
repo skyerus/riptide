@@ -80,18 +80,8 @@ final class CodexLiveUITests: XCTestCase {
 
     @MainActor
     func testLiveCodexComposerSteersAndOffersQueue() throws {
-        guard let port = ProcessInfo.processInfo.environment["RIPTIDE_UX_LIVE_FIXTURE_PORT"] else {
-            throw XCTSkip("Start the Codex UX fixture in --live mode.")
-        }
         continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
-        app.launchEnvironment["RIPTIDE_CODEX_URL"] = "ws://127.0.0.1:\(port)"
-        app.launchEnvironment["RIPTIDE_CODEX_BEARER"] = "fixture-" + String(repeating: "x", count: 40)
-        app.launchEnvironment["RIPTIDE_CODEX_WORKSPACE"] = "/riptide-ux-fixture"
-        app.launch()
-        app.openAgentWorkspace("local-codex")
-        app.buttons["watch-desktop-codex"].tap()
+        let app = try openLiveCodexFixture(portKey: "RIPTIDE_UX_LIVE_FIXTURE_PORT", mode: "--live")
         let editor = app.descendants(matching: .any).matching(identifier: "codex-steer-input").firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 8))
         editor.tap()
@@ -108,6 +98,52 @@ final class CodexLiveUITests: XCTestCase {
         queue.tap()
         XCTAssertTrue(app.buttons["queued-messages"].waitForExistence(timeout: 5))
         capture(app, as: "Desktop Codex follow-up queued")
+    }
+
+    @MainActor
+    func testLiveCodexOnlyShowsLatestFollowUpReceipt() throws {
+        continueAfterFailure = false
+        let app = try openLiveCodexFixture(portKey: "RIPTIDE_UX_LIVE_PROGRESS_FIXTURE_PORT", mode: "--live --watch-progress")
+        let editor = app.descendants(matching: .any).matching(identifier: "codex-steer-input").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        let send = app.buttons["codex-steer-send"]
+        let receipts = app.staticTexts.matching(identifier: "message-receipt")
+        let first = "finish without approval: check the opening"
+        let latest = "finish without approval: check the summary"
+
+        XCTAssertTrue(app.staticTexts["The fixture turn is complete."].waitForExistence(timeout: 26))
+        editor.tap()
+        editor.typeText(first)
+        send.tap()
+        XCTAssertTrue(app.staticTexts["A reply finished in the other workspace."].waitForExistence(timeout: 12))
+        XCTAssertEqual(receipts.firstMatch.label, "Seen")
+
+        editor.tap()
+        editor.typeText(latest)
+        send.tap()
+        let latestMessage = app.staticTexts[latest]
+        XCTAssertTrue(latestMessage.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts[first].exists)
+        XCTAssertEqual(receipts.count, 1)
+        XCTAssertEqual(receipts.firstMatch.label, "Delivered")
+        XCTAssertGreaterThanOrEqual(receipts.firstMatch.frame.minY, latestMessage.frame.maxY)
+        capture(app, as: "One live Codex receipt under the latest follow-up")
+    }
+
+    @MainActor
+    private func openLiveCodexFixture(portKey: String, mode: String) throws -> XCUIApplication {
+        guard let port = ProcessInfo.processInfo.environment[portKey] else {
+            throw XCTSkip("Start the Codex UX fixture with \(mode) and pass \(portKey).")
+        }
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_CODEX_URL"] = "ws://127.0.0.1:\(port)"
+        app.launchEnvironment["RIPTIDE_CODEX_BEARER"] = "fixture-" + String(repeating: "x", count: 40)
+        app.launchEnvironment["RIPTIDE_CODEX_WORKSPACE"] = "/riptide-ux-fixture"
+        app.launch()
+        app.openAgentWorkspace("local-codex")
+        app.buttons["watch-desktop-codex"].tap()
+        return app
     }
 
     @MainActor

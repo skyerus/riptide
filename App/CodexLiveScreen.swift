@@ -63,10 +63,14 @@ struct CodexLiveScreen: View {
                             .accessibilityIdentifier("codex-assistant-reply")
                     }
                     if let turn, let session {
-                        ForEach(session.turns.drop(while: { $0.id != turn.turnID }).dropFirst()) { followUp in
+                        let followUps = session.turns.drop(while: { $0.id != turn.turnID }).dropFirst()
+                        let latestUserMessage = followUps.latestUserMessageLocation(activeTurnID: session.activeTurnID)
+                        ForEach(followUps) { followUp in
                             ForEach(followUp.visibleMessages(isActive: followUp.id == session.activeTurnID)) { message in
                                 if message.role == .user {
-                                    TranscriptUserMessage(text: message.text, receipt: message.receipt)
+                                    let showsReceipt = followUp.id == latestUserMessage?.turnID &&
+                                        message.id == latestUserMessage?.messageID
+                                    TranscriptUserMessage(text: message.text, receipt: showsReceipt ? message.receipt : nil)
                                 } else {
                                     ChatMarkdown(source: message.text, streaming: message.streaming)
                                 }

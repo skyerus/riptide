@@ -584,9 +584,15 @@ final class WorkspaceUXUITests: XCTestCase {
         capture(app, as: "Tap to steer")
         steer.tap()
         let transcript = app.scrollViews["codex-saved-transcript"]
-        XCTAssertTrue(transcript.staticTexts["Focus on the opening paragraph"].waitForExistence(timeout: 8))
+        let steeringMessage = transcript.staticTexts["Focus on the opening paragraph"]
+        XCTAssertTrue(steeringMessage.waitForExistence(timeout: 8))
         XCTAssertTrue(stop.waitForExistence(timeout: 5))
         XCTAssertFalse(steer.exists)
+        let receipts = transcript.staticTexts.matching(identifier: "message-receipt")
+        XCTAssertTrue(isVisible(transcript.staticTexts["Review the draft"], in: transcript))
+        XCTAssertEqual(receipts.count, 1)
+        XCTAssertGreaterThanOrEqual(receipts.firstMatch.frame.minY, steeringMessage.frame.maxY)
+        capture(app, as: "One Codex receipt under the latest message")
 
         let followUp = "finish without approval and check the conclusion"
         editor.tap()
@@ -609,6 +615,9 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(transcript.staticTexts[followUp].waitForExistence(timeout: 8))
         XCTAssertTrue(queued.waitForNonExistence(timeout: 5))
         XCTAssertTrue(transcript.staticTexts["A reply finished in the other workspace."].waitForExistence(timeout: 12))
+        XCTAssertEqual(receipts.count, 1)
+        XCTAssertEqual(receipts.firstMatch.label, "Seen")
+        XCTAssertGreaterThanOrEqual(receipts.firstMatch.frame.minY, transcript.staticTexts[followUp].frame.maxY)
     }
 
     @MainActor
@@ -644,10 +653,16 @@ final class WorkspaceUXUITests: XCTestCase {
         capture(app, as: "Running composer with a draft shows Send")
         send.tap()
         let transcript = app.scrollViews["chat-transcript"]
-        XCTAssertTrue(transcript.staticTexts["Focus on the draft"].waitForExistence(timeout: 5))
+        let steeringMessage = transcript.staticTexts["Focus on the draft"]
+        XCTAssertTrue(steeringMessage.waitForExistence(timeout: 5))
         XCTAssertTrue(deny.exists)
         XCTAssertTrue(stop.waitForExistence(timeout: 5))
         XCTAssertFalse(send.exists)
+        let receipts = transcript.staticTexts.matching(identifier: "message-receipt")
+        XCTAssertTrue(isVisible(transcript.staticTexts["Show an approval"], in: transcript))
+        XCTAssertEqual(receipts.count, 1)
+        XCTAssertGreaterThanOrEqual(receipts.firstMatch.frame.minY, steeringMessage.frame.maxY)
+        capture(app, as: "One Hermes receipt under the latest message")
 
         app.buttons["dictation-start"].tap()
         let dictationSend = app.buttons["dictation-send"]
