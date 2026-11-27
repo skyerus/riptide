@@ -9,7 +9,8 @@ import re
 import sys
 import uuid
 
-from ssh_pairing_files import read_owned
+from hermes_chrome_profile import owned_directory
+from ssh_pairing_files import hermes_profile, read_owned
 
 
 MAX_REQUEST = 128 * 1024
@@ -46,14 +47,44 @@ def gateway_config(path):
         raise TalkError("disabled")
     if "gateway" not in config:
         return None
-    names = ("home", "source", "python", "talk", "auth")
+    names = {"home", "source", "python", "talk", "auth"}
     gateway = config["gateway"]
-    if set(config) != {"gateway"} or not isinstance(gateway, dict) or set(gateway) != set(names):
+    if (set(config) != {"gateway"} or not isinstance(gateway, dict)
+            or set(gateway) not in (names, names | {"hermes"})):
         raise TalkError("disabled")
-    paths = [Path(gateway[name]) for name in names]
-    if not all(p.is_absolute() for p in paths):
+    paths = {name: Path(value) for name, value in gateway.items()}
+    if not all(path.is_absolute() for path in paths.values()):
         raise TalkError("disabled")
     return paths
+
+
+def shared_gateway_for(path, hermes):
+    if path is None:
+        return False
+    try:
+        gateway = gateway_config(path)
+        return gateway is not None and gateway.get("hermes") == hermes
+    except (OSError, ValueError, TypeError, TalkError):
+        return False
+
+
+def gateway_home(gateway, home, command):
+    profile = gateway["home"]
+    if "hermes" in gateway:
+        name = hermes_profile(command, gateway["hermes"])
+        if name is None:
+            raise TalkError("disabled")
+        owned_directory(profile)
+        if name != "default":
+            profiles = profile / "profiles"
+            owned_directory(profiles)
+            profile = profiles / name
+            owned_directory(profile)
+    elif home is None:
+        raise TalkError("disabled")
+    if home is not None and Path(home).resolve() != profile.resolve():
+        raise TalkError("disabled")
+    return profile
 
 
 class TalkCall:
@@ -183,7 +214,7 @@ class TalkCall:
                 self.send("/close", self.context, timeout=3)
 
 
-def serve(path, *, home=None, workspace=None):
+def serve(path, *, home=None, workspace=None, command=()):
     call = None
     try:
         if path is None:
@@ -191,13 +222,13 @@ def serve(path, *, home=None, workspace=None):
         try:
             gateway = gateway_config(path)
             if gateway is not None:
-                profile, source, python, talk, auth = gateway
-                if (home is None or Path(home).resolve() != profile.resolve() or workspace is None
-                        or not Path(workspace).is_absolute() or not os.access(python, os.X_OK)):
+                profile = gateway_home(gateway, home, command)
+                python = gateway["python"]
+                if workspace is None or not Path(workspace).is_absolute() or not os.access(python, os.X_OK):
                     raise TalkError("disabled")
                 adapter = Path(__file__).resolve().with_name("hermes_gateway_talk.py")
-                os.execv(str(python), [str(python), "-IB", str(adapter), str(profile), str(source),
-                                      str(talk), str(auth), workspace])
+                os.execv(str(python), [str(python), "-IB", str(adapter), str(profile), str(gateway["source"]),
+                                      str(gateway["talk"]), str(gateway["auth"]), workspace])
         except (OSError, ValueError, TypeError) as error:
             raise TalkError("disabled") from error
         call = TalkCall(path)
