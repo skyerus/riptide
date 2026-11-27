@@ -410,7 +410,8 @@ if __name__ == "__main__":
         sys.exit(0)
     if requested == "riptide-hermes-talk":
         from hermes_ssh_talk import serve as serve_talk
-        serve_talk(args.hermes_talk_config)
+        serve_talk(args.hermes_talk_config, home=args.hermes_screen[0] if args.hermes_screen else None,
+                   workspace=args.workspace)
         sys.exit(0)
     if requested == "riptide-hermes-groups":
         if args.hermes_groups is None:

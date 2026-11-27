@@ -20,7 +20,7 @@ from ssh_pairing_files import Edit, key_command, lock_keys, read_owned, require
 HOST = Path(__file__).resolve().parent
 PAYLOAD = ("ssh_acp.py", "hermes_screen.py", "hermes_groups.py", "hermes_browser_mcp.py", "codex_dictation.py",
            "attention_relay.py", "hermes_attention.py", "hermes_pairing.py", "hermes_ssh_talk.py", "agent_pairing_mcp.py",
-           "agent_profile.py", "mcp_stdio.py", "ssh_pairing_files.py", "hermes_chrome_profile.py")
+           "agent_profile.py", "mcp_stdio.py", "ssh_pairing_files.py", "hermes_chrome_profile.py", "hermes_gateway_talk.py")
 RESOURCES = ("hermes-browser-handoff/SKILL.md",)
 
 
