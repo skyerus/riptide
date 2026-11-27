@@ -11,6 +11,7 @@ public struct QueuedChatMessage: Identifiable, Sendable {
     public let text: String
     public let attachments: [ChatAttachment]
     fileprivate var confirmedUndelivered = false
+    fileprivate var waitingForConnection = false
 
     public init(text: String, attachments: [ChatAttachment] = []) {
         self.text = text
@@ -282,7 +283,7 @@ public final class AgentChatModel {
     @ObservationIgnored private var idleTask: Task<Void, Never>?
     @ObservationIgnored private var historyCache: ChatHistoryCache?
     @ObservationIgnored private var liveEventsDuringLoad: [String: [ACPEvent]] = [:]
-    @ObservationIgnored private var mainPreload: Task<Void, Never>?
+    @ObservationIgnored private var openings: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var catalogRefresh: (maximumPages: Int?, client: ACPClient, task: Task<Void, Never>)?
     private var photoStore: SentPhotoStore { SentPhotoStore(workspace: target.id) }
     @ObservationIgnored private var attachmentDeliveries: [String: @MainActor () -> Void] = [:]
@@ -410,6 +411,15 @@ public final class AgentChatModel {
         historyCache = nil
     }
 
+    public func disconnect() {
+        for task in openings.values { task.cancel() }
+        catalogRefresh?.task.cancel()
+        observer?.cancel()
+        let previous = client
+        clearConnection()
+        if let previous { Task { await previous.close() } }
+    }
+
     public func title(for sessionID: String) -> String {
         sessionID == target.mainSessionID ? "Main Chat" :
             sessions.first { $0.id == sessionID }?.title ?? "Untitled chat"
@@ -450,24 +460,18 @@ public final class AgentChatModel {
     }
 
     public func preloadMain() async {
-        let main = target.mainSessionID
-        guard mainPreload == nil, chats[main]?.loaded != true, chats[main]?.loading != true else { return }
-        let preload = Task {
-            defer { mainPreload = nil }
-            await load(main)
-        }
-        mainPreload = preload
-        await preload.value
+        await beginOpening(target.mainSessionID)?.value
+    }
+
+    public func prepareToOpen(_ sessionID: String) {
+        guard makeClient != nil, sessionID == target.mainSessionID || listsChat(sessionID) else { return }
+        _ = beginOpening(sessionID)
     }
 
     public func open(_ sessionID: String) async {
         if makeClient != nil, sessionID != target.mainSessionID, !listsChat(sessionID) { return }
         selectedID = sessionID
-        if sessionID == target.mainSessionID, let mainPreload {
-            await mainPreload.value
-            return
-        }
-        await load(sessionID)
+        await beginOpening(sessionID)?.value
     }
 
     public func openSavedChat(_ sessionID: String) async -> Bool {
@@ -498,7 +502,21 @@ public final class AgentChatModel {
         return connection
     }
 
+    private func beginOpening(_ sessionID: String) -> Task<Void, Never>? {
+        guard !Task.isCancelled else { return nil }
+        if let opening = openings[sessionID] { return opening }
+        expireIdleConnection()
+        guard chats[sessionID]?.loaded != true else { return nil }
+        let opening = Task {
+            defer { openings[sessionID] = nil }
+            await load(sessionID)
+        }
+        openings[sessionID] = opening
+        return opening
+    }
+
     private func load(_ sessionID: String, allowFastResume: Bool = true) async {
+        guard !Task.isCancelled else { return }
         expireIdleConnection()
         guard chats[sessionID]?.loaded != true, chats[sessionID]?.loading != true else { return }
         guard let client = connectIfNeeded() else { return }
@@ -837,11 +855,20 @@ public final class AgentChatModel {
 
     public func enqueue(_ rawText: String, attachments: [ChatAttachment] = [], in sessionID: String) -> Bool {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard chats[sessionID]?.loaded == true, !text.isEmpty || !attachments.isEmpty else { return false }
-        chats[sessionID]?.queuedMessages.append(QueuedChatMessage(text: text, attachments: attachments))
+        let waitingForConnection = canQueueWhileConnecting(in: sessionID)
+        guard chats[sessionID]?.loaded == true || waitingForConnection,
+              !text.isEmpty || !attachments.isEmpty else { return false }
+        var message = QueuedChatMessage(text: text, attachments: attachments)
+        message.waitingForConnection = waitingForConnection
+        chats[sessionID]?.queuedMessages.append(message)
         chats[sessionID]?.steeringError = nil
         drainQueue(in: sessionID)
         return true
+    }
+
+    public func canQueueWhileConnecting(in sessionID: String) -> Bool {
+        makeClient != nil && sessionID == selectedID && chats[sessionID]?.loaded != true
+            && chats[sessionID]?.loading == true && (sessionID == target.mainSessionID || listsChat(sessionID))
     }
 
     public func removeQueuedMessage(_ id: UUID, in sessionID: String) {
@@ -857,16 +884,23 @@ public final class AgentChatModel {
 
     private func drainQueue(in sessionID: String) {
         guard let chat = chats[sessionID], !chat.steering,
-              let message = chat.queuedMessages.first(where: { !chat.queuePaused || $0.confirmedUndelivered }) else { return }
-        if message.attachments.isEmpty {
+              let index = chat.queuedMessages.firstIndex(where: { !chat.queuePaused || $0.confirmedUndelivered }) else { return }
+        let message = chat.queuedMessages[index]
+        if message.attachments.isEmpty && !message.waitingForConnection {
             if startPrompt(message.text, in: sessionID) { removeQueuedMessage(message.id, in: sessionID) }
             return
         }
-        let started = startPrompt(message.text, attachments: message.attachments, in: sessionID, onSent: { [weak self] in
+        let delivered: @MainActor @Sendable () -> Void = { [weak self] in
             self?.chats[sessionID]?.sendingQueuedID = nil
             self?.removeQueuedMessage(message.id, in: sessionID)
-        })
-        if started { chats[sessionID]?.sendingQueuedID = message.id }
+        }
+        if startPrompt(message.text, attachments: message.attachments, in: sessionID,
+                       onSent: message.attachments.isEmpty ? nil : delivered,
+                       onWritten: message.attachments.isEmpty ? delivered : nil) {
+            // A reconnect can only replay a queued send that has not been attempted.
+            chats[sessionID]?.queuedMessages[index].waitingForConnection = false
+            chats[sessionID]?.sendingQueuedID = message.id
+        }
     }
 
     public func submitHermesVoice(_ rawText: String, in sessionID: String) async throws -> String {
@@ -1040,6 +1074,8 @@ public final class AgentChatModel {
             } else if chat.loading && chat.error == nil {
                 chat.error = ACPError.disconnected.localizedDescription
             }
+            chat.queuePaused = !chat.queuedMessages.isEmpty &&
+                (chat.queuePaused || chat.working || chat.queuedMessages.contains { !$0.waitingForConnection })
             chat.transcript.finishPrompt()
             chat.loading = false
             chat.loaded = false
@@ -1052,7 +1088,6 @@ public final class AgentChatModel {
             chat.preparingPrompt = false
             chat.steering = false
             chat.sendingQueuedID = nil
-            chat.queuePaused = !chat.queuedMessages.isEmpty
             chat.permissions = []
             chats[id] = chat
         }
@@ -1098,11 +1133,12 @@ public final class AgentChatModel {
         chat.reportedModelName = opened.reportedModelName
         chat.acceptsImages = opened.acceptsImages
         chat.loaded = true
-        chat.loading = false
         chat.connectionLost = false
         chats[opened.id] = chat
         recordWorkingState(opened.id)
         recordApprovalState(opened.id)
         for event in liveEventsDuringLoad.removeValue(forKey: opened.id) ?? [] { receiveLive(event) }
+        chats[opened.id]?.loading = false
+        drainQueue(in: opened.id)
     }
 }

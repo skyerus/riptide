@@ -63,17 +63,69 @@ struct ChatTests {
         try await waitUntil { await fast.awaitingBothRequests }
         try await fast.sendPreview()
         try await waitUntil { model.selected.displayTranscript.entries.last?.content == .message(.assistant, "Newest reply") }
+        #expect(model.enqueue("Send after the connection is back", in: chat))
         await fast.disconnect()
 
         try await waitUntil { await regular.mainLoads == 1 }
         #expect(model.selected.loading)
         #expect(model.selected.error == nil)
         #expect(model.selected.displayTranscript.entries.last?.content == .message(.assistant, "Newest reply"))
+        #expect(model.selected.queuedMessages.map(\.text) == ["Send after the connection is back"])
+        #expect(await regular.promptSessions.isEmpty)
         await regular.releaseHistory()
         await open.value
+        try await waitUntil { await regular.promptSessions == [chat] }
+        try await waitUntil { model.selected.queuedMessages.isEmpty }
         #expect(model.selected.loaded)
         #expect(model.selected.error == nil)
         #expect(clients.withLock { $0.isEmpty })
+    }
+
+    @Test func sendWhileOpeningASideChatKeepsItsDestinationAfterSwitchingAway() async throws {
+        let side = "\(target.id)-sample-1"
+        let fixture = try FixtureTransport(target: target, catalog: ["Saved side chat"])
+        let transport = GatedHistoryTransport(fixture: fixture, mainID: side)
+        let model = AgentChatModel(target: target) { ACPClient(transport: transport) }
+        await model.showMain()
+        await model.refreshSessions()
+        model.prepareToOpen(side)
+        try await waitUntil { await transport.mainLoads == 1 }
+        #expect(model.selectedID == target.mainSessionID)
+
+        let viewOpening = Task { await model.open(side) }
+        try await waitUntil { model.canQueueWhileConnecting(in: side) }
+        #expect(model.enqueue("Send to the side chat", in: side))
+        #expect(await transport.promptSessions.isEmpty)
+
+        viewOpening.cancel()
+        await model.showMain()
+        await transport.releaseHistory()
+        await viewOpening.value
+        try await waitUntil { await transport.promptSessions == [side] }
+        #expect(model.selectedID == target.mainSessionID)
+        #expect(!model.selected.transcript.entries.contains { $0.content == .message(.user, "Send to the side chat") })
+
+        await model.open(side)
+        try await waitUntil { model.selected.queuedMessages.isEmpty }
+        #expect(model.selected.transcript.entries.filter { $0.content == .message(.user, "Send to the side chat") }.count == 1)
+        #expect(await transport.mainLoads == 1)
+    }
+
+    @Test func aFailedQueuedWritePausesTheFollowingMessages() async throws {
+        let chat = target.mainSessionID
+        let transport = GatedHistoryTransport(fixture: try FixtureTransport(target: target), mainID: chat)
+        await transport.failNextPrompt()
+        let model = AgentChatModel(target: target) { ACPClient(transport: transport) }
+        let open = Task { await model.showMain() }
+        try await waitUntil { model.canQueueWhileConnecting(in: chat) }
+        #expect(model.enqueue("First queued message", in: chat))
+        #expect(model.enqueue("Next queued message", in: chat))
+
+        await transport.releaseHistory()
+        await open.value
+        try await waitUntil { model.selected.queuePaused }
+        #expect(model.selected.queuedMessages.map(\.text) == ["First queued message", "Next queued message"])
+        #expect(await transport.promptSessions == [chat])
     }
 
     @Test func steeringAndQueuedFollowUpsStayWithTheirOriginalChat() async throws {
@@ -588,7 +640,9 @@ private actor GatedHistoryTransport: ACPTransport {
     private let mainID: String
     private var released = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var failPrompt = false
     private(set) var mainLoads = 0
+    private(set) var promptSessions: [String] = []
 
     init(fixture: FixtureTransport, mainID: String) {
         self.fixture = fixture
@@ -601,8 +655,17 @@ private actor GatedHistoryTransport: ACPTransport {
             mainLoads += 1
             if !released { await withCheckedContinuation { waiting.append($0) } }
         }
+        if request["method"] == "session/prompt", let id = request["params"]?["sessionId"]?.string {
+            promptSessions.append(id)
+            if failPrompt {
+                failPrompt = false
+                throw ACPError.disconnected
+            }
+        }
         try await fixture.send(message)
     }
+
+    func failNextPrompt() { failPrompt = true }
 
     func releaseHistory() {
         released = true

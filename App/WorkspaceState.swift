@@ -386,6 +386,10 @@ final class WorkspaceState {
         guard agent(route.workspace) != nil else { return }
         showingSwitcher = false
         if path != [route] {
+            if route.hermesGroup == nil, !route.startsNewChat, let model = agentChatModel(for: route.workspace),
+               let chat = route.opensMainChat ? model.target.mainSessionID : route.chat {
+                model.prepareToOpen(chat)
+            }
             visibleChat = nil
             path = [route]
         }
@@ -467,8 +471,10 @@ final class WorkspaceState {
         hermesGroupSessions = hermesGroupSessions.filter { $0.key.workspace != workspaceID }
         HermesGroupSession.removeDrafts(workspaceID: workspaceID)
         SentPhotoStore(workspace: workspaceID).removeWorkspace()
-        if let model = remoteModels[workspaceID] { model.removeCachedHistory() }
-        else { ChatHistoryCache(workspace: workspaceID).removeWorkspace() }
+        if let model = remoteModels[workspaceID] {
+            model.disconnect()
+            model.removeCachedHistory()
+        } else { ChatHistoryCache(workspace: workspaceID).removeWorkspace() }
         try? avatars.removePhoto(for: workspaceID)
         if path.contains(where: { $0.workspace == workspaceID }) { showSidebar(.agents) }
         for key in codexRecency.filter({ $0.workspace == workspaceID }) {
