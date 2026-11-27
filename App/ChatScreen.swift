@@ -291,6 +291,24 @@ struct ChatScreen: View {
                             .padding(.top, 4)
                             .accessibilityIdentifier("chat-steering-status")
                     }
+                    if selected.replyTimedOut && !selected.working {
+                        HStack {
+                            Text("Reply timed out").foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Continue") {
+                                let followUp = model.selected.uncertainFollowUp
+                                if model.continueAfterTimeout(in: chatKey.chat),
+                                   let followUp, draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == followUp {
+                                    draft.wrappedValue = ""
+                                }
+                            }
+                            .accessibilityIdentifier("chat-continue-after-timeout")
+                            .disabled(selected.steering || !selected.loaded)
+                        }
+                        .font(.footnote)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 6)
+                    }
                     ChatComposer(
                         prompt: prompt,
                         chatID: chatKey.chat,
@@ -439,22 +457,6 @@ struct ChatScreen: View {
                 }
                 if let notice = model.selected.notice {
                     Text(notice).font(.footnote).foregroundStyle(.secondary)
-                }
-                if model.selected.replyTimedOut && !model.selected.working {
-                    HStack {
-                        Text("Reply timed out").foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Continue") {
-                            let followUp = model.selected.uncertainFollowUp
-                            if model.continueAfterTimeout(in: model.selectedID),
-                               let followUp, workspace.drafts[chatKey].trimmingCharacters(in: .whitespacesAndNewlines) == followUp {
-                                workspace.drafts[chatKey] = ""
-                            }
-                        }
-                        .accessibilityIdentifier("chat-continue-after-timeout")
-                        .disabled(model.selected.steering || !model.selected.loaded)
-                    }
-                    .font(.footnote)
                 }
                 if !model.selected.plan.isEmpty {
                     TurnPlanCard(steps: model.selected.plan)

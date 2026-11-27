@@ -814,22 +814,23 @@ final class WorkspaceUXUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launchEnvironment["RIPTIDE_FIXTURE_TIMEOUT_ON_STEER"] = "1"
+        app.launchEnvironment["RIPTIDE_FIXTURE_OBSERVED_TURN"] = "1"
         continueAfterFailure = false
         app.launch()
         openMainChat(in: app, agent: "hermes")
 
         let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 8))
-        editor.tap()
-        editor.typeText("Show an approval")
-        app.buttons["send-message"].tap()
         XCTAssertTrue(app.buttons["approval-reject_once"].waitForExistence(timeout: 8))
         editor.tap()
         editor.typeText("Check the existing integration")
-        app.buttons["send-message"].tap()
+        let send = app.buttons["send-message"]
+        XCTAssertEqual(send.label, "Steer")
+        XCTAssertTrue(send.isEnabled)
+        send.tap()
 
         let recovery = app.buttons["chat-continue-after-timeout"]
-        XCTAssertTrue(recovery.waitForExistence(timeout: 8))
+        XCTAssertTrue(recovery.waitForExistence(timeout: 8), app.debugDescription)
         XCTAssertTrue(app.staticTexts["Reply timed out"].exists)
         XCTAssertEqual(editor.value as? String, "Check the existing integration")
         capture(app, as: "Hermes timeout with the follow-up preserved")
