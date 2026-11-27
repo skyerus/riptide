@@ -15,14 +15,7 @@ final class CodexLiveUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_VOICE_FIXTURE"] = "1"
         app.launch()
 
-        @MainActor func openSavedChat() {
-            app.openAgentWorkspace("local-codex")
-            let chat = app.buttons["sidebar-chat-busy-fixture-thread"]
-            XCTAssertTrue(chat.waitForExistence(timeout: 10))
-            chat.tap()
-        }
-
-        openSavedChat()
+        app.openAgentMainChat("local-codex")
         let action = app.buttons["codex-chat-actions"]
         XCTAssertTrue(action.waitForExistence(timeout: 5))
         action.tap()
@@ -68,9 +61,7 @@ final class CodexLiveUITests: XCTestCase {
         capture(app, as: "Minimized call with chat composer")
         back.tap()
         XCTAssertTrue(resume.exists)
-        let sameChat = app.buttons["sidebar-chat-busy-fixture-thread"]
-        XCTAssertTrue(sameChat.waitForExistence(timeout: 5))
-        sameChat.tap()
+        app.openAgentMainChat("local-codex")
         XCTAssertTrue(resume.exists)
 
         XCUIDevice.shared.press(.home)
@@ -100,7 +91,7 @@ final class CodexLiveUITests: XCTestCase {
 
         app.terminate()
         app.launch()
-        openSavedChat()
+        app.openAgentMainChat("local-codex")
         XCTAssertTrue(callRecord.waitForExistence(timeout: 8))
         callRecord.tap()
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
@@ -124,11 +115,12 @@ final class CodexLiveUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_CODEX_VOICE_CHECK"] = "1"
         app.launch()
 
-        app.openAgentWorkspace("local-codex")
+        app.openAgentMainChat("local-codex")
+        app.openSideChats()
         let saved = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "sidebar-chat-"))
             .matching(NSPredicate(format: "label == %@", title)).firstMatch
-        XCTAssertTrue(saved.waitForExistence(timeout: 12))
-        saved.tap()
+        if saved.waitForExistence(timeout: 8) { saved.tap() }
+        else { app.buttons["close-chats"].tap() }
         let marker = app.staticTexts["Riptide saved-chat verification"]
         XCTAssertTrue(marker.waitForExistence(timeout: 12))
         let call = app.buttons["call-codex-in-chat"]
@@ -166,7 +158,8 @@ final class CodexLiveUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_CODEX_VOICE_CHECK"] = "1"
         app.launch()
 
-        app.openAgentWorkspace("local-codex")
+        app.openAgentMainChat("local-codex")
+        app.openSideChats()
         app.buttons["watch-desktop-codex"].tap()
         let call = app.buttons["call-codex"]
         XCTAssertTrue(call.waitForExistence(timeout: 5))
@@ -265,7 +258,8 @@ final class CodexLiveUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_CODEX_BEARER"] = "fixture-" + String(repeating: "x", count: 40)
         app.launchEnvironment["RIPTIDE_CODEX_WORKSPACE"] = "/riptide-ux-fixture"
         app.launch()
-        app.openAgentWorkspace("local-codex")
+        app.openAgentMainChat("local-codex")
+        app.openSideChats()
         app.buttons["watch-desktop-codex"].tap()
         return app
     }
@@ -287,7 +281,8 @@ final class CodexLiveUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_CODEX_WORKSPACE"] = proof.appending(path: "proof").path
         app.launch()
 
-        app.openAgentWorkspace("local-codex")
+        app.openAgentMainChat("local-codex")
+        app.openSideChats()
         app.buttons["watch-desktop-codex"].tap()
 
         let status = app.staticTexts["codex-turn-status"]

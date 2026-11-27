@@ -25,7 +25,7 @@ MODELS = [
 ]
 
 
-async def fixture(socket, live=False, watch_progress=False, compaction=False, voice=False):
+async def fixture(socket, live=False, watch_progress=False, compaction=False, voice=False, side_chats=False):
     async def send(body):
         await socket.send(json.dumps(body))
 
@@ -103,6 +103,7 @@ async def fixture(socket, live=False, watch_progress=False, compaction=False, vo
 
     thread = {"id": CHAT, "name": "Release draft review" if voice else "Busy Codex fixture", "cwd": WORKSPACE,
               "status": {"type": "active" if live else "idle"}}
+    side_thread = {**thread, "id": "fixture-side-thread", "name": "Fixture side chat", "status": {"type": "idle"}}
     thread_settings = {"model": "gpt-6.2-sol", "effort": "xhigh", "serviceTier": None}
     approval = None
     started = live
@@ -160,13 +161,14 @@ async def fixture(socket, live=False, watch_progress=False, compaction=False, vo
                     approval = asyncio.create_task(continue_turn(False))
                 result = {}
             elif method == "thread/list":
-                result = {"data": [thread]}
+                result = {"data": [thread, side_thread] if side_chats else [thread]}
             elif method == "thread/start":
                 result = {"thread": {**thread, "id": "new-fixture-thread", "name": "New Codex fixture"}, **thread_settings}
             elif method == "thread/read":
-                result = {"thread": thread}
+                result = {"thread": side_thread if side_chats and params.get("threadId") == side_thread["id"] else thread}
             elif method == "thread/resume":
-                result = {"thread": thread, **thread_settings}
+                result = {"thread": side_thread if side_chats and params.get("threadId") == side_thread["id"] else thread,
+                          **thread_settings}
             elif method == "model/list":
                 result = {"data": MODELS}
             elif method == "thread/settings/update":
@@ -228,12 +230,13 @@ async def fixture(socket, live=False, watch_progress=False, compaction=False, vo
             approval.cancel()
 
 
-async def run(port_file, tls=None, live=False, watch_progress=False, compaction=False, voice=False):
+async def run(port_file, tls=None, live=False, watch_progress=False, compaction=False, voice=False, side_chats=False):
     def authenticate(connection, request):
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return connection.respond(HTTPStatus.UNAUTHORIZED, "Fixture credential required.\n")
 
-    handler = partial(fixture, live=live, watch_progress=watch_progress, compaction=compaction, voice=voice)
+    handler = partial(fixture, live=live, watch_progress=watch_progress, compaction=compaction, voice=voice,
+                      side_chats=side_chats)
     async with serve(handler, "127.0.0.1", 0, process_request=authenticate, ssl=tls) as service:
         port_file.write_text(str(service.sockets[0].getsockname()[1]), encoding="utf-8")
         await service.serve_forever()
@@ -248,6 +251,7 @@ if __name__ == "__main__":
     parser.add_argument("--watch-progress", action="store_true")
     parser.add_argument("--compaction", action="store_true")
     parser.add_argument("--voice", action="store_true")
+    parser.add_argument("--side-chats", action="store_true")
     args = parser.parse_args()
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key must be used together")
@@ -255,4 +259,4 @@ if __name__ == "__main__":
     if args.tls_cert:
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(args.tls_cert, args.tls_key)
-    asyncio.run(run(args.port_file, tls, args.live, args.watch_progress, args.compaction, args.voice))
+    asyncio.run(run(args.port_file, tls, args.live, args.watch_progress, args.compaction, args.voice, args.side_chats))

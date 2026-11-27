@@ -571,8 +571,15 @@ public final class AgentChatModel {
 
     @discardableResult
     public func createChat(openClaw: Bool = false) async -> Bool {
-        guard !creatingChat else { return false }
-        guard let client = connectIfNeeded() else { listError = selected.error; return false }
+        let previous = selectedID
+        guard let id = await createSideChat(openClaw: openClaw), selectedID == previous else { return false }
+        selectedID = id
+        return true
+    }
+
+    public func createSideChat(openClaw: Bool = false) async -> String? {
+        guard !creatingChat, !Task.isCancelled else { return nil }
+        guard let client = connectIfNeeded() else { listError = selected.error; return nil }
         creatingChat = true
         listError = nil
         defer { creatingChat = false }
@@ -590,7 +597,7 @@ public final class AgentChatModel {
             } else {
                 nativeKey = nil
             }
-            guard self.client === client, selectedID == selectedBeforeCreation else { return false }
+            guard self.client === client, selectedID == selectedBeforeCreation else { return nil }
             let opened = try await client.newSession(cwd: target.cwd, nativeSessionKey: nativeKey)
             guard self.client === client else { throw ACPError.disconnected }
             let sessionID = opened.id
@@ -600,12 +607,10 @@ public final class AgentChatModel {
             sessions.removeAll { $0.id == sessionID }
             sessions.insert(SessionSummary(id: sessionID, title: "Untitled chat", cwd: target.cwd,
                                            nativeSessionKey: opened.nativeSessionKey), at: 0)
-            guard selectedID == selectedBeforeCreation else { return false }
-            selectedID = sessionID
-            return true
+            return sessionID
         } catch {
             listError = error.localizedDescription
-            return false
+            return nil
         }
     }
 

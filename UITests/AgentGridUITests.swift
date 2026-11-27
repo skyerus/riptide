@@ -25,10 +25,13 @@ final class AgentGridUITests: XCTestCase {
         capture(app, "agents-gradient-grid")
 
         vps.tap()
-        XCTAssertTrue(app.buttons["sidebar-main-chat"].waitForExistence(timeout: 8))
-        XCTAssertEqual(app.buttons["agent-workspace-heading"].label, "Hermes VPS")
+        XCTAssertTrue(app.chatHeading.waitForExistence(timeout: 8))
+        XCTAssertEqual(app.chatHeading.label, "Main Chat")
+        XCTAssertEqual(app.chatHeading.value as? String, "Hermes VPS")
+        XCTAssertTrue(app.buttons["main-chat-agent-hermes-studio"].isHittable)
+        XCTAssertFalse(app.buttons["main-chat-agent-hermes"].exists)
         XCTAssertFalse(agentsTab.exists)
-        capture(app, "agents-workspace")
+        capture(app, "riptide-main-chat-avatars")
         app.buttons["BackButton"].tap()
         XCTAssertTrue(vps.waitForExistence(timeout: 8))
 
@@ -88,6 +91,8 @@ final class AgentGridUITests: XCTestCase {
 
 @MainActor
 extension XCUIApplication {
+    var chatHeading: XCUIElement { descendants(matching: .any).matching(identifier: "chat-heading").firstMatch }
+
     @discardableResult
     func showAgentGrid() -> XCUIElement {
         let tab = buttons["sidebar-agents"]
@@ -98,9 +103,23 @@ extension XCUIApplication {
         return grid
     }
 
-    func openAgentWorkspace(_ id: String) {
+    func openAgentMainChat(_ id: String) {
         let agent = showAgentGrid().buttons["sidebar-agent-\(id)"]
         XCTAssertTrue(agent.waitForExistence(timeout: 10))
         agent.tap()
+    }
+
+    func openSideChats() {
+        let button = buttons["open-side-chats"]
+        XCTAssertTrue(button.waitForExistence(timeout: 8))
+        button.tap()
+        XCTAssertTrue(buttons["close-chats"].waitForExistence(timeout: 8))
+    }
+
+    func returnToMainChat() {
+        let button = buttons["return-to-main-chat"]
+        XCTAssertTrue(button.waitForExistence(timeout: 8))
+        button.tap()
+        XCTAssertTrue(buttons["open-side-chats"].waitForExistence(timeout: 8))
     }
 }
