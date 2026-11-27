@@ -836,6 +836,40 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
+    func testHermesTimeoutKeepsTheDraftAndOffersContinue() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_FIXTURE_TIMEOUT_ON_STEER"] = "1"
+        app.launchEnvironment["RIPTIDE_FIXTURE_OBSERVED_TURN"] = "1"
+        continueAfterFailure = false
+        app.launch()
+        openMainChat(in: app, agent: "hermes")
+
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["approval-reject_once"].waitForExistence(timeout: 8))
+        editor.tap()
+        editor.typeText("Check the existing integration")
+        let send = app.buttons["send-message"]
+        XCTAssertEqual(send.label, "Steer")
+        XCTAssertTrue(send.isEnabled)
+        send.tap()
+
+        let recovery = app.buttons["chat-continue-after-timeout"]
+        XCTAssertTrue(recovery.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Reply timed out"].exists)
+        XCTAssertFalse(app.buttons["approval-reject_once"].exists)
+        XCTAssertEqual(editor.value as? String, "Check the existing integration")
+        capture(app, as: "Hermes timeout with the follow-up preserved")
+
+        recovery.tap()
+        let continuation = app.staticTexts.containing(NSPredicate(format:
+            "label CONTAINS %@", "My follow-up was:\nCheck the existing integration")).firstMatch
+        XCTAssertTrue(continuation.waitForExistence(timeout: 8))
+        XCTAssertFalse(recovery.exists)
+    }
+
+    @MainActor
     func testHermesCanSteerAnAlreadyRunningReplyAndExplicitlyQueue() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString

@@ -10,6 +10,7 @@ public struct QueuedChatMessage: Identifiable, Sendable {
     public let id = UUID()
     public let text: String
     public let attachments: [ChatAttachment]
+    fileprivate var confirmedUndelivered = false
 
     public init(text: String, attachments: [ChatAttachment] = []) {
         self.text = text
@@ -250,7 +251,7 @@ public struct Transcript: Equatable, Sendable {
             markPromptSeen()
         case .plan(_, let steps):
             if !steps.isEmpty { markPromptSeen() }
-        case .permissionClosed, .configOptions, .context, .turnActivity:
+        case .permissionClosed, .configOptions, .context, .turnActivity, .replyTimedOut:
             break
         }
     }
@@ -312,6 +313,8 @@ public final class AgentChatModel {
         public fileprivate(set) var sendingAttachmentDraft = false
         public fileprivate(set) var steering = false
         public fileprivate(set) var steeringError: String?
+        public fileprivate(set) var replyTimedOut = false
+        public fileprivate(set) var uncertainFollowUp: String?
         public fileprivate(set) var queuedMessages: [QueuedChatMessage] = []
         public fileprivate(set) var sendingQueuedID: UUID?
         public fileprivate(set) var queuePaused = false
@@ -337,8 +340,15 @@ public final class AgentChatModel {
                 guard wasWorking != working else { return }
                 turnStartedAt = working ? .now : nil
                 guard !replaying else { return }
-                if working { transcript.beginObservedTurn() }
+                if working {
+                    replyTimedOut = false
+                    uncertainFollowUp = nil
+                    transcript.beginObservedTurn()
+                }
                 else { transcript.finishPrompt() }
+            case .replyTimedOut:
+                replyTimedOut = true
+                queuePaused = !queuedMessages.isEmpty
             case .message(_, _, .user, _) where submittingPrompt:
                 transcript.acknowledgePrompt()
             case .assistantProgress where !working:
@@ -674,16 +684,21 @@ public final class AgentChatModel {
             }
             do {
                 if let photoID { try photoStore.save(message, id: photoID.uuidString, chat: sessionID) }
-                let reason = try await client.promptWithDelivery(text, sessionID: sessionID, attachments: attachments,
-                                                                 photoID: photoID) {
+                let completion = try await client.promptWithDelivery(text, sessionID: sessionID, attachments: attachments,
+                                                                     photoID: photoID) {
                     await self.promptWritten(in: sessionID, entryID: entryID, onWritten: onWritten)
                 }
                 guard self.client === client else { return }
+                let reason = completion.reason
                 if reason != "cancelled" {
                     promptWritten(in: sessionID, entryID: entryID, onWritten: onWritten)
                     attachmentDeliveries.removeValue(forKey: sessionID)?()
                 }
                 chats[sessionID]?.transcript.acknowledgePrompt()
+                if completion.timedOut {
+                    chats[sessionID]?.replyTimedOut = true
+                    return
+                }
                 switch reason {
                 case "end_turn":
                     completed = true
@@ -745,10 +760,17 @@ public final class AgentChatModel {
             }
         }
         do {
-            let steered = try await client.steer(text, sessionID: sessionID, observedAdmissionID: observedAdmissionID)
+            let outcome = try await client.steerOutcome(text, sessionID: sessionID, observedAdmissionID: observedAdmissionID)
             guard self.client === client else { return false }
-            if steered {
+            if outcome == .accepted {
                 chats[sessionID]?.transcript.addSteering(text)
+                return true
+            }
+            if outcome == .notDelivered {
+                if startPrompt(text, in: sessionID) { return true }
+                var followUp = QueuedChatMessage(text: text)
+                followUp.confirmedUndelivered = true
+                chats[sessionID]?.queuedMessages.append(followUp)
                 return true
             }
             await prompt?.value
@@ -759,9 +781,21 @@ public final class AgentChatModel {
             }
             return startPrompt(text, in: sessionID)
         } catch {
-            if self.client === client { chats[sessionID]?.steeringError = error.localizedDescription }
+            if self.client === client {
+                chats[sessionID]?.uncertainFollowUp = text
+                chats[sessionID]?.steeringError = error.localizedDescription
+            }
             return false
         }
+    }
+
+    public func continueAfterTimeout(in sessionID: String) -> Bool {
+        guard let chat = chats[sessionID], chat.replyTimedOut, !chat.steering else { return false }
+        var prompt = "Continue the previous request. First verify what already happened and only perform the remaining work."
+        if let followUp = chat.uncertainFollowUp {
+            prompt += "\n\nMy follow-up was:\n\(followUp)"
+        }
+        return startPrompt(prompt, in: sessionID)
     }
 
     public func enqueue(_ rawText: String, attachments: [ChatAttachment] = [], in sessionID: String) -> Bool {
@@ -785,8 +819,8 @@ public final class AgentChatModel {
     }
 
     private func drainQueue(in sessionID: String) {
-        guard let chat = chats[sessionID], !chat.steering, !chat.queuePaused,
-              let message = chat.queuedMessages.first else { return }
+        guard let chat = chats[sessionID], !chat.steering,
+              let message = chat.queuedMessages.first(where: { !chat.queuePaused || $0.confirmedUndelivered }) else { return }
         if message.attachments.isEmpty {
             if startPrompt(message.text, in: sessionID) { removeQueuedMessage(message.id, in: sessionID) }
             return
@@ -852,6 +886,8 @@ public final class AgentChatModel {
         chats[sessionID]?.error = nil
         chats[sessionID]?.steeringError = nil
         chats[sessionID]?.notice = nil
+        chats[sessionID]?.replyTimedOut = false
+        chats[sessionID]?.uncertainFollowUp = nil
         return client
     }
 
@@ -871,7 +907,7 @@ public final class AgentChatModel {
         if !advanceQueue, !chat.queuedMessages.isEmpty { chat.queuePaused = true }
         chats[sessionID] = chat
         recordWorkingState(sessionID)
-        if advanceQueue { drainQueue(in: sessionID) }
+        drainQueue(in: sessionID)
     }
 
     public func stop() async {
@@ -1015,7 +1051,9 @@ public final class AgentChatModel {
     private func markLoaded(_ opened: OpenedSession) {
         var chat = chats[opened.id] ?? ChatState()
         chat.transcript = Transcript()
+        chat.replyTimedOut = false
         for event in opened.events { chat.receive(event, replaying: true) }
+        if !chat.replyTimedOut { chat.uncertainFollowUp = nil }
         chat.transcript.restorePhotos(from: photoStore, in: opened.id)
         if chat.agentWorking { chat.transcript.beginObservedTurn() }
         if let options = opened.configOptions { chat.configOptions = options }

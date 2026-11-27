@@ -1,0 +1,410 @@
+diff --git a/acp_adapter/gateway_reply.py b/acp_adapter/gateway_reply.py
+index b392b28..cf2e216 100644
+--- a/acp_adapter/gateway_reply.py
++++ b/acp_adapter/gateway_reply.py
+@@ -53,6 +53,14 @@ class GatewayReplyMixin:
+             await self._conn.session_update(session_id=editor_id, update=self._chunk(sid, remainder))
+         self._end_message(sid)
+         await self._flush_open_tools(sid, editor_id, aid)
++        if payload.get("failure_reason") == "codex_turn_timeout" and self._admissions.get(sid) != aid:
++            await self._notify_turn_timeout(editor_id)
++
++    async def _notify_turn_timeout(self, editor_id):
++        if self._conn:
++            from acp.schema import SessionInfoUpdate
++            await self._conn.session_update(session_id=editor_id, update=SessionInfoUpdate(
++                session_update="session_info_update", field_meta={"app.riptide.turnFailure": "timeout"}))
+
+     async def _flush_open_tools(self, sid, editor_id, aid):
+         """Close every call admission *aid* started and never completed (``failed``: it produced no result)."""
+diff --git a/acp_adapter/gateway_server.py b/acp_adapter/gateway_server.py
+index 50aa018..a8c2832 100644
+--- a/acp_adapter/gateway_server.py
++++ b/acp_adapter/gateway_server.py
+@@ -171,14 +171,14 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         session_id = self._held_session(editor_id)
+         if observed is not None:
+             if self._riptide_turns.get(session_id) != observed:
+-                return {"status": "idle"}
++                return {"status": "idle", "delivered": False}
+             admission_id = observed
+         else:
+             admission_id = self._admissions.get(session_id)
+         if admission_id is None:
+             if session_id in self._submitting:
+                 raise acp.RequestError(-32000, "Hermes is still starting this turn. Try again in a moment.")
+-            return {"status": "idle"}
++            return {"status": "idle", "delivered": False}
+
+         # The viewer explicitly selects an attached admission or uses its own prompt.
+         # Forward its generation so a replacement turn cannot receive the correction.
+@@ -186,7 +186,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         client = await self._client()
+         receipt = await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id)
+         if receipt.get("status") == "terminal":
+-            return {"status": "idle"}
++            return {"status": "idle", "delivered": False}
+         if receipt.get("status") != "started" or type(receipt.get("execution_generation")) is not int:
+             raise acp.RequestError(-32000, "Hermes is not ready to steer this turn.")
+         try:
+@@ -196,8 +196,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+                                       execution_generation=receipt["execution_generation"])
+         except GatewayRPCError as exc:
+             if str(exc) == "stale_generation":
+-                return {"status": "idle"}
++                return {"status": "idle", "delivered": False}
+             raise acp.RequestError(-32000, "Hermes could not steer this turn.") from exc
++        if result.get("status") == "rejected" and result.get("delivered") is False:
++            return {"status": "idle", "delivered": False}
+         if result.get("status") != "redirected":
+             raise acp.RequestError(-32000, "Hermes could not steer this turn.")
+         return {"status": "steered"}
+@@ -479,6 +481,11 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+                                 and meta.get(ASSISTANT_PROGRESS) is True)]
+             for update in _history_replay_updates(live):
+                 await self._conn.session_update(session_id=held_id, update=update)
++            last_message = next((m for m in reversed(live) if m.get("role") in {"user", "assistant"}), {})
++            if (last_message.get("display_kind") == "failed_turn"
++                    and isinstance(meta := last_message.get("display_metadata"), dict)
++                    and meta.get("failure_reason") == "codex_turn_timeout"):
++                await self._notify_turn_timeout(held_id)
+         for pending in snapshot.get("prompts", []):
+             self._permission(session_id, pending)
+         await self._notify_unknown(session_id)
+@@ -819,6 +826,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+                 self._admissions.pop(session_id, None)
+             self._inflight.pop((session_id, admission_id), None)
+         outcome = terminal.get("outcome")
++        if terminal.get("failure_reason") == "codex_turn_timeout":
++            return PromptResponse(stop_reason="end_turn", field_meta={"app.riptide.turnFailure": "timeout"})
+         if outcome == "unknown":
+             # Our own lost turn: the same refusal whether session.info or this completion woke us.
+             raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
+@@ -949,11 +958,12 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         try:
+             outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
+             result = saved.get("result") or {}
++            failure = result.get("failure_reason")
+             await self._finish_reply(session_id, held_id, admission_id, {
+                 "text": result.get("final_response") or "", "outcome": outcome,
+-                "response_reused": result.get("response_reused"), "receipt": True})
++                "response_reused": result.get("response_reused"), "receipt": True, "failure_reason": failure})
+             async with self._changed:
+-                self._terminals[admission_id] = {"outcome": outcome}
++                self._terminals[admission_id] = {"outcome": outcome, "failure_reason": failure}
+                 self._changed.notify_all()
+         finally:
+             self._settling.discard(admission_id)
+diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
+index 17c7de8..f1e2155 100644
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -879,6 +879,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
+     )
+     return _turn_result(
+         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
++        **({"failure_reason": "codex_turn_timeout", "failure_retryable": False} if turn.timed_out else {}),
+         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
+         agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id, **reply, **usage_result,
+     )
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index 0c2e904..9154df5 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -1868,6 +1868,8 @@ def _failed_turn_display_metadata(agent, result: dict) -> dict:
+         surface = None
+     error = str(result.get("error") or "").strip()[:_FAILED_TURN_ERROR_MAX_CHARS]
+     metadata = {k: v for k, v in (("error", error), ("error_surface", surface)) if v}
++    if result.get("failure_reason") == "codex_turn_timeout":
++        metadata["failure_reason"] = "codex_turn_timeout"
+     return _redact_display_metadata(metadata)
+
+
+diff --git a/agent/transports/codex_app_server_session.py b/agent/transports/codex_app_server_session.py
+index 7b6e6ba..4951686 100644
+--- a/agent/transports/codex_app_server_session.py
++++ b/agent/transports/codex_app_server_session.py
+@@ -56,6 +56,7 @@ class TurnResult:
+     token_usage_last: Optional[dict[str, Any]] = None
+     model_context_window: Optional[int] = None
+     compacted: bool = False
++    timed_out: bool = False
+     # Codex likely wedged (turn timeout, dead subprocess, token refresh failure): caller respawns next turn.
+     should_retire: bool = False
+
+@@ -456,6 +457,7 @@ class CodexAppServerSession:
+         self, user_input: Any, *, model: Optional[str] = None, reasoning_effort: Optional[str] = None,
+         service_tier: Optional[str] = None, turn_timeout: float = 600.0,
+         notification_poll_timeout: float = 0.25, post_tool_quiet_timeout: float = 90.0,
++        max_turn_duration: float = 3600.0,
+     ) -> TurnResult:
+         """Send a user message and block until turn/completed, bridging approvals and projecting items.
+
+@@ -468,7 +470,8 @@ class CodexAppServerSession:
+         without emitting another item or `turn/completed`, log a warning (once per tool result) and keep
+         waiting. Wire silence is not evidence of a wedged process: after a large tool output codex can
+         reason for minutes without emitting a single event while the app-server still answers RPCs
+-        (#112928). Only subprocess death or ``turn_timeout`` retires the session.
++        (#112928). Turn activity renews the inactivity budget (``turn_timeout``), up to the
++        hard deadline (``max_turn_duration``).
+         """
+         result = TurnResult()
+         if self._start_for(result):
+@@ -488,13 +491,14 @@ class CodexAppServerSession:
+                 ts = self._request_for(result, "turn/start", params, "turn/start")
+                 if ts is not None:
+                     self._service_tier_sent = service_tier
+-                    self._run_started_turn(result, ts, turn_timeout, notification_poll_timeout, post_tool_quiet_timeout)
++                    self._run_started_turn(result, ts, turn_timeout, notification_poll_timeout,
++                                           post_tool_quiet_timeout, max_turn_duration)
+         self._interrupt_event.clear()
+         return result
+
+     def _run_started_turn(
+         self, result: TurnResult, ts: dict, turn_timeout: float, notification_poll_timeout: float,
+-        post_tool_quiet_timeout: float,
++        post_tool_quiet_timeout: float, max_turn_duration: float,
+     ) -> None:
+         """Drive an accepted ``turn/start`` to completion: quiet warning, approvals, projection."""
+         projector = CodexEventProjector()
+@@ -512,7 +516,7 @@ class CodexAppServerSession:
+                 return False
+             last_tool_completion_at = None
+             logger.warning(
+-                "codex has emitted no events for %.0fs after a tool result; still waiting (turn deadline %.0fs)",
++                "codex has emitted no events for %.0fs after a tool result; still waiting (inactivity limit %.0fs)",
+                 post_tool_quiet_timeout, turn_timeout,
+             )
+             return False
+@@ -554,13 +558,15 @@ class CodexAppServerSession:
+                 self._set_classified_error(result, f"turn ended status={turn_status}", err_msg, err_msg)
+             return True
+
+-        self._drive_turn(
+-            result, turn_timeout=turn_timeout, notification_poll_timeout=notification_poll_timeout,
+-            timeout_label="turn", before_poll=warn_if_quiet, on_server_request=on_server_request,
+-            on_note=on_note, accept_final_text_at_deadline=True,
+-        )
+-        with self._active_turn_lock:
+-            self._active_turn_id = None
++        try:
++            self._drive_turn(
++                result, turn_timeout=turn_timeout, notification_poll_timeout=notification_poll_timeout,
++                timeout_label="turn", before_poll=warn_if_quiet, on_server_request=on_server_request,
++                on_note=on_note, accept_final_text_at_deadline=True, max_turn_duration=max_turn_duration,
++            )
++        finally:
++            with self._active_turn_lock:
++                self._active_turn_id = None
+
+     def _drive_turn(
+         self, result: TurnResult, *, turn_timeout: float, notification_poll_timeout: float,
+@@ -568,6 +574,7 @@ class CodexAppServerSession:
+         on_note: Callable[[dict, str], bool], before_poll: Optional[Callable[[], bool]] = None,
+         pre_scope_filter: Optional[Callable[[dict, str], bool]] = None,
+         accept_final_text_at_deadline: bool = False,
++        max_turn_duration: Optional[float] = None,
+     ) -> None:
+         """Shared poll loop for run_turn / compact_thread until turn/completed or deadline.
+
+@@ -577,16 +584,21 @@ class CodexAppServerSession:
+         return True to complete the turn. Deadline without completion interrupts and
+         retires the session.
+         """
+-        deadline = time.monotonic() + turn_timeout
++        started_at = time.monotonic()
++        idle_deadline = started_at + turn_timeout
++        hard_deadline = started_at + max_turn_duration if max_turn_duration is not None else idle_deadline
+         turn_complete = False
+         client = self._client
+-        while time.monotonic() < deadline and not turn_complete:
++        while not turn_complete:
+             if self._interrupt_event.is_set():
+                 self._issue_interrupt(result.turn_id)
+                 result.interrupted = True
+                 break
+             if self._subprocess_died(result, client) or client is None:  # `is None` narrows only; already retired
+                 break
++            remaining = min(idle_deadline, hard_deadline) - time.monotonic()
++            if remaining <= 0:
++                break
+             if before_poll is not None and before_poll():
+                 break
+             sreq = client.take_server_request(timeout=0)
+@@ -596,8 +608,11 @@ class CodexAppServerSession:
+                 except CodexAppServerTransportError as exc:
+                     self._retire(result, self._format_error_with_stderr("codex app-server request response failed", exc))
+                     break
++                if (max_turn_duration is not None and sreq.get("method") in self._SERVER_REQUEST_HANDLERS
++                        and _notification_belongs_to_turn(sreq, thread_id=self._thread_id, turn_id=result.turn_id)):
++                    idle_deadline = time.monotonic() + turn_timeout
+                 continue
+-            note = client.take_notification(timeout=notification_poll_timeout)
++            note = client.take_notification(timeout=min(notification_poll_timeout, remaining))
+             if note is None:
+                 continue
+             method = note.get("method", "")
+@@ -607,6 +622,8 @@ class CodexAppServerSession:
+                 logger.debug("ignoring foreign codex notification: method=%s", method)
+                 continue
+             turn_complete = on_note(note, method)
++            if max_turn_duration is not None and method.startswith(("item/", "turn/")):
++                idle_deadline = time.monotonic() + turn_timeout
+
+         if accept_final_text_at_deadline and not turn_complete and not result.interrupted and result.final_text and result.error is None:
+             logger.warning(
+@@ -616,10 +633,16 @@ class CodexAppServerSession:
+             turn_complete = True
+
+         if not turn_complete and not result.interrupted:
++            if max_turn_duration is not None:
++                with self._active_turn_lock:
++                    self._active_turn_id = None
++            limit = (f"{max_turn_duration}s (maximum duration)" if max_turn_duration is not None
++                     and time.monotonic() >= hard_deadline else f"{turn_timeout}s")
+             self._issue_interrupt(result.turn_id)
+             result.interrupted = True
+             if not result.error:
+-                result.error = self._format_error_with_stderr(f"{timeout_label} timed out after {turn_timeout}s")
++                result.timed_out = True
++                result.error = self._format_error_with_stderr(f"{timeout_label} timed out after {limit}")
+             result.should_retire = True
+
+     def compact_thread(
+diff --git a/agent/turn_recovery.py b/agent/turn_recovery.py
+index 3ebd993..174c008 100644
+--- a/agent/turn_recovery.py
++++ b/agent/turn_recovery.py
+@@ -1762,7 +1762,8 @@ def activate_codex_app_server_fallback(agent: Any, result: dict[str, Any]) -> bo
+     Classify that text; on a billing / rate-limit verdict activate the configured fallback and
+     return True so the caller re-runs the same user turn on the generic loop."""
+     error = result.get("error")
+-    if not error or result.get("interrupted") or not agent._has_pending_fallback():
++    if (not error or result.get("interrupted") or result.get("failure_reason") == "codex_turn_timeout"
++            or not agent._has_pending_fallback()):
+         return False
+     classified = classify_api_error(
+         RuntimeError(str(error)), provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
+diff --git a/gateway/session_settlement_recovery.py b/gateway/session_settlement_recovery.py
+index c4514a5..d1c2f0d 100644
+--- a/gateway/session_settlement_recovery.py
++++ b/gateway/session_settlement_recovery.py
+@@ -48,6 +48,8 @@ def completion_payload(row, settled, response, captured):
+     # Only the agent's reuse site sets this (never inferred from equal text): the
+     # final repeats a reply the viewer already painted, so it settles in place.
+     captured_result = (captured or {}).get('result') or {}
++    if captured_result.get('failure_reason') == 'codex_turn_timeout':
++        complete['failure_reason'] = 'codex_turn_timeout'
+     # A gateway-owned refusal brings its own descriptor (``session_cron.execute``); every other failed
+     # turn gets the one the TUI path builds from the same result, so the viewer shows the right card.
+     surface = captured_result.get('error_surface')
+diff --git a/tests/acp_adapter/test_gateway_terminal_projection.py b/tests/acp_adapter/test_gateway_terminal_projection.py
+index d9efcc9..d44b1a6 100644
+--- a/tests/acp_adapter/test_gateway_terminal_projection.py
++++ b/tests/acp_adapter/test_gateway_terminal_projection.py
+@@ -71,3 +71,61 @@ async def test_failed_admission_raises_without_poisoning_the_next_success():
+     assert response.stop_reason == 'end_turn'
+     assert agent._conn.session_update.await_args.kwargs['update'].content.text == (
+         'Operation interrupted: quoted model text')
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("own_prompt", [True, False])
++async def test_codex_timeout_has_structured_acp_status_for_each_viewer(own_prompt):
++    agent = agent_with_admission()
++    task = None
++    if own_prompt:
++        task = asyncio.create_task(agent.prompt([TextContentBlock(type="text", text="hello")], "s"))
++        await asyncio.sleep(0)
++    await agent._project({
++        "session_id": "s", "type": "message.complete", "admission_id": "current",
++        "payload": {"outcome": "failed", "failure_reason": "codex_turn_timeout"},
++    })
++    if task is not None:
++        response = await asyncio.wait_for(task, 2)
++        assert response.field_meta == {"app.riptide.turnFailure": "timeout"}
++        agent._conn.session_update.assert_not_awaited()
++    else:
++        agent._conn.session_update.assert_awaited_once()
++        assert agent._conn.session_update.await_args.kwargs["update"].field_meta == {
++            "app.riptide.turnFailure": "timeout",
++        }
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("redirect", [
++    {"status": "rejected", "delivered": False},
++    {"status": "rejected"},
++    {"status": "redirected"},
++])
++async def test_only_confirmed_undelivered_redirect_allows_resubmit(redirect):
++    import acp
++
++    agent = agent_with_admission()
++    agent._admissions["s"] = "current"
++    agent._gateway.rpc.side_effect = [
++        {"status": "started", "execution_generation": 1},
++        redirect,
++    ]
++    if redirect == {"status": "rejected"}:
++        with pytest.raises(acp.RequestError):
++            await agent.ext_method("riptide/session/steer", {"sessionId": "s", "text": "follow-up"})
++    else:
++        result = await agent.ext_method("riptide/session/steer", {"sessionId": "s", "text": "follow-up"})
++        assert result == ({"status": "idle", "delivered": False} if redirect["status"] == "rejected"
++                          else {"status": "steered"})
++    assert agent._gateway.rpc.await_count == 2
++
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("target", [{}, {"admissionId": "expired"}])
++async def test_expired_steer_target_is_confirmed_undelivered_without_contacting_owner(target):
++    agent = agent_with_admission()
++    result = await agent.ext_method("riptide/session/steer", {"sessionId": "s", "text": "follow-up", **target})
++    assert result == {"status": "idle", "delivered": False}
++    agent._gateway.rpc.assert_not_awaited()
+diff --git a/tests/agent/transports/test_codex_app_server_session.py b/tests/agent/transports/test_codex_app_server_session.py
+index 8d14802..0aedb86 100644
+--- a/tests/agent/transports/test_codex_app_server_session.py
++++ b/tests/agent/transports/test_codex_app_server_session.py
+@@ -1228,3 +1228,39 @@ def test_only_current_turn_progress_reaches_hermes_activity_clock():
+     assert result.error is None and not result.interrupted
+     assert agent._turn_liveness_activity_generation == generation + 1
+     assert agent._last_activity_desc == "codex app-server: item/agentMessage/delta"
++
++
++@pytest.mark.parametrize("progress_thread,hard_limit,expected_stop", [
++    ("thread-fake-001", 3600.0, 1000.0),
++    ("unrelated-thread", 3600.0, 600.0),
++    ("thread-fake-001", 900.0, 900.0),
++])
++def test_codex_turn_time_budget_tracks_scoped_progress(monkeypatch, progress_thread, hard_limit, expected_stop):
++    client = FakeClient()
++    session = make_session(client)
++    now = 0.0
++    scheduled = iter([
++        (400.0, {"method": "item/started", "params": {"threadId": progress_thread}}),
++        (700.0, {"method": "item/completed", "params": {"threadId": progress_thread}}),
++        (1000.0, {"method": "turn/completed", "params": {"turn": {"id": "turn-fake-001"}}}),
++    ])
++    event_at, note = next(scheduled)
++
++    def take_notification(timeout):
++        nonlocal now, event_at, note
++        now = min(now + timeout, event_at)
++        if now < event_at:
++            return None
++        ready = note
++        event_at, note = next(scheduled, (float("inf"), None))
++        return ready
++
++    monkeypatch.setattr(session_mod, "time", SimpleNamespace(monotonic=lambda: now))
++    monkeypatch.setattr(client, "take_notification", take_notification)
++    result = session.run_turn("Review a project", max_turn_duration=hard_limit)
++    assert now == expected_stop
++    assert result.timed_out == (expected_stop < 1000)
++    assert result.should_retire == result.timed_out
++    assert sum(method == "turn/interrupt" for method, _ in client.requests) == int(result.timed_out)
++    if expected_stop == hard_limit:
++        assert "maximum duration" in result.error
