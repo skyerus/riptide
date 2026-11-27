@@ -7,9 +7,9 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from websockets.asyncio.client import connect
-from websockets.exceptions import InvalidStatus
+from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
-from acp_bridge import bridge_server
+from acp_bridge import MAX_FRAME, bridge_server
 from ssh_acp import STAGE_ATTACHMENTS
 
 
@@ -77,3 +77,24 @@ for line in sys.stdin:
                     await socket.send('{"audio":"fixture"}')
                     self.assertEqual(json.loads(await socket.recv()), {"text": "Fixture dictation."})
                 relay.assert_awaited_once_with('{"audio":"fixture"}', "/codex/auth.json")
+
+    async def test_only_dictation_accepts_a_recording_larger_than_an_acp_frame(self):
+        token = "a" * 50
+        command = (sys.executable, "-u", "-c", "import sys\nfor line in sys.stdin: print(line, end='')")
+        headers = {"Authorization": f"Bearer {token}"}
+        audio = b"\x00\x00\x00\x18ftypM4A ".ljust(4_000_000, b"\x00")
+        frame = json.dumps({"audio": base64.b64encode(audio).decode()})
+        with patch("codex_dictation.transcribe", new_callable=AsyncMock, return_value="Long dictation.") as upstream:
+            async with bridge_server(0, token, command, "/codex/auth.json") as server:
+                base = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+                async with connect(f"{base}/riptide-dictation", additional_headers=headers) as socket:
+                    await socket.send(frame)
+                    self.assertEqual(json.loads(await socket.recv()), {"text": "Long dictation."})
+                upstream.assert_awaited_once_with(audio, "/codex/auth.json", None)
+
+                async with connect(f"{base}/acp", additional_headers=headers) as socket:
+                    packet = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "padding": "x" * MAX_FRAME}
+                    await socket.send(json.dumps(packet))
+                    with self.assertRaises(ConnectionClosedError) as closed:
+                        await socket.recv()
+                    self.assertEqual(closed.exception.rcvd.code, 1009)

@@ -196,12 +196,25 @@ struct MessageComposer<Options: View, Actions: View>: View {
 @Observable
 private final class ComposerDictation {
     private enum Phase { case idle, preparing, recording, recorded, transcribing }
-    private var phase: Phase = .idle
+    private var phase: Phase = .idle {
+        didSet {
+            if phase == .recording || phase == .transcribing {
+                if previousIdleTimerDisabled == nil {
+                    previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
+                    UIApplication.shared.isIdleTimerDisabled = true
+                }
+            } else if let previousIdleTimerDisabled {
+                UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+                self.previousIdleTimerDisabled = nil
+            }
+        }
+    }
     private var task: Task<Void, Never>?
     private var recorder: AVAudioRecorder?
     private var recordingStarted: ContinuousClock.Instant?
     private var recordingURL: URL?
     private var sessionActive = false
+    private var previousIdleTimerDisabled: Bool?
 
     var error: String?
     private(set) var levels: [CGFloat] = []
@@ -262,21 +275,22 @@ private final class ComposerDictation {
     }
 
     private func beginRecording() {
-        elapsed = .zero
+        let initialElapsed = DictationFixture.initialElapsed
+        elapsed = .seconds(initialElapsed)
         levels = Array(repeating: 0, count: 64)
-        recordingStarted = .now
+        recordingStarted = .now.advanced(by: .seconds(-initialElapsed))
         phase = .recording
     }
 
     func sample() -> Bool {
         guard let recordingStarted else { return false }
-        elapsed = recordingStarted.duration(to: .now)
+        let limit = Duration.seconds(CodexDictation.maximumDuration)
+        elapsed = min(recordingStarted.duration(to: .now), limit)
         recorder?.updateMeters()
         let power = recorder?.averagePower(forChannel: 0) ?? -32
         levels.removeFirst()
         levels.append(CGFloat(min(1, max(0, (power + 55) / 55))))
-        let limit = DictationFixture.recordingLimit ?? CodexDictation.maximumDuration
-        return elapsed >= .seconds(limit) || recorder?.isRecording == false
+        return elapsed >= limit || recorder?.isRecording == false
     }
 
     func stopRecording() {
@@ -289,23 +303,19 @@ private final class ComposerDictation {
         guard canFinish else { return }
         stopRecording()
         let url = recordingURL
-        recordingURL = nil
         phase = .transcribing
         task = Task {
             do {
-                let audio: Data
-                do {
-                    defer { if let url { try? FileManager.default.removeItem(at: url) } }
-                    audio = try url.map { try Data(contentsOf: $0) } ?? Data()
-                }
+                let audio = try url.map { try Data(contentsOf: $0) } ?? Data()
                 try Task.checkCancellation()
                 let transcript = try await transcribe(audio)
                 guard !Task.isCancelled else { return }
+                discardRecording()
                 insert(transcript)
                 phase = .idle
             } catch {
                 guard !Task.isCancelled else { return }
-                phase = .idle
+                phase = .recorded
                 self.error = error.localizedDescription
             }
         }
@@ -315,9 +325,13 @@ private final class ComposerDictation {
         task?.cancel()
         task = nil
         stopMicrophone()
+        discardRecording()
+        phase = .idle
+    }
+
+    private func discardRecording() {
         if let recordingURL { try? FileManager.default.removeItem(at: recordingURL) }
         recordingURL = nil
-        phase = .idle
     }
 
     private func stopMicrophone() {
@@ -332,16 +346,16 @@ private final class ComposerDictation {
 }
 
 enum DictationFixture {
-    static let recordingLimit: TimeInterval? = {
+    static let initialElapsed: TimeInterval = {
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
         if environment["RIPTIDE_DICTATION_FIXTURE"] == "1",
-           let seconds = environment["RIPTIDE_DICTATION_FIXTURE_LIMIT"].flatMap(Double.init),
-           seconds.isFinite, seconds > 0 {
+           let seconds = environment["RIPTIDE_DICTATION_FIXTURE_ELAPSED"].flatMap(Double.init),
+           (0..<CodexDictation.maximumDuration).contains(seconds) {
             return seconds
         }
         #endif
-        return nil
+        return 0
     }()
 
     static let transcribe: DictationTranscriber? = {

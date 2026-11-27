@@ -20,8 +20,11 @@ public enum CodexDictationError: LocalizedError {
 }
 
 public struct CodexDictation: Sendable {
-    public static let maximumAudioBytes = 1_000_000
-    public static let maximumDuration: TimeInterval = 120
+    // The Codex desktop client's non-streaming dictation limit is 9:55.
+    public static let maximumDuration: TimeInterval = 595
+    public static let maximumAudioBytes = 5_000_000
+    static let maximumRequestBytes = 6_700_000
+    private static let timeout: TimeInterval = 135
     private let connect: @Sendable () throws -> any JSONMessageTransport
     private let accountFingerprint: String?
 
@@ -39,7 +42,7 @@ public struct CodexDictation: Sendable {
         }
         return Self(accountFingerprint: accountFingerprint) {
             guard let relay else { throw CodexDictationError.unavailable }
-            return RemoteWebSocketTransport(url: relay, bearer: bearer)
+            return RemoteWebSocketTransport(url: relay, bearer: bearer, requestTimeout: timeout)
         }
     }
 
@@ -51,8 +54,10 @@ public struct CodexDictation: Sendable {
         do {
             return try await withThrowingTaskGroup(of: String.self) { group in
                 group.addTask {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = .withoutEscapingSlashes
                     let transport = try connect()
-                    try await transport.send(JSONEncoder().encode(request))
+                    try await transport.send(encoder.encode(request))
                     var frames = transport.incoming.makeAsyncIterator()
                     guard let frame = try await frames.next() else { throw CodexDictationError.connectionClosed }
                     guard let reply = try? JSONDecoder().decode(Reply.self, from: frame) else {
@@ -66,7 +71,7 @@ public struct CodexDictation: Sendable {
                     return text
                 }
                 group.addTask {
-                    try await Task.sleep(for: .seconds(40))
+                    try await Task.sleep(for: .seconds(Self.timeout))
                     throw CodexDictationError.timedOut
                 }
                 defer { group.cancelAll() }

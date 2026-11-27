@@ -13,8 +13,10 @@ import sys
 import tempfile
 import uuid
 
-MAX_AUDIO = 1_000_000
-MAX_REQUEST = 1_350_000
+MAX_AUDIO = 5_000_000
+# Allow the base64 recording and its JSON envelope. Keep in sync with CodexDictation.swift.
+MAX_REQUEST = 6_700_000
+UPLOAD_TIMEOUT = 60
 TRANSCRIBE_URL = "https://chatgpt.com/backend-api/transcribe"
 
 
@@ -64,7 +66,7 @@ async def transcribe(audio, auth_file, expected):
         headers.seek(0)
         fd = headers.fileno()
         process = await asyncio.create_subprocess_exec(
-            "curl", "-q", "--silent", "--proto", "=https", "--connect-timeout", "8", "--max-time", "25",
+            "curl", "-q", "--silent", "--proto", "=https", "--connect-timeout", "8", "--max-time", "60",
             "--max-filesize", "262144", "--header", f"@/dev/fd/{fd}", "--data-binary", "@-",
             "--write-out", "\n%{http_code}", TRANSCRIBE_URL,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
@@ -123,7 +125,7 @@ async def serve_ssh(auth_file):
     source = asyncio.StreamReader(limit=MAX_REQUEST)
     stdin, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(source), sys.stdin.buffer)
     try:
-        frame = await asyncio.wait_for(source.readline(), timeout=12)
+        frame = await asyncio.wait_for(source.readline(), timeout=UPLOAD_TIMEOUT)
         if frame:
             print(json.dumps(await reply(frame, auth_file)), flush=True)
     except (TimeoutError, ValueError):

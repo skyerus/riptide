@@ -6,15 +6,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from codex_dictation import codex_login, DictationError, reply
+from codex_dictation import MAX_AUDIO, codex_login, DictationError, reply
 
 
 class CodexDictationTests(unittest.IsolatedAsyncioTestCase):
     async def test_only_a_bounded_audio_frame_reaches_the_transcriber(self):
-        audio = b"\x00\x00\x00\x18ftypM4A "
+        short_audio = b"\x00\x00\x00\x18ftypM4A "
+        audio = short_audio.ljust(MAX_AUDIO, b"\x00")
         clip = base64.b64encode(audio).decode()
+        oversized = base64.b64encode(audio + b"\x00").decode()
         with patch("codex_dictation.transcribe", new_callable=AsyncMock, return_value="Fixture dictation.") as upstream:
-            for request in ({"audio": clip, "url": "https://example.test"}, {"audio": "?"}, {"audio": "YQ=="}, []):
+            for request in ({"audio": base64.b64encode(short_audio).decode(), "url": "https://example.test"},
+                            {"audio": "?"}, {"audio": "YQ=="}, {"audio": oversized}, []):
                 self.assertEqual(await reply(json.dumps(request), "/codex/auth.json"), {"error": "invalidAudio"})
             upstream.assert_not_called()
             self.assertEqual(await reply(json.dumps({"audio": clip}), "/codex/auth.json"),

@@ -11,6 +11,7 @@ from pathlib import Path
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
+import codex_dictation
 from agent_profile import PROFILE_UPDATE, connector as profile_connector, publish_changes, validate_state
 from ssh_acp import STAGE_ATTACHMENTS, advertise_attachments, rpc_id, stage_attachments
 
@@ -58,10 +59,8 @@ def bridge_server(port, token, command, dictation_auth=None, profile_state=None)
         pumps = []
         try:
             if socket.request.path == DICTATION_PATH:
-                from codex_dictation import reply as dictation_reply
-
-                frame = await asyncio.wait_for(socket.recv(), timeout=12)
-                result = await dictation_reply(frame, dictation_auth) if isinstance(frame, str) else {"error": "invalidAudio"}
+                frame = await asyncio.wait_for(socket.recv(), timeout=codex_dictation.UPLOAD_TIMEOUT)
+                result = await codex_dictation.reply(frame, dictation_auth) if isinstance(frame, str) else {"error": "invalidAudio"}
                 await socket.send(json.dumps(result))
                 return
 
@@ -81,6 +80,9 @@ def bridge_server(port, token, command, dictation_auth=None, profile_state=None)
                 async for message in socket:
                     if not isinstance(message, str):
                         raise ValueError("Expected a text frame.")
+                    if dictation_auth and len(message.encode()) > MAX_FRAME:
+                        await socket.close(1009, "ACP frame is too large")
+                        return
                     packet = rpc_packet(message)
                     method = packet.get("method")
                     if method == STAGE_ATTACHMENTS and initialized.is_set():
@@ -135,7 +137,7 @@ def bridge_server(port, token, command, dictation_auth=None, profile_state=None)
 
     return serve(
         relay, "127.0.0.1", port, process_request=authenticate, origins=[None],
-        max_size=MAX_FRAME, open_timeout=8, close_timeout=3,
+        max_size=codex_dictation.MAX_REQUEST if dictation_auth else MAX_FRAME, open_timeout=8, close_timeout=3,
     )
 
 
