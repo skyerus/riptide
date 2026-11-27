@@ -18,6 +18,9 @@ class SSHACPPolicyTests(unittest.TestCase):
         workspace = "/agent/workspace"
         for method, params in (
             ("initialize", {"protocolVersion": 1, "clientCapabilities": {}}),
+            ("initialize", {"protocolVersion": 1, "clientCapabilities": {
+                "_meta": {"app.riptide.assistantProgress": True},
+            }}),
             ("session/list", {}),
             ("session/new", {"cwd": workspace, "mcpServers": []}),
             ("session/load", {"cwd": workspace, "sessionId": "main", "mcpServers": []}),
@@ -137,6 +140,15 @@ class SSHACPPolicyTests(unittest.TestCase):
         workspace = "/agent/workspace"
         for method, params in (
             ("initialize", {"protocolVersion": 1, "clientCapabilities": {"terminal": True}}),
+            ("initialize", {"protocolVersion": 1, "clientCapabilities": {
+                "_meta": {"app.riptide.assistantProgress": True}, "terminal": True,
+            }}),
+            ("initialize", {"protocolVersion": 1, "clientCapabilities": {
+                "_meta": {"app.riptide.assistantProgress": True, "unknown": True},
+            }}),
+            ("initialize", {"protocolVersion": 1, "clientCapabilities": {
+                "_meta": {"app.riptide.assistantProgress": 1},
+            }}),
             ("session/new", {"cwd": workspace, "mcpServers": [{"name": "extra"}]}),
             ("session/load", {"cwd": "/", "sessionId": "main", "mcpServers": []}),
             ("session/load", {"cwd": workspace, "sessionId": "main", "mcpServers": [], "_meta": {}}),

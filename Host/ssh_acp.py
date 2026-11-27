@@ -208,7 +208,16 @@ def admitted(packet, workspace, pending):
     if method != "session/cancel" and not rpc_id(packet.get("id")):
         return False
     if method == "initialize":
-        return params.get("protocolVersion") == 1 and params.get("clientCapabilities") == {}
+        if params.get("protocolVersion") != 1:
+            return False
+        capabilities = params.get("clientCapabilities")
+        if capabilities == {}:
+            return True
+        if not isinstance(capabilities, dict) or capabilities.keys() != {"_meta"}:
+            return False
+        metadata = capabilities["_meta"]
+        return (isinstance(metadata, dict) and metadata.keys() == {"app.riptide.assistantProgress"}
+                and metadata["app.riptide.assistantProgress"] is True)
     if method == "session/list":
         return params.get("cwd", workspace) == workspace
     if method in ("session/new", "session/load"):

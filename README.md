@@ -155,6 +155,8 @@ For a gateway-managed Hermes chat, [the reconnect status patch](Host/compat/herm
 
 Apply [the assistant progress patch](Host/compat/hermes-codex-assistant-progress.patch) after the reconnect status patch on that revision. Run `git apply --check`, then `git apply` with the patch path from the Riptide release, and restart the Hermes gateway after active turns finish. To roll back, use `git apply -R` and restart the gateway again.
 
+Update trusted Hermes SSH pairings to the versioned wrapper that admits assistant progress before clients send the new capability. Use the same wrapper for future pairings.
+
 ACP clients opt in with `clientCapabilities._meta["app.riptide.assistantProgress"] = true`. An `agent_message_chunk` with the same flag in `_meta` carries a complete progress update and uses the same `messageId` as any earlier deltas for that item. The app shows it until the turn ends. Connectors omit those updates from completed history. Codex App Server connections use the native message phase directly.
 
 ### Hermes browser handoff over SSH
