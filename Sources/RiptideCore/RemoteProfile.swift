@@ -92,7 +92,8 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
         guard kind != .codex, mainSessionID != nil else { return nil }
         if sshHostFingerprint != nil {
             return sshTransport(credential: credential, command: "riptide-acp").map {
-                ACPClient(transport: $0, restrictedSSH: true, onDisplayName: onDisplayName)
+                ACPClient(transport: $0, restrictedSSH: true, requestsFastResume: kind == .hermes,
+                          onDisplayName: onDisplayName)
             }
         }
         guard let url = Self.secureURL(address), Self.validBearer(credential) else { return nil }

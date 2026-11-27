@@ -221,8 +221,10 @@ def admitted(packet, workspace, pending):
         if not isinstance(capabilities, dict) or capabilities.keys() != {"_meta"}:
             return False
         metadata = capabilities["_meta"]
-        return (isinstance(metadata, dict) and metadata.keys() == {"app.riptide.assistantProgress"}
-                and metadata["app.riptide.assistantProgress"] is True)
+        return (isinstance(metadata, dict)
+                and metadata.keys() in ({"app.riptide.assistantProgress"},
+                                        {"app.riptide.assistantProgress", "app.riptide.fastResume"})
+                and all(value is True for value in metadata.values()))
     if method == "session/list":
         return params.get("cwd", workspace) == workspace
     if method in SESSION_OPENINGS:

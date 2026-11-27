@@ -498,12 +498,13 @@ public final class AgentChatModel {
         return connection
     }
 
-    private func load(_ sessionID: String) async {
+    private func load(_ sessionID: String, allowFastResume: Bool = true) async {
         expireIdleConnection()
         guard chats[sessionID]?.loaded != true, chats[sessionID]?.loading != true else { return }
         guard let client = connectIfNeeded() else { return }
         let cached = historyCache?.read(sessionID)
-        if let cached, chats[sessionID]?.transcript.entries.isEmpty != false {
+        if let cached, chats[sessionID]?.transcript.entries.isEmpty != false,
+           chats[sessionID]?.provisionalTranscript == nil {
             showProvisionalHistory(ACPClient.historyEvents(cached.updates, sessionID: sessionID), in: sessionID)
         }
         chats[sessionID, default: ChatState()].loading = true
@@ -516,7 +517,7 @@ public final class AgentChatModel {
             }
         }
         let cwd = sessions.first { $0.id == sessionID }?.cwd ?? target.cwd
-        let fastResume = historyCache != nil
+        let fastResume = allowFastResume && historyCache != nil
         let preview = fastResume ? Task { [weak self] in
             guard let events = try? await client.recentHistory(sessionID: sessionID, cwd: cwd),
                   let self, !Task.isCancelled, self.client === client, chats[sessionID]?.loading == true else { return }
@@ -530,6 +531,15 @@ public final class AgentChatModel {
             if let snapshot = opened.historySnapshot, snapshot.checkpoint != cached?.checkpoint {
                 historyCache?.write(snapshot, chat: sessionID)
             }
+        } catch ACPError.fastResumeDisconnected where makeClient != nil && !Task.isCancelled {
+            guard self.client === client || self.client == nil else { return }
+            preview?.cancel()
+            if self.client === client {
+                observer?.cancel()
+                clearConnection()
+            }
+            Task { await client.close() }
+            await load(sessionID, allowFastResume: false)
         } catch {
             guard self.client === client else { return }
             if !Task.isCancelled { chats[sessionID]?.error = error.localizedDescription }
