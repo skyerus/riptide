@@ -47,7 +47,15 @@ final class AgentChatsUITests: XCTestCase {
         send("Launch checklist", in: app)
         XCTAssertTrue(app.staticTexts["Saved separately"].waitForExistence(timeout: 8))
         app.returnToMainChat()
-        app.openSideChats()
+        XCTAssertTrue(title(app).waitForExistence(timeout: 8))
+        XCTAssertFalse(app.scrollViews["main-chat-agents"].exists)
+        let sideChats = app.buttons["open-side-chats"]
+        XCTAssertFalse(sideChats.exists)
+        capture(app, as: "riptide-main-chat")
+        app.chatActions.tap()
+        XCTAssertTrue(sideChats.waitForExistence(timeout: 8))
+        capture(app, as: "riptide-chat-actions-menu")
+        sideChats.tap()
         let sideChat = app.scrollViews["chat-picker-list"].buttons["Launch checklist"]
         XCTAssertTrue(sideChat.waitForExistence(timeout: 5))
         XCTAssertTrue(newChat.isHittable)
@@ -319,7 +327,10 @@ final class AgentChatsUITests: XCTestCase {
         send(chatTitle, in: app)
         let sideHeading = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", chatTitle), object: heading)
         XCTAssertEqual(XCTWaiter.wait(for: [sideHeading], timeout: 8), .completed)
+        app.chatActions.tap()
+        XCTAssertTrue(app.buttons["follow-up-chat"].waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["open-side-chats"].exists)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).tap()
         app.returnToMainChat()
         XCTAssertEqual(heading.label, "Main Chat")
 

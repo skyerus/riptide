@@ -279,8 +279,13 @@ final class WorkspaceUXUITests: XCTestCase {
         continueAfterFailure = false
         let (app, _) = try openCodexFixture(portKey: "RIPTIDE_UX_SIDE_CHATS_PORT")
         XCTAssertEqual(app.chatHeading.label, "Main Chat")
-        XCTAssertFalse(app.buttons["main-chat-agent-local-codex"].exists)
-        app.openSideChats()
+        XCTAssertFalse(app.scrollViews["main-chat-agents"].exists)
+        let sideChats = app.buttons["open-side-chats"]
+        XCTAssertFalse(sideChats.exists)
+        app.chatActions.tap()
+        XCTAssertTrue(sideChats.waitForExistence(timeout: 8))
+        capture(app, as: "riptide-codex-chat-actions-menu")
+        sideChats.tap()
         let main = app.buttons["sidebar-chat-busy-fixture-thread"]
         let side = app.buttons["sidebar-chat-fixture-side-thread"]
         XCTAssertTrue(side.waitForExistence(timeout: 8))
@@ -1114,7 +1119,7 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
-    func testAgentAvatarSwitchOpensMainChatsAndKeepsTheDraft() {
+    func testSwitchingAgentsFromTheGridKeepsTheDraft() {
         let app = freshApp()
         openMainChat(in: app)
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
@@ -1124,15 +1129,15 @@ final class WorkspaceUXUITests: XCTestCase {
 
         XCTAssertFalse(app.scrollViews["agent-grid"].exists)
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@", "Inbox")).firstMatch.exists)
-        XCTAssertFalse(app.buttons["main-chat-agent-openclaw"].exists)
-        app.buttons["main-chat-agent-hermes"].tap()
-        XCTAssertTrue(app.chatHeading.waitForExistence(timeout: 8))
+        XCTAssertFalse(app.scrollViews["main-chat-agents"].exists)
+        app.navigationBars.buttons["BackButton"].tap()
+        openMainChat(in: app, agent: "hermes")
         XCTAssertEqual(app.chatHeading.value as? String, "Hermes")
         XCTAssertNotEqual(composer.value as? String, "Keep this draft")
 
         XCTAssertEqual(app.chatHeading.label, "Main Chat")
-        XCTAssertFalse(app.buttons["main-chat-agent-hermes"].exists)
-        app.buttons["main-chat-agent-openclaw"].tap()
+        app.navigationBars.buttons["BackButton"].tap()
+        openMainChat(in: app)
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         XCTAssertEqual(composer.value as? String, "Keep this draft")
         capture(app, as: "Chat without connector tabs, with retained draft")
@@ -1179,36 +1184,6 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Desktop presence"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["Deliver alerts"].exists)
         capture(app, as: "Desktop-aware notification settings")
-    }
-
-    @MainActor
-    func testAvatarStripScrollsToAnOffscreenAgent() {
-        continueAfterFailure = false
-        let app = XCUIApplication()
-        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
-        app.launchEnvironment["RIPTIDE_BUSY_WORKSPACE"] = "1"
-        app.launch()
-        openMainChat(in: app)
-        let strip = app.scrollViews["main-chat-agents"]
-        XCTAssertTrue(strip.waitForExistence(timeout: 8))
-        let first = strip.buttons["main-chat-agent-hermes"]
-        let sideChats = app.buttons["open-side-chats"]
-        let last = strip.buttons["main-chat-agent-ops-12"]
-        XCTAssertFalse(last.isHittable)
-        let origin = app.coordinate(withNormalizedOffset: .zero)
-        let firstFrame = first.frame
-        let start = origin.withOffset(CGVector(dx: sideChats.frame.minX - 22, dy: firstFrame.midY))
-        let end = origin.withOffset(CGVector(dx: firstFrame.midX, dy: firstFrame.midY))
-        for _ in 0..<8 where !last.isHittable {
-            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
-        }
-        capture(app, as: "riptide-scrolled-agent-strip")
-        XCTAssertTrue(last.isHittable, "Strip frame \(strip.frame), first avatar \(firstFrame) to \(first.frame), last avatar \(last.frame).")
-        last.tap()
-        XCTAssertEqual(app.chatHeading.label, "Main Chat")
-        XCTAssertEqual(app.chatHeading.value as? String, "Ops 12")
-        XCTAssertFalse(strip.buttons["main-chat-agent-ops-12"].exists)
-        XCTAssertTrue(sideChats.isHittable)
     }
 
     @MainActor

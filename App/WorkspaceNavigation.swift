@@ -139,22 +139,24 @@ private struct WorkspaceDestination: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let agent = workspace.agent(route.workspace), route.hermesGroup == nil {
-                if route.opensMainChat {
-                    AgentChatBar(agent: agent, showSideChats: { showSideChats(agent) })
-                } else if route.chat != nil || route.startsNewChat {
-                    HStack {
-                        Button("Main Chat", systemImage: "arrow.uturn.backward") { workspace.openMainChat(agent.id) }
-                            .buttonStyle(ChatNavigationButtonStyle())
-                            .accessibilityIdentifier("return-to-main-chat")
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, ChatTheme.gutter)
+            if route.hermesGroup == nil, !route.opensMainChat, route.chat != nil || route.startsNewChat,
+               let agent = workspace.agent(route.workspace) {
+                HStack {
+                    Button("Main Chat", systemImage: "arrow.uturn.backward") { workspace.openMainChat(agent.id) }
+                        .buttonStyle(ChatNavigationButtonStyle())
+                        .accessibilityIdentifier("return-to-main-chat")
+                    Spacer(minLength: 0)
                 }
+                .padding(.horizontal, ChatTheme.gutter)
             }
             destination
         }
         .background(ChatTheme.background)
+    }
+
+    private var showMainSideChats: (() -> Void)? {
+        guard route.opensMainChat, let agent = workspace.agent(route.workspace) else { return nil }
+        return { showSideChats(agent) }
     }
 
     @ViewBuilder
@@ -171,10 +173,10 @@ private struct WorkspaceDestination: View {
                                        description: Text("Unlock this device or pair the remote again."))
             }
         } else if let model = workspace.roster.first(where: { $0.target.id == route.workspace }) {
-            ChatScreen(model: model, initialChatID: route.chat)
+            ChatScreen(model: model, initialChatID: route.chat, showSideChats: showMainSideChats)
         } else if let endpoint = workspace.codexEndpoint(for: route.workspace) {
             if route.opensMainChat {
-                CodexMainChatScreen(endpoint: endpoint, workspaceID: route.workspace)
+                CodexMainChatScreen(endpoint: endpoint, workspaceID: route.workspace, showSideChats: showMainSideChats)
             } else if route.startsNewChat {
                 CodexSavedChatScreen(endpoint: endpoint, initialChat: nil, workspaceID: route.workspace)
             } else if let chat = route.chat {
@@ -184,7 +186,7 @@ private struct WorkspaceDestination: View {
             }
         } else if let profile = workspace.profile(route.workspace), profile.kind != .codex,
                   let bearer = workspace.remotes.bearer(for: profile) {
-            WorkspaceACPDestination(profile: profile, bearer: bearer, chatID: route.chat)
+            WorkspaceACPDestination(profile: profile, bearer: bearer, chatID: route.chat, showSideChats: showMainSideChats)
         } else {
             ContentUnavailableView("Workspace unavailable", systemImage: "lock",
                                    description: Text("Unlock this device or pair the remote again."))
@@ -202,13 +204,15 @@ private struct WorkspaceACPDestination: View {
     let profile: RemoteProfile
     let bearer: String
     let chatID: String?
+    let showSideChats: (() -> Void)?
     @Environment(WorkspaceState.self) private var workspace
     @State private var model: AgentChatModel?
 
     var body: some View {
         Group {
             if let model {
-                ChatScreen(model: model, voiceRemote: profile, remoteStore: workspace.remotes, initialChatID: chatID)
+                ChatScreen(model: model, voiceRemote: profile, remoteStore: workspace.remotes, initialChatID: chatID,
+                           showSideChats: showSideChats)
             } else {
                 ChatHistorySkeleton()
             }
@@ -263,55 +267,12 @@ struct WorkspaceChatHeading: View {
     }
 }
 
-private struct AgentChatBar: View {
-    let agent: WorkspaceAgent
-    let showSideChats: () -> Void
-    @Environment(WorkspaceState.self) private var workspace
+struct SideChatsButton: View {
+    let action: () -> Void
 
     var body: some View {
-        let otherAgents = workspace.rosterAgents().filter { $0.id != agent.id }
-        HStack(spacing: 12) {
-            if otherAgents.isEmpty {
-                Spacer(minLength: 0)
-            } else {
-                agentStrip(otherAgents)
-            }
-            Button("Side chats", systemImage: "bubble.left.and.bubble.right", action: showSideChats)
-                .buttonStyle(ChatNavigationButtonStyle())
-                .accessibilityIdentifier("open-side-chats")
-                .padding(.trailing, ChatTheme.gutter)
-        }
-        .background(ChatTheme.background)
-    }
-
-    @ViewBuilder
-    private func agentStrip(_ agents: [WorkspaceAgent]) -> some View {
-        let strip = ScrollView(.horizontal) {
-            HStack(spacing: 6) {
-                ForEach(agents) { other in
-                    Button { workspace.openMainChat(other.id) } label: {
-                        AgentAvatar(agent: other, size: 36)
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(other.name)
-                    .accessibilityHint("Opens Main Chat")
-                    .accessibilityIdentifier("main-chat-agent-\(other.id)")
-                }
-            }
-            .padding(.leading, ChatTheme.gutter - 4)
-        }
-        .scrollIndicators(.hidden)
-        .frame(height: 44)
-        .contentShape(Rectangle())
-        .accessibilityIdentifier("main-chat-agents")
-
-        if #available(iOS 26.0, *) {
-            strip.scrollEdgeEffectHidden(for: .vertical)
-        } else {
-            strip
-        }
+        Button("Side chats", systemImage: "bubble.left.and.bubble.right", action: action)
+            .accessibilityIdentifier("open-side-chats")
     }
 }
 
