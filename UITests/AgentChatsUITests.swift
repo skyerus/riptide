@@ -579,6 +579,35 @@ final class AgentChatsUITests: XCTestCase {
     }
 
     @MainActor
+    func testSendingFromAnExpandedComposerKeepsTheLatestMessageVisible() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launch()
+        openMainChat(app, agent: "hermes")
+        send("streaming demo", in: app)
+        XCTAssertTrue(app.staticTexts["Long stream complete."].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["stop-reply"].waitForNonExistence(timeout: 5))
+
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        let transcript = app.scrollViews["chat-transcript"]
+        let draft = "Check the release notes.\nConfirm the open items.\nKeep the next steps brief."
+        editor.tap()
+        editor.typeText(draft)
+        app.buttons["send-message"].tap()
+
+        let sent = transcript.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Check the release notes.")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 5))
+        let visibleTranscript = transcript.frame.intersection(
+            CGRect(x: 0, y: 0, width: app.frame.maxX, height: editor.frame.minY)
+        )
+        XCTAssertGreaterThan(visibleTranscript.intersection(sent.frame).height, 0,
+                             "The newly sent message should be visible without scrolling.")
+        XCTAssertFalse(app.buttons["jump-to-latest"].exists)
+        capture(app, as: "Latest message visible after Send")
+    }
+
+    @MainActor
     private func title(_ app: XCUIApplication) -> XCUIElement {
         app.buttons["chats-button"]
     }

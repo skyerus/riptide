@@ -238,7 +238,7 @@ struct CodexSavedChatScreen: View {
 
     private var transcript: some View {
         let latestUserMessage = turns.latestUserMessageLocation(activeTurnID: activeTurnID)
-        return TranscriptScrollView {
+        return ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 if session?.hasOlderTurns == true {
                     Text("Showing the latest 30 turns.").font(.caption).foregroundStyle(.secondary)
