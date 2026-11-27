@@ -15,7 +15,8 @@ struct ChatScreen: View {
     @State private var viewport = TranscriptViewport()
     @State private var showsCompletedToolCalls = false
     @State private var pairingVoice = false
-    @State private var activeCall: NativeAgentCall?
+    @State private var showVoiceSettings = false
+    @State private var pairAfterVoiceSettings = false
     @State private var voiceError: String?
     @State private var browserHandoff: BrowserHandoff?
     @State private var focusAfterHandback: String?
@@ -138,7 +139,7 @@ struct ChatScreen: View {
                 if voiceRemote != nil {
                     Button("Call in this chat", systemImage: "phone") { startCall() }
                         .labelStyle(.iconOnly)
-                        .disabled(!model.selected.loaded || activeCall != nil)
+                        .disabled(!model.selected.loaded || !workspace.calls.canOpen(chat: chatKey))
                         .accessibilityIdentifier("native-call-in-chat")
                         .contextMenu {
                             Button("New voice chat", systemImage: "plus.bubble") {
@@ -152,8 +153,8 @@ struct ChatScreen: View {
                                     }
                                 }
                             }
-                            .disabled(!model.selected.loaded || model.creatingChat || model.selected.working)
-                            Button("Voice settings", systemImage: "gearshape") { pairingVoice = true }
+                            .disabled(!model.selected.loaded || model.creatingChat || model.selected.working || !workspace.calls.canOpen())
+                            Button("Voice settings", systemImage: "gearshape") { showVoiceSettings = true }
                         }
                 }
             }
@@ -177,11 +178,16 @@ struct ChatScreen: View {
                 }
             }
         }
-        .fullScreenCover(item: $activeCall) { call in
-            NativeAgentCallScreen(call: call, agent: workspace.agent(model.target.id)) {
-                if model.selectedID == call.chatID {
-                    ForEach(model.selected.permissions) { permissionCard($0) }
-                }
+        .sheet(isPresented: $showVoiceSettings, onDismiss: {
+            if pairAfterVoiceSettings { pairAfterVoiceSettings = false; pairingVoice = true }
+        }) {
+            if let voiceRemote, let remoteStore {
+                AgentVoiceSettings(workspaceID: chatKey.workspace, availableVoices: {
+                    try await remoteStore.subscriptionVoices(for: voiceRemote)
+                }, pair: {
+                    pairAfterVoiceSettings = true
+                    showVoiceSettings = false
+                })
             }
         }
         .alert("Voice call unavailable", isPresented: Binding(
@@ -340,15 +346,23 @@ struct ChatScreen: View {
     }
 
     private func startCall() {
-        guard let voiceRemote, let remoteStore, model.selected.loaded, activeCall == nil else { return }
-        if let call = NativeCallSystem.shared.call(for: model, chatID: model.selectedID) {
-            activeCall = call
+        guard let voiceRemote, let remoteStore, model.selected.loaded else { return }
+        if let active = workspace.calls.active {
+            if active.chat == chatKey { workspace.calls.resume() }
             return
         }
         guard remoteStore.hasVoiceRoute(for: voiceRemote) else { pairingVoice = true; return }
         do {
             let link = try remoteStore.voiceLink(for: voiceRemote)
-            activeCall = NativeAgentCall(name: agentName, model: model, chatID: model.selectedID, link: link)
+            let locator = chatKey
+            let call = NativeAgentCall(name: agentName, model: model, locator: locator, link: link, workspace: workspace) {
+                AnyView(Group {
+                    if model.selectedID == locator.chat {
+                        ForEach(model.selected.permissions) { permissionCard($0) }
+                    }
+                })
+            }
+            workspace.calls.present(.native(call))
         } catch {
             voiceError = error.localizedDescription
         }
@@ -358,9 +372,16 @@ struct ChatScreen: View {
         let chat = model.selected
         let latestUserMessageID = chat.transcript.latestUserMessageID
         let firstActiveOutputID = chat.transcript.firstActiveOutputID
+        let entries = chat.transcript.visibleEntries(showCompletedToolCalls: showsCompletedToolCalls)
+        let calls = workspace.calls.records(in: chatKey)
+        var messageCount = 0
+        let positions = entries.map { entry in
+            if entry.isConversationMessage { messageCount += 1 }
+            return messageCount
+        }
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
-                if model.selected.loaded && model.selected.transcript.entries.isEmpty {
+                if model.selected.loaded && model.selected.transcript.entries.isEmpty && calls.isEmpty {
                     Text("Start a conversation")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -368,7 +389,8 @@ struct ChatScreen: View {
                         .padding(.top, 24)
                         .accessibilityIdentifier("empty-chat")
                 }
-                ForEach(model.selected.transcript.visibleEntries(showCompletedToolCalls: showsCompletedToolCalls)) { entry in
+                ForEach(calls.filter { $0.anchor == .acpMessages(0) }) { ChatCallReceipt(record: $0) }
+                ForEach(Array(zip(entries, positions)), id: \.0.id) { entry, position in
                     if entry.id == firstActiveOutputID, let startedAt = chat.turnStartedAt {
                         WorkingTurnHeader(startedAt: startedAt)
                     }
@@ -390,6 +412,16 @@ struct ChatScreen: View {
                     case .pairingReceipt(let name, let connected):
                         AgentPairingReceipt(name: name, connected: connected)
                     }
+                    if entry.isConversationMessage {
+                        ForEach(calls.filter { $0.anchor == .acpMessages(position) }) { ChatCallReceipt(record: $0) }
+                    }
+                }
+                ForEach(calls.filter {
+                    if case .acpMessages(let count) = $0.anchor { return count > messageCount }
+                    return false
+                }) { ChatCallReceipt(record: $0) }
+                if workspace.calls.saveFailure == chatKey {
+                    Text("This call couldn’t be saved on this device.").font(.footnote).foregroundStyle(.secondary)
                 }
                 if firstActiveOutputID == nil, let startedAt = chat.turnStartedAt {
                     WorkingTurnHeader(startedAt: startedAt)

@@ -94,7 +94,7 @@ struct AgentWorkspaceScreen: View {
     @State private var creatingChat = false
     @State private var failure: String?
     @State private var voiceEndpoint: CodexLocalEndpoint?
-    @State private var showingCall = false
+    @State private var showingVoiceSettings = false
     @State private var editingPhoto = false
 
     private var isCodex: Bool { agent.id == WorkspaceState.localID || workspace.profile(agent.id)?.kind == .codex }
@@ -135,8 +135,13 @@ struct AgentWorkspaceScreen: View {
                         newChatButton { workspace.startCodexChat(agent.id) }
                         Menu {
                             Button("Call Codex directly", systemImage: "phone") {
+                                workspace.calls.present(.codex(CodexVoiceCallModel(endpoint: endpoint, workspace: workspace,
+                                                                                 workspaceID: agent.id)))
+                            }
+                            .disabled(!workspace.calls.canOpen())
+                            Button("Voice settings", systemImage: "waveform") {
                                 voiceEndpoint = endpoint
-                                showingCall = true
+                                showingVoiceSettings = true
                             }
                         } label: {
                             Label("Codex actions", systemImage: "ellipsis")
@@ -189,8 +194,10 @@ struct AgentWorkspaceScreen: View {
         }
         .task { await reload() }
         .refreshable { await reload() }
-        .sheet(isPresented: $showingCall) {
-            if let voiceEndpoint { CodexVoiceScreen(endpoint: voiceEndpoint) }
+        .sheet(isPresented: $showingVoiceSettings) {
+            if let voiceEndpoint {
+                AgentVoiceSettings(workspaceID: agent.id, availableVoices: { try await voiceEndpoint.subscriptionVoices() })
+            }
         }
     }
 

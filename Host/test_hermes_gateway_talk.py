@@ -19,6 +19,7 @@ class HermesGatewayTalkTests(unittest.IsolatedAsyncioTestCase):
         self.transport = Mock()
         self.transport.events.RealtimeSessionError = RuntimeError
         self.transport.events.TranscriptRole = Role
+        self.transport.config.SUBSCRIPTION_VOICES = ("cove", "juniper")
         self.call = Call(Path('/profile'), Path('/workspace'), Path('/auth'), self.gateway, self.transport)
 
     async def test_refuses_an_unknown_chat_before_calling_the_provider(self):
@@ -28,6 +29,31 @@ class HermesGatewayTalkTests(unittest.IsolatedAsyncioTestCase):
             await self.call.start('some-other-chat', 'v=0 offer')
         self.gateway.connect_gateway.assert_not_called()
         self.transport.negotiate.assert_not_called()
+
+    async def test_voice_override_uses_the_subscription_catalog_before_negotiating(self):
+        self.call.subscription = Mock()
+        with self.assertRaisesRegex(TalkError, "^invalidRequest$"):
+            await self.call.start("paired-chat", "v=0 offer", voice="unknown")
+        self.call.subscription.assert_not_called()
+
+        self.gateway.target.return_value = "paired-chat"
+        self.call.gateway_client = AsyncMock(return_value=Object(rpc=AsyncMock(side_effect=[
+            {"session_id": "paired-chat"}, {"session_id": "paired-chat"},
+        ])))
+        self.call.listen = AsyncMock()
+        self.call.drain_gateway = AsyncMock()
+        self.transport.negotiate = AsyncMock(return_value=Object(
+            answer_sdp="v=0 answer", open_session=AsyncMock(), close=AsyncMock(),
+        ))
+        config = Object(model="gpt-live-1-codex", voice="juniper")
+        self.transport.config.LiveConfig.return_value = config
+        try:
+            self.assertEqual(await self.call.start("paired-chat", "v=0 offer", voice="juniper"),
+                             {"ok": True, "sdp": "v=0 answer"})
+            self.transport.config.LiveConfig.assert_called_once_with(auth_mode="subscription", voice="juniper")
+            self.assertEqual(self.transport.events.SessionSetup.call_args.kwargs["voice"], "juniper")
+        finally:
+            await self.call.close()
 
     async def test_never_connects_to_a_stopped_or_draining_gateway(self):
         self.gateway.discover_gateway_endpoint.return_value = Object(state='draining', endpoint=None)

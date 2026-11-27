@@ -26,7 +26,7 @@ public struct SessionSummary: Identifiable, Sendable, Equatable {
     }
 }
 
-public enum ChatRole: String, Sendable {
+public enum ChatRole: String, Codable, Sendable {
     case user, assistant
 }
 

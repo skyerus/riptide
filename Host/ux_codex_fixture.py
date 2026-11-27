@@ -25,7 +25,7 @@ MODELS = [
 ]
 
 
-async def fixture(socket, live=False, watch_progress=False, compaction=False):
+async def fixture(socket, live=False, watch_progress=False, compaction=False, voice=False):
     async def send(body):
         await socket.send(json.dumps(body))
 
@@ -61,7 +61,8 @@ async def fixture(socket, live=False, watch_progress=False, compaction=False):
                     "availableDecisions": ["accept", "decline"],
                 }})
             else:
-                await conclude("A reply finished in the other workspace.")
+                await conclude("I reviewed the draft and posted the changes." if voice
+                               else "A reply finished in the other workspace.")
         except ConnectionClosed:
             return
 
@@ -138,6 +139,26 @@ async def fixture(socket, live=False, watch_progress=False, compaction=False):
                 result = {"dataBase64": files[params["path"]]}
             elif method == "account/read":
                 result = {"account": {"type": "chatgpt"}, "workspaceRouting": {"chatgptAccountId": "fixture-identity"}}
+            elif voice and method == "thread/realtime/listVoices":
+                result = {"voices": {"v1": ["arbor", "cove"], "v3": ["cove", "juniper", "spruce"]}}
+            elif voice and method == "thread/realtime/start" and params.get("threadId") == CHAT:
+                if params.get("voice") != "juniper" or not params.get("flushTranscriptTailOnSessionEnd"):
+                    await send({"id": request, "error": {"code": -32602, "message": "Expected the selected voice and transcript flush."}})
+                    continue
+                await notify("thread/realtime/started", {"realtimeSessionId": "fixture-voice", "version": "v3"})
+                await notify("thread/realtime/sdp", {"sdp": "v=0 fixture answer"})
+                await notify("thread/realtime/transcript/delta", {"role": "user", "delta": "Check the draft"})
+                result = {}
+            elif voice and method == "thread/realtime/stop" and params.get("threadId") == CHAT:
+                for role, text in (("user", "Check the draft."), ("assistant", "I’ll check it and reply here.")):
+                    await notify("thread/realtime/item/completed", {"item": {
+                        "id": f"fixture-speech-{role}", "type": "transcriptSegment",
+                        "realtimeSessionId": "fixture-voice", "role": role, "text": text,
+                    }})
+                await notify("thread/realtime/closed", {"reason": "requested"})
+                if started:
+                    approval = asyncio.create_task(continue_turn(False))
+                result = {}
             elif method == "thread/list":
                 result = {"data": [thread]}
             elif method == "thread/start":
@@ -190,7 +211,7 @@ async def fixture(socket, live=False, watch_progress=False, compaction=False):
                 needs_approval = not any("finish without approval" in item.get("text", "") for item in inputs)
                 if compaction:
                     approval = asyncio.create_task(compact_context())
-                else:
+                elif not voice:
                     approval = asyncio.create_task(show_live_feedback() if feedback else continue_turn(needs_approval))
             elif method == "turn/steer" and started and params.get("expectedTurnId") == turn_id:
                 steering_number += 1
@@ -207,12 +228,12 @@ async def fixture(socket, live=False, watch_progress=False, compaction=False):
             approval.cancel()
 
 
-async def run(port_file, tls=None, live=False, watch_progress=False, compaction=False):
+async def run(port_file, tls=None, live=False, watch_progress=False, compaction=False, voice=False):
     def authenticate(connection, request):
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return connection.respond(HTTPStatus.UNAUTHORIZED, "Fixture credential required.\n")
 
-    handler = partial(fixture, live=live, watch_progress=watch_progress, compaction=compaction)
+    handler = partial(fixture, live=live, watch_progress=watch_progress, compaction=compaction, voice=voice)
     async with serve(handler, "127.0.0.1", 0, process_request=authenticate, ssl=tls) as service:
         port_file.write_text(str(service.sockets[0].getsockname()[1]), encoding="utf-8")
         await service.serve_forever()
@@ -226,6 +247,7 @@ if __name__ == "__main__":
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--watch-progress", action="store_true")
     parser.add_argument("--compaction", action="store_true")
+    parser.add_argument("--voice", action="store_true")
     args = parser.parse_args()
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key must be used together")
@@ -233,4 +255,4 @@ if __name__ == "__main__":
     if args.tls_cert:
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(args.tls_cert, args.tls_key)
-    asyncio.run(run(args.port_file, tls, args.live, args.watch_progress, args.compaction))
+    asyncio.run(run(args.port_file, tls, args.live, args.watch_progress, args.compaction, args.voice))

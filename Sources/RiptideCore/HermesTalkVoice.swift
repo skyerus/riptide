@@ -16,9 +16,18 @@ public enum HermesTalkVoiceError: LocalizedError, Equatable {
 }
 
 public protocol HermesTalkCalling: Sendable {
-    func answer(offer: String, sessionID: String) async throws -> String
+    func answer(offer: String, sessionID: String, voice: String?) async throws -> String
+    func availableVoices() async throws -> [String]
     func poll() async throws -> HermesTalkVoice.Activity?
-    func end() async
+    @discardableResult func end() async -> [VoiceTranscriptLine]
+}
+
+public extension HermesTalkCalling {
+    func availableVoices() async throws -> [String] { [] }
+
+    func answer(offer: String, sessionID: String) async throws -> String {
+        try await answer(offer: offer, sessionID: sessionID, voice: nil)
+    }
 }
 
 public actor HermesTalkVoice: HermesTalkCalling {
@@ -69,7 +78,8 @@ public actor HermesTalkVoice: HermesTalkCalling {
         }
     }
 
-    public func answer(offer: String, sessionID: String) async throws -> String {
+    public func answer(offer: String, sessionID: String, voice: String?) async throws -> String {
+        guard voice == nil else { throw NativeVoiceError.unavailable }
         guard !opening, !closed, context == nil else { throw NativeVoiceError.expired }
         let offer = try NativeVoiceHTTP.checkedSDP(offer)
         opening = true
@@ -123,9 +133,11 @@ public actor HermesTalkVoice: HermesTalkCalling {
         return try events.accept(response)
     }
 
-    public func end() async {
+    @discardableResult
+    public func end() async -> [VoiceTranscriptLine] {
         closed = true
         if !opening { await release() }
+        return events.transcript.lines
     }
 
     private func release() async {
@@ -191,6 +203,7 @@ public actor HermesTalkVoice: HermesTalkCalling {
 
 struct HermesTalkEvents {
     private(set) var cursor = 0
+    private(set) var transcript = VoiceTranscript()
 
     mutating func accept(_ response: JSON) throws -> HermesTalkVoice.Activity? {
         guard response["ok"] == .boolean(true), let last = response["cursor"]?.integer, last >= cursor,
@@ -205,6 +218,8 @@ struct HermesTalkEvents {
                 if case .boolean(let pending)? = event["pending"] { activity = pending ? .working : .listening }
             case "result":
                 activity = .result
+            case "transcript":
+                transcript.acceptHermesEvent(event)
             case "error":
                 throw HermesTalkVoiceError.lostBinding
             default:

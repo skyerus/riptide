@@ -12,16 +12,18 @@ actor HermesSSHTalk: HermesTalkCalling {
         self.connect = connect
     }
 
-    func answer(offer: String, sessionID: String) async throws -> String {
+    func answer(offer: String, sessionID: String, voice: String?) async throws -> String {
         guard !closed, transport == nil else { throw NativeVoiceError.expired }
         let offer = try NativeVoiceHTTP.checkedSDP(offer)
         try Task.checkCancellation()
         guard let transport = connect() else { throw NativeVoiceError.authentication }
         self.transport = transport
         do {
-            let reply = try await Self.exchange([
-                "operation": "start", "sessionID": .string(sessionID), "sdp": .string(offer)
-            ], over: transport, timeout: .seconds(44))
+            var params: [String: JSON] = ["operation": "start", "sessionID": .string(sessionID), "sdp": .string(offer)]
+            if let voice, try await Self.voices(over: transport).contains(voice) {
+                params["voice"] = .string(voice)
+            }
+            let reply = try await Self.exchange(.object(params), over: transport, timeout: .seconds(44))
             guard !closed else { throw NativeVoiceError.expired }
             let answer = try NativeVoiceHTTP.checkedSDP(reply["sdp"]?.string)
             started = true
@@ -43,12 +45,31 @@ actor HermesSSHTalk: HermesTalkCalling {
         return try events.accept(reply)
     }
 
-    func end() async {
+    func availableVoices() async throws -> [String] {
+        guard let transport = connect() else { throw NativeVoiceError.authentication }
+        do {
+            let voices = try await Self.voices(over: transport)
+            await transport.close()
+            return voices
+        } catch {
+            await transport.close()
+            throw error
+        }
+    }
+
+    private static func voices(over transport: SSHACPTransport) async throws -> [String] {
+        let response = try await exchange(["operation": "status"], over: transport, timeout: .seconds(8))
+        return response["voices"]?.array?.compactMap(\.string) ?? []
+    }
+
+    @discardableResult
+    func end() async -> [VoiceTranscriptLine] {
         closed = true
         let transport = transport
         self.transport = nil
         // Closing the call channel releases its host-side Talk binding.
         await transport?.close()
+        return events.transcript.lines
     }
 
     private static func exchange(_ request: JSON, over transport: SSHACPTransport,

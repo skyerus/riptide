@@ -3,11 +3,10 @@ import Observation
 import RiptideCore
 import SwiftUI
 
-struct NativeAgentCallScreen<Approvals: View>: View {
+struct NativeAgentCallScreen: View {
     let call: NativeAgentCall
     let agent: WorkspaceAgent?
-    @ViewBuilder let approvals: () -> Approvals
-    @Environment(\.dismiss) private var dismiss
+    let minimize: () -> Void
     @State private var showingAudioRoutes = false
 
     var body: some View {
@@ -17,7 +16,7 @@ struct NativeAgentCallScreen<Approvals: View>: View {
                     Spacer(minLength: 28)
                     caller
                     Spacer(minLength: 38)
-                    approvals()
+                    call.approvals()
                     controls
                 }
                 .frame(maxWidth: 460, minHeight: max(0, geometry.size.height - 64))
@@ -38,18 +37,14 @@ struct NativeAgentCallScreen<Approvals: View>: View {
         .preferredColorScheme(.dark)
         .accessibilityIdentifier("native-call-screen")
         .interactiveDismissDisabled()
-        .task { await call.run() }
-        .onDisappear {
-            if call.listenOnly { call.finish() }
-        }
-        .onChange(of: call.dismissAfterEnd) {
-            if call.dismissAfterEnd { dismiss() }
-        }
-        .onChange(of: call.model.selected.loaded) {
-            if !call.model.selected.loaded { call.finish("Chat disconnected.") }
-        }
-        .onChange(of: call.model.selectedID) {
-            if call.model.selectedID != call.chatID { call.finish("Chat changed.") }
+        .overlay(alignment: .topTrailing) {
+            if !call.finished {
+                Button("Minimize call", systemImage: "chevron.down", action: minimize)
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityIdentifier("minimize-voice-call")
+                    .padding(12)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
             call.refreshAudioRoute()
@@ -98,7 +93,7 @@ struct NativeAgentCallScreen<Approvals: View>: View {
             callButton(call.finished ? "Done" : "End call",
                        symbol: call.finished ? "checkmark" : "phone.down.fill",
                        end: !call.finished, identifier: "native-voice-end") {
-                if call.finished { dismiss() }
+                if call.finished { minimize() }
                 else { call.requestEnd() }
             }
             if !call.finished {
@@ -137,17 +132,23 @@ struct NativeAgentCallScreen<Approvals: View>: View {
 
 @MainActor
 @Observable
-final class NativeAgentCall: Identifiable {
+final class NativeAgentCall: Identifiable, SystemVoiceCall {
     let id = UUID()
     let name: String
     let model: AgentChatModel
     let chatID: String
+    let locator: WorkspaceChatID
+    let approvals: () -> AnyView
     private let link: NativeVoiceLink
+    private let voice: String?
+    @ObservationIgnored private weak var workspace: WorkspaceState?
+    @ObservationIgnored private var transcript = VoiceTranscript()
+    @ObservationIgnored private let clock = ContinuousClock()
+    @ObservationIgnored private var connectedInstant: ContinuousClock.Instant?
     private var status = "Calling…"
     private(set) var connectedAt: Date?
     private(set) var muted = false
     private(set) var finished = false
-    private(set) var dismissAfterEnd = false
     private(set) var outputName = "iPhone"
     private(set) var outputSymbol = "speaker.wave.2.fill"
     private(set) var onSpeaker = false
@@ -178,16 +179,24 @@ final class NativeAgentCall: Identifiable {
         #endif
     }
 
-    init(name: String, model: AgentChatModel, chatID: String, link: NativeVoiceLink) {
+    init(name: String, model: AgentChatModel, locator: WorkspaceChatID, link: NativeVoiceLink,
+         workspace: WorkspaceState, approvals: @escaping () -> AnyView) {
         self.name = name
         self.model = model
-        self.chatID = chatID
+        self.locator = locator
+        chatID = locator.chat
         self.link = link
+        self.workspace = workspace
+        self.approvals = approvals
+        let selected = workspace.calls.voice(for: locator.workspace)
+        if case .hermesTalk(_, let allowsVoiceSelection) = link, allowsVoiceSelection, !selected.isEmpty { voice = selected }
+        else { voice = nil }
     }
 
     func run() async {
         guard !finished, !began else { return }
         began = true
+        model.setVoiceConnectionInUse(true)
         do {
             try checkCurrent()
             if case .hermesTalk = link,
@@ -224,7 +233,7 @@ final class NativeAgentCall: Identifiable {
             try checkCurrent()
             switch link {
             case .hermes(let hermes):
-                let history = model.selected.transcript.entries.suffix(16).compactMap { entry -> HermesVoiceLine? in
+                let history = model.recentMessages(in: chatID).compactMap { entry -> HermesVoiceLine? in
                     guard case .message(let role, let text) = entry.content else { return nil }
                     return HermesVoiceLine(role: role, text: text)
                 }
@@ -233,24 +242,28 @@ final class NativeAgentCall: Identifiable {
                 let answer = try await hermes.answer(offer: offer, history: history)
                 try checkCurrent()
                 try await peer.accept(answer)
-            case .hermesTalk(let talk):
+            case .hermesTalk(let talk, _):
                 let offer = try await peer.offer(listenOnly: listenOnly)
                 try checkCurrent()
-                let answer = try await talk.answer(offer: offer, sessionID: chatID)
+                let answer = try await talk.answer(offer: offer, sessionID: chatID, voice: voice)
                 try checkCurrent()
                 try await peer.accept(answer)
                 while !finished {
                     let activity = try await talk.poll()
+                    if finished { break }
                     try checkCurrent()
                     if connected, let activity {
                         switch activity {
                         case .listening: status = listenOnly ? "Connected · Microphone off" : "Connected"
                         case .working: status = "Hermes is working…"
-                        case .result: status = "Hermes returned a result"
+                        case .result:
+                            status = "Hermes returned a result"
+                            await model.refreshTalkHistory(in: chatID)
                         }
                     }
                     try await Task.sleep(for: .seconds(1))
                 }
+                _ = try? await talk.poll()
             case .openClaw(let claw):
                 let session = try await model.openClawVoiceSessionKey(for: chatID)
                 let offer = try await peer.offer(listenOnly: listenOnly, dataChannel: false)
@@ -324,29 +337,58 @@ final class NativeAgentCall: Identifiable {
 
     func finish(_ message: String? = nil) {
         guard !finished else { return }
-        let wasConnected = connected
+        let record = connectedInstant.map { start in
+            ChatCallRecord(id: id, chat: locator, anchor: .acpMessages(model.messageCount(in: chatID)),
+                           endedAt: .now, duration: start.duration(to: clock.now).secondsValue, transcript: transcript.lines)
+        }
+        let startup = self.startup
+        let drainTalk: Bool
+        if case .hermesTalk = link { drainTalk = record != nil }
+        else { drainTalk = false }
         finished = true
         muted = true
         status = message ?? "Call ended"
-        dismissAfterEnd = message == nil
-        startup?.cancel()
+        if !drainTalk { startup?.cancel() }
+        model.setVoiceConnectionInUse(false)
         deadline?.cancel()
         if case .hermes = link { media?.send(HermesLiveEvents.closeFrame()) }
         media?.close()
         media = nil
         if !listenOnly { NativeCallSystem.shared.ended(self, reason: message == nil ? .remoteEnded : .failed) }
-        if case .openClaw(let claw) = link { Task { await claw.end() } }
-        if case .hermesTalk(let talk) = link {
-            Task { [model, chatID] in
-                await talk.end()
-                if wasConnected { await model.refreshTalkHistory(in: chatID) }
+        if let record { workspace?.calls.save(record) }
+        workspace?.calls.finished(id, dismiss: message == nil)
+        switch link {
+        case .hermes:
+            break
+        case .openClaw(let claw):
+            finishVoiceInBackground { [weak workspace, model, chatID] in
+                let lines = await claw.end()
+                if var record {
+                    if !lines.isEmpty {
+                        record.transcript = lines
+                        workspace?.calls.save(record)
+                    }
+                    await model.refreshTalkHistory(in: chatID)
+                }
+            }
+        case .hermesTalk(let talk, _):
+            finishVoiceInBackground { [weak workspace, model, chatID] in
+                if drainTalk { await startup?.value }
+                let lines = await talk.end()
+                if var record {
+                    if !lines.isEmpty {
+                        record.transcript = lines
+                        workspace?.calls.save(record)
+                    }
+                    await model.refreshTalkHistory(in: chatID)
+                }
             }
         }
     }
 
     private func checkCurrent() throws {
         try Task.checkCancellation()
-        guard !finished, model.selectedID == chatID, model.selected.loaded else { throw NativeVoiceError.expired }
+        guard !finished, model.isLoaded(chatID) else { throw NativeVoiceError.expired }
     }
 
     private func updateAudio() {
@@ -367,6 +409,7 @@ final class NativeAgentCall: Identifiable {
         case .connected:
             guard !connected else { return }
             connectedAt = Date()
+            connectedInstant = clock.now
             status = listenOnly ? "Connected · Microphone off" : "Connected"
             updateMicrophone()
             if !listenOnly { NativeCallSystem.shared.connected(self) }
@@ -378,11 +421,12 @@ final class NativeAgentCall: Identifiable {
 
     private func receiveHermes(_ data: Data) {
         guard case .hermes = link, !finished else { return }
+        transcript.acceptHermesMedia(data, listening: connected && audioControlsEnabled && !muted)
         switch hermesEvents.accept(data, listening: connected && audioControlsEnabled && !muted) {
         case .closed:
             finish()
         case .delegation(let id, let text):
-            guard !delegating, !model.selected.working else {
+            guard !delegating, !model.workingChats.contains(chatID) else {
                 speak("Hermes is already working in this chat.", id: id)
                 return
             }

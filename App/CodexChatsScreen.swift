@@ -13,7 +13,7 @@ struct CodexChatsScreen: View {
     @State private var didOpen = false
     @State private var failure: String?
     @State private var newChat = false
-    @State private var directCall = false
+    @State private var showVoiceSettings = false
     @State private var query = ""
     @Environment(WorkspaceState.self) private var workspace
 
@@ -52,15 +52,23 @@ struct CodexChatsScreen: View {
         .searchable(text: $query, prompt: "Find a Codex chat")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button("Call Codex directly", systemImage: "phone") { directCall = true }
+                Button("Call Codex directly", systemImage: "phone") {
+                    workspace.calls.present(.codex(CodexVoiceCallModel(endpoint: endpoint, workspace: workspace, workspaceID: workspaceID)))
+                }
+                    .disabled(!workspace.calls.canOpen())
                     .labelStyle(.iconOnly)
                     .accessibilityIdentifier("call-codex-direct")
+                Menu {
+                    Button("Voice settings", systemImage: "waveform") { showVoiceSettings = true }
+                } label: { Label("Codex actions", systemImage: "ellipsis.circle") }
                 Button("New chat", systemImage: "square.and.pencil") { newChat = true }
                     .labelStyle(.iconOnly)
                     .accessibilityIdentifier("new-codex-chat")
             }
         }
-        .sheet(isPresented: $directCall) { CodexVoiceScreen(endpoint: endpoint) }
+        .sheet(isPresented: $showVoiceSettings) {
+            AgentVoiceSettings(workspaceID: workspaceID, availableVoices: { try await endpoint.subscriptionVoices() })
+        }
         .navigationDestination(item: $selected) { chat in
             CodexSavedChatScreen(endpoint: endpoint, initialChat: chat, workspaceID: workspaceID) { lastChat = $0.id }
         }
@@ -113,7 +121,7 @@ struct CodexSavedChatScreen: View {
     @State private var draft = ""
     @State private var draftAttachments: [ChatAttachment] = []
     @State private var showChats = false
-    @State private var showCall = false
+    @State private var showVoiceSettings = false
     @State private var showModelPicker = false
     @State private var composerHeight: CGFloat = 0
     @State private var viewport = TranscriptViewport()
@@ -199,18 +207,26 @@ struct CodexSavedChatScreen: View {
                             ToolCallsMenuButton(showsCompletedCalls: $showsCompletedToolCalls)
                         }
                         FollowUpButton(chat: chatKey, title: chat.title)
+                        Button("Voice settings", systemImage: "waveform") { showVoiceSettings = true }
+                            .accessibilityIdentifier("codex-voice-settings")
                         Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                     } label: { Label("Chat actions", systemImage: "ellipsis.circle") }
                     .accessibilityIdentifier("codex-chat-actions")
                 }
-                Button("Call in this chat", systemImage: "phone") { showCall = true }
+                Button("Call in this chat", systemImage: "phone") {
+                    if workspace.calls.active?.chat == chatKey, workspace.calls.active != nil { workspace.calls.resume() }
+                    else if let session {
+                        workspace.calls.present(.codex(CodexVoiceCallModel(endpoint: endpoint, workspace: workspace,
+                                                                         workspaceID: workspaceID, session: session)))
+                    }
+                }
                     .labelStyle(.iconOnly)
-                    .disabled(!ready || chat == nil)
+                    .disabled(!ready || chat == nil || !workspace.calls.canOpen(chat: chatKey))
                     .accessibilityIdentifier("call-codex-in-chat")
             }
         }
-        .sheet(isPresented: $showCall) {
-            if let chat, let client = session?.client { CodexVoiceScreen(endpoint: endpoint, chat: chat, client: client) }
+        .sheet(isPresented: $showVoiceSettings) {
+            AgentVoiceSettings(workspaceID: workspaceID, availableVoices: { try await endpoint.subscriptionVoices() })
         }
         .navigationDestination(isPresented: $showChats) {
             CodexChatsScreen(endpoint: endpoint, name: workspace.agent(workspaceID)?.name ?? "Codex", workspaceID: workspaceID)
@@ -244,13 +260,25 @@ struct CodexSavedChatScreen: View {
             return true
         }
         let startedAt = session?.activeTurnStartedAt
+        let calls = workspace.calls.records(in: chatKey)
+        let turnIDs = Set(turns.map(\.id))
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 if session?.hasOlderTurns == true {
                     Text("Showing the latest 30 turns.").font(.caption).foregroundStyle(.secondary)
                 }
+                ForEach(calls.filter {
+                    if case .codexMessage(let id, _) = $0.anchor { return id.map { !turnIDs.contains($0) } ?? true }
+                    return false
+                }) { ChatCallReceipt(record: $0) }
                 ForEach(turns) { turn in
-                    ForEach(turn.visibleEntries(isActive: turn.id == activeTurnID)) { entry in
+                    let visibleEntries = turn.visibleEntries(isActive: turn.id == activeTurnID)
+                    let visibleIDs = Set(visibleEntries.map(\.id))
+                    let turnCalls = calls.filter {
+                        if case .codexMessage(let id, _) = $0.anchor { return id == turn.id }
+                        return false
+                    }
+                    ForEach(visibleEntries) { entry in
                         if turn.id == activeTurnID, entry.id == firstActiveOutput?.id, let startedAt {
                             WorkingTurnHeader(startedAt: startedAt)
                         }
@@ -259,6 +287,9 @@ struct CodexSavedChatScreen: View {
                             let showsReceipt = turn.id == latestUserMessage?.turnID &&
                                 message.id == latestUserMessage?.messageID
                             transcriptMessage(message, showsReceipt: showsReceipt)
+                            ForEach(turnCalls.filter { $0.anchor == .codexMessage(turn: turn.id, after: message.id) }) {
+                                ChatCallReceipt(record: $0)
+                            }
                         case .contextCompaction(let compaction):
                             ContextCompactionLine(compaction: compaction)
                         }
@@ -268,6 +299,13 @@ struct CodexSavedChatScreen: View {
                             .padding(12)
                             .contentPanel()
                     }
+                    ForEach(turnCalls.filter {
+                        if case .codexMessage(_, let id) = $0.anchor { return id.map { !visibleIDs.contains(.message($0)) } ?? true }
+                        return false
+                    }) { ChatCallReceipt(record: $0) }
+                }
+                if workspace.calls.saveFailure == chatKey, chatKey != nil {
+                    Text("This call couldn’t be saved on this device.").font(.footnote).foregroundStyle(.secondary)
                 }
                 if firstActiveOutput == nil, let startedAt {
                     WorkingTurnHeader(startedAt: startedAt)
@@ -289,7 +327,7 @@ struct CodexSavedChatScreen: View {
                     if !ready { Button("Reconnect") { session?.start() } }
                 } else if !ready {
                     ProgressView("Opening chat…")
-                } else if turns.allSatisfy({ $0.visibleEntries(isActive: false).isEmpty }) && !working {
+                } else if calls.isEmpty && turns.allSatisfy({ $0.visibleEntries(isActive: false).isEmpty }) && !working {
                     Text("Start a conversation").foregroundStyle(.secondary)
                 }
                 if let sendIssue = session?.sendIssue {

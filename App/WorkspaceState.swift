@@ -56,6 +56,7 @@ final class WorkspaceState {
     let localCodex: CodexLocalEndpoint?
     let remotes: RemoteStore
     let drafts = WorkspaceDrafts()
+    let calls: WorkspaceVoiceCalls
     let avatars: AgentAvatarStore
     private let defaults: UserDefaults
     @ObservationIgnored private var hermesGroupsClients: [String: HermesGroupsClient] = [:]
@@ -111,6 +112,7 @@ final class WorkspaceState {
         self.localCodex = localCodex
         self.remotes = remotes
         self.defaults = defaults
+        calls = WorkspaceVoiceCalls(defaults: defaults, namespace: avatarNamespace)
         avatars = AgentAvatarStore(namespace: avatarNamespace)
         recent = (try? JSONDecoder().decode([WorkspaceVisit].self,
                                           from: defaults.data(forKey: "workspace.recent") ?? Data())) ?? []
@@ -469,6 +471,7 @@ final class WorkspaceState {
     }
 
     func forgot(_ workspaceID: String) {
+        calls.forget(workspaceID)
         hermesGroupsClients[workspaceID] = nil
         hermesGroupSessions = hermesGroupSessions.filter { $0.key.workspace != workspaceID }
         HermesGroupSession.removeDrafts(workspaceID: workspaceID)
@@ -583,7 +586,7 @@ final class WorkspaceState {
 
     func pruneCodexSessions(except keep: WorkspaceChatID? = nil) {
         let idle = codexRecency.filter {
-            $0 != visibleChat && $0 != keep && codexSessions[$0]?.needsConnection == false
+            $0 != visibleChat && $0 != keep && $0 != calls.active?.chat && codexSessions[$0]?.needsConnection == false
         }
         for key in idle.dropFirst(4) {
             codexSessions.removeValue(forKey: key)?.detach()

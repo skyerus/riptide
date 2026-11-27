@@ -14,8 +14,30 @@ struct WorkspaceNavigation: View {
                         .id(route)
                 }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let call = workspace.calls.active, workspace.calls.presentation == nil, !call.finished {
+                VoiceCallBar(call: call, resume: workspace.calls.resume)
+            }
+        }
+        .sheet(item: Binding(
+            get: { workspace.calls.presentation }, set: { workspace.calls.presentation = $0 }
+        )) { presentation in
+            switch presentation {
+            case .codex(let call):
+                CodexVoiceScreen(call: call) { workspace.calls.presentation = nil }
+            case .native(let call):
+                NativeAgentCallScreen(call: call, agent: workspace.agent(call.locator.workspace),
+                                      minimize: { workspace.calls.presentation = nil })
+                    .presentationDetents([.large])
+            }
+        }
         .environment(workspace)
         .environment(alerts)
+        .onChange(of: nativeCallLoaded) {
+            if nativeCallLoaded == false, case .native(let call) = workspace.calls.active {
+                call.finish("Chat disconnected.")
+            }
+        }
         .sheet(isPresented: $workspace.showingSwitcher, onDismiss: {
             if let tab = workspace.sidebarRequested {
                 workspace.sidebarRequested = nil
@@ -67,6 +89,11 @@ struct WorkspaceNavigation: View {
                 catch { return }
             }
         }
+    }
+
+    private var nativeCallLoaded: Bool? {
+        guard case .native(let call) = workspace.calls.active else { return nil }
+        return call.model.isLoaded(call.chatID)
     }
 
     private func notify(_ entries: [WorkspaceAttention]) {

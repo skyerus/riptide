@@ -17,6 +17,7 @@ final class CodexVoiceMedia: NSObject {
     }()
 
     private var peer: RTCPeerConnection?
+    private var disconnectDeadline: Task<Void, Never>?
     private var microphone: RTCAudioTrack?
     private var channel: RTCDataChannel?
     private var audioDisabled = false
@@ -121,6 +122,8 @@ final class CodexVoiceMedia: NSObject {
     }
 
     func close() {
+        disconnectDeadline?.cancel()
+        disconnectDeadline = nil
         setMuted(true)
         channel?.close()
         peer?.close()
@@ -164,7 +167,22 @@ extension CodexVoiceMedia: RTCPeerConnectionDelegate {
         case .failed, .closed: state = .failed
         default: return
         }
-        Task { @MainActor [weak self] in self?.onState(state) }
+        Task { @MainActor [weak self] in self?.reportPeerState(state) }
+    }
+
+    private func reportPeerState(_ state: State) {
+        guard peer != nil else { return }
+        disconnectDeadline?.cancel()
+        disconnectDeadline = nil
+        if state == .interrupted {
+            // ICE can briefly disconnect during a network handoff while the call is still active.
+            disconnectDeadline = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(8)) } catch { return }
+                self?.onState(.interrupted)
+            }
+        } else {
+            onState(state)
+        }
     }
 
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}

@@ -199,9 +199,16 @@ class TalkCall:
             sequence, kind = event.get("sequence"), event.get("type")
             if type(sequence) is not int or not 0 <= sequence <= sys.maxsize or not isinstance(kind, str):
                 raise TalkError("invalidReply")
-            state = {"sequence": sequence, "type": kind if kind in ("operation", "result", "error") else "other"}
-            if kind == "operation" and type(event.get("pending")) is bool:
-                state["pending"] = event["pending"]
+            state = {"sequence": sequence, "type": "other"}
+            if kind in ("operation", "result", "error"):
+                state["type"] = kind
+                if kind == "operation" and type(event.get("pending")) is bool:
+                    state["pending"] = event["pending"]
+            elif (kind == "transcript" and event.get("role") in ("user", "assistant")
+                  and isinstance(event.get("text"), str) and type(event.get("final")) is bool):
+                state.update(type=kind, role=event["role"], text=event["text"][:4000], final=event["final"])
+                if identifier(event.get("item_id")):
+                    state["item_id"] = event["item_id"]
             result.append(state)
         return {"ok": True, "cursor": cursor, "events": result}
 

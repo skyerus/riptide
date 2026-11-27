@@ -2,6 +2,82 @@ import XCTest
 
 final class CodexLiveUITests: XCTestCase {
     @MainActor
+    func testVoiceSettingsMinimizedChatAndSavedCall() throws {
+        continueAfterFailure = false
+        guard let port = ProcessInfo.processInfo.environment["RIPTIDE_UX_VOICE_FIXTURE_PORT"] else {
+            throw XCTSkip("Requires the loopback App Server voice fixture.")
+        }
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_CODEX_URL"] = "ws://127.0.0.1:\(port)"
+        app.launchEnvironment["RIPTIDE_CODEX_BEARER"] = "fixture-" + String(repeating: "x", count: 40)
+        app.launchEnvironment["RIPTIDE_CODEX_WORKSPACE"] = "/riptide-ux-fixture"
+        app.launchEnvironment["RIPTIDE_VOICE_FIXTURE"] = "1"
+        app.launch()
+
+        @MainActor func openSavedChat() {
+            app.openAgentWorkspace("local-codex")
+            let chat = app.buttons["sidebar-chat-busy-fixture-thread"]
+            XCTAssertTrue(chat.waitForExistence(timeout: 10))
+            chat.tap()
+        }
+
+        openSavedChat()
+        let action = app.buttons["codex-chat-actions"]
+        XCTAssertTrue(action.waitForExistence(timeout: 5))
+        action.tap()
+        app.buttons["codex-voice-settings"].tap()
+        let picker = app.buttons["agent-voice-picker"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        picker.tap()
+        app.buttons["Juniper"].tap()
+        capture(app, as: "Agent voice settings")
+        app.buttons["Done"].tap()
+
+        app.buttons["call-codex-in-chat"].tap()
+        let status = app.staticTexts["codex-voice-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 6))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "Connected · Microphone off"), object: status
+        )], timeout: 8), .completed)
+        capture(app, as: "Expanded voice call")
+        app.buttons["minimize-voice-call"].tap()
+        let resume = app.buttons["resume-voice-call"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 5))
+        capture(app, as: "Minimized call with chat composer")
+
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(resume.waitForExistence(timeout: 5))
+        resume.tap()
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        app.buttons["minimize-voice-call"].tap()
+
+        let editor = app.descendants(matching: .any).matching(identifier: "codex-composer").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        editor.tap()
+        editor.typeText("Please send the result here.")
+        app.buttons["send-message"].tap()
+        XCTAssertTrue(resume.exists)
+        app.buttons["end-minimized-call"].tap()
+        let callRecord = app.descendants(matching: .any).matching(identifier: "chat-call-ended").firstMatch
+        XCTAssertTrue(callRecord.waitForExistence(timeout: 8))
+        let finishedWork = app.staticTexts["I reviewed the draft and posted the changes."]
+        XCTAssertTrue(finishedWork.waitForExistence(timeout: 15))
+        callRecord.tap()
+        let transcript = app.staticTexts["I’ll check it and reply here."]
+        XCTAssertTrue(transcript.waitForExistence(timeout: 5))
+        capture(app, as: "Saved call transcript and continued work")
+
+        app.terminate()
+        app.launch()
+        openSavedChat()
+        XCTAssertTrue(callRecord.waitForExistence(timeout: 8))
+        callRecord.tap()
+        XCTAssertTrue(transcript.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testCallsFromTheSavedChatAndReturnsToItsHistory() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let proofPath = environment["RIPTIDE_CODEX_PROOF_DIR"],

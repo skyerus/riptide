@@ -50,6 +50,18 @@ struct NativeVoiceTests {
         #expect(message["delegation_id"] == "ask-1")
     }
 
+    @Test func hermesCallTranscriptReplacesDeltasAndKeepsSpeakerOrder() {
+        var transcript = VoiceTranscript()
+        func frame(_ value: String) -> Data { Data(value.utf8) }
+        transcript.acceptHermesMedia(frame(#"{"type":"session.input_transcript.delta","delta":"Check","item_id":"a"}"#), listening: true)
+        transcript.acceptHermesMedia(frame(#"{"type":"session.output_transcript.delta","delta":"One moment.","item_id":"b"}"#), listening: true)
+        transcript.acceptHermesMedia(frame(#"{"type":"turn.done","turn":{"role":"user","id":"a","transcript":"Check the draft."}}"#), listening: true)
+        transcript.acceptHermesMedia(frame(#"{"type":"session.input_transcript.delta","delta":"While muted","item_id":"c"}"#), listening: false)
+
+        #expect(transcript.lines == [.init(role: .user, text: "Check the draft."),
+                                     .init(role: .assistant, text: "One moment.")])
+    }
+
     @Test func hermesWillNotStartABilledVoiceSessionAfterHostSwitchesModes() async throws {
         let profile = try #require(NativeVoiceProfile(kind: .hermes, address: "https://hermes.example"))
         let request: @Sendable (URLRequest) async throws -> Data = { request in
@@ -72,6 +84,7 @@ struct NativeVoiceTests {
             let id = try #require(request["id"])
             let params = try #require(request["params"])
             let result: JSON
+            var notes: [JSON] = []
             switch request["method"]?.string {
             case "connect":
                 #expect(params["auth"]?["token"]?.string == token)
@@ -95,12 +108,26 @@ struct NativeVoiceTests {
                 #expect(params["sessionKey"] == "agent:main:work")
                 let voiceID = try #require(params["voiceSessionId"]?.string)
                 #expect(!voiceID.isEmpty)
+                func speech(session: String, type: String, text: String) -> JSON {
+                    ["type": "event", "event": "talk.event", "payload": [
+                        "voiceSessionId": .string(session), "talkEvent": [
+                            "type": .string(type), "turnId": "voice-turn",
+                            "payload": ["role": "user", "text": .string(text)]
+                        ]
+                    ]]
+                }
+                notes = [
+                    speech(session: "wrong-call", type: "transcript.done", text: "Private speech"),
+                    speech(session: voiceID, type: "transcript.delta", text: "Check"),
+                    speech(session: voiceID, type: "transcript.done", text: "Check the draft."),
+                    speech(session: voiceID, type: "output.text.done", text: "I’ll reply in chat."),
+                ]
                 result = [:]
             default:
                 Issue.record("Unexpected OpenClaw method")
                 result = [:]
             }
-            return ["type": "res", "id": id, "ok": .boolean(true), "payload": result]
+            return notes + [["type": "res", "id": id, "ok": .boolean(true), "payload": result]]
         }
         let client = OpenClawTalk(profile: profile, token: token, identity: identity, transport: wire) { request in
             #expect(request.url?.absoluteString == "https://claw.example:7443/plugins/openai/realtime/calls")
@@ -112,7 +139,8 @@ struct NativeVoiceTests {
         try await client.start(offer: "v=0\r\n", sessionKey: "agent:main:work")
         var events = client.events.makeAsyncIterator()
         #expect(try await events.next() == "v=0 answer")
-        await client.end()
+        #expect(await client.end() == [.init(role: .user, text: "Check the draft."),
+                                       .init(role: .assistant, text: "I’ll reply in chat.")])
     }
 
     @Test func voiceEndpointCannotDowngradeTLSOrHideCredentialsInURL() {
@@ -126,9 +154,9 @@ struct NativeVoiceTests {
 private final class VoiceTestTransport: JSONMessageTransport {
     let incoming: AsyncThrowingStream<Data, any Error>
     private let continuation: AsyncThrowingStream<Data, any Error>.Continuation
-    private let script: @Sendable (JSON) throws -> JSON
+    private let script: @Sendable (JSON) throws -> [JSON]
 
-    init(script: @escaping @Sendable (JSON) throws -> JSON) throws {
+    init(script: @escaping @Sendable (JSON) throws -> [JSON]) throws {
         self.script = script
         (incoming, continuation) = AsyncThrowingStream.makeStream()
         continuation.yield(try JSONEncoder().encode(["type": "event", "event": "connect.challenge",
@@ -137,6 +165,6 @@ private final class VoiceTestTransport: JSONMessageTransport {
 
     func send(_ data: Data) async throws {
         let request = try JSONDecoder().decode(JSON.self, from: data)
-        continuation.yield(try JSONEncoder().encode(script(request)))
+        for frame in try script(request) { continuation.yield(try JSONEncoder().encode(frame)) }
     }
 }

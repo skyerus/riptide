@@ -4,12 +4,25 @@ import Foundation
 import RiptideCore
 
 @MainActor
+protocol SystemVoiceCall: AnyObject {
+    var id: UUID { get }
+    var name: String { get }
+    var connectedAt: Date? { get }
+    var finished: Bool { get }
+    func startMedia(systemAudio: Bool) throws
+    func finish(_ message: String?)
+    func setMuted(_ muted: Bool)
+    func setHeld(_ held: Bool)
+    func setSystemAudioActive(_ active: Bool)
+}
+
+@MainActor
 final class NativeCallSystem: NSObject, @preconcurrency CXProviderDelegate {
     static let shared = NativeCallSystem()
 
     private let controller = CXCallController()
     private let provider: CXProvider
-    private var current: NativeAgentCall?
+    private var current: (any SystemVoiceCall)?
     private var activeAudioSession: AVAudioSession?
 
     private override init() {
@@ -23,7 +36,7 @@ final class NativeCallSystem: NSObject, @preconcurrency CXProviderDelegate {
         provider.setDelegate(self, queue: .main)
     }
 
-    func start(_ call: NativeAgentCall) async throws {
+    func start(_ call: any SystemVoiceCall) async throws {
         guard current == nil else { throw VoiceMediaError.callInProgress }
         current = call
         let action = CXStartCallAction(call: call.id, handle: CXHandle(type: .generic, value: call.name))
@@ -35,27 +48,22 @@ final class NativeCallSystem: NSObject, @preconcurrency CXProviderDelegate {
         }
     }
 
-    func connected(_ call: NativeAgentCall) {
+    func connected(_ call: any SystemVoiceCall) {
         guard current === call else { return }
         provider.reportOutgoingCall(with: call.id, connectedAt: call.connectedAt)
     }
 
-    func call(for model: AgentChatModel, chatID: String) -> NativeAgentCall? {
-        guard let current, current.model === model, current.chatID == chatID else { return nil }
-        return current
-    }
-
-    func requestMute(_ isMuted: Bool, for call: NativeAgentCall) async throws {
+    func requestMute(_ isMuted: Bool, for call: any SystemVoiceCall) async throws {
         guard current === call else { return }
         try await controller.request(CXTransaction(action: CXSetMutedCallAction(call: call.id, muted: isMuted)))
     }
 
-    func requestEnd(_ call: NativeAgentCall) async throws {
+    func requestEnd(_ call: any SystemVoiceCall) async throws {
         guard current === call else { return }
         try await controller.request(CXTransaction(action: CXEndCallAction(call: call.id)))
     }
 
-    func ended(_ call: NativeAgentCall, reason: CXCallEndedReason) {
+    func ended(_ call: any SystemVoiceCall, reason: CXCallEndedReason) {
         guard current === call else { return }
         current = nil
         provider.reportCall(with: call.id, endedAt: Date(), reason: reason)
@@ -86,7 +94,7 @@ final class NativeCallSystem: NSObject, @preconcurrency CXProviderDelegate {
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         guard let call = current, call.id == action.callUUID else { action.fail(); return }
         current = nil
-        call.finish()
+        call.finish(nil)
         action.fulfill()
     }
 
