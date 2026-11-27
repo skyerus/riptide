@@ -49,6 +49,7 @@ public struct CodexChatMessage: Equatable, Identifiable, Sendable {
     public let id: String
     public let role: ChatRole
     public var text: String
+    public private(set) var photos: [TranscriptPhoto] = []
     public var streaming: Bool
     public var phase: Phase?
     public fileprivate(set) var receipt: MessageReceipt?
@@ -58,31 +59,42 @@ public struct CodexChatMessage: Equatable, Identifiable, Sendable {
         switch item["type"]?.string {
         case "userMessage":
             role = .user
-            text = item["content"]?.array?.compactMap { block in
+            var paragraphs: [String] = []
+            for block in item["content"]?.array ?? [] {
                 switch block["type"]?.string {
                 case "localImage":
-                    guard let path = block["path"]?.string else { return "Attached image" }
-                    let url = URL(fileURLWithPath: path)
-                    let filename = url.lastPathComponent
-                    let directory = url.deletingLastPathComponent()
-                    let displayName = filename.split(separator: "-", maxSplits: 1)
-                    if directory.deletingLastPathComponent().lastPathComponent == "attachments",
-                       UUID(uuidString: directory.lastPathComponent) != nil,
-                       displayName.count == 2, displayName[0].allSatisfy(\.isNumber) {
-                        return "Attached image: \(displayName[1])"
+                    guard let path = block["path"]?.string, path.hasPrefix("/") else {
+                        photos.append(.init(name: "Photo", source: .unavailable))
+                        continue
                     }
-                    return "Attached image: \(filename)"
-                case "image": return "Attached image"
-                default: return block["text"]?.string
+                    let file = URL(fileURLWithPath: path)
+                    let filename = file.lastPathComponent
+                    let directory = file.deletingLastPathComponent()
+                    let parts = filename.split(separator: "-", maxSplits: 1)
+                    let stagedByRiptide = directory.deletingLastPathComponent().lastPathComponent == "attachments"
+                        && UUID(uuidString: directory.lastPathComponent) != nil
+                        && parts.count == 2 && parts[0].allSatisfy(\.isNumber)
+                    photos.append(.init(name: stagedByRiptide ? String(parts[1]) : filename,
+                                        source: stagedByRiptide ? .codexPath(path) : .unavailable))
+                case "image":
+                    let url = block["url"]?.string ?? ""
+                    let pieces = url.split(separator: ",", maxSplits: 1)
+                    let bytes = pieces.count == 2 && pieces[0].hasPrefix("data:image/")
+                        && pieces[0].hasSuffix(";base64") && pieces[1].utf8.count <= ChatAttachment.codexByteLimit * 2
+                        ? Data(base64Encoded: String(pieces[1])) : nil
+                    photos.append(.init(name: "Photo", source: bytes.map(TranscriptPhoto.Source.data) ?? .unavailable))
+                default:
+                    if let text = block["text"]?.string { paragraphs.append(text) }
                 }
-            }.joined(separator: "\n") ?? ""
+            }
+            text = paragraphs.joined(separator: "\n")
         case "agentMessage":
             role = .assistant
             text = item["text"]?.string ?? ""
         default:
             return nil
         }
-        guard !text.isEmpty || (starting && role == .assistant) else { return nil }
+        guard !text.isEmpty || !photos.isEmpty || (starting && role == .assistant) else { return nil }
         self.id = id
         streaming = starting
         phase = item["phase"]?.string.flatMap(Phase.init(rawValue:))

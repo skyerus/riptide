@@ -28,6 +28,7 @@ public struct ChatEntry: Identifiable, Equatable, Sendable {
 
     public let id = UUID()
     public fileprivate(set) var content: Content
+    public fileprivate(set) var photos: [TranscriptPhoto] = []
     public fileprivate(set) var receipt: MessageReceipt?
     public fileprivate(set) var isAssistantProgress = false
 }
@@ -46,6 +47,11 @@ public struct Transcript: Equatable, Sendable {
     public var latestUserMessageID: UUID? {
         guard let latestPromptIndex else { return nil }
         return entries[latestPromptIndex].id
+    }
+
+    fileprivate var activePromptID: UUID? {
+        guard let activePromptIndex, entries.indices.contains(activePromptIndex) else { return nil }
+        return entries[activePromptIndex].id
     }
 
     public var latestAssistantEntryID: UUID? {
@@ -69,11 +75,31 @@ public struct Transcript: Equatable, Sendable {
         return latest
     }
 
-    public mutating func addPrompt(_ text: String) {
+    public mutating func addPrompt(_ text: String, photos: [TranscriptPhoto] = []) {
         openMessage = nil
         latestPromptIndex = entries.count
         activePromptIndex = entries.count
-        entries.append(ChatEntry(content: .message(.user, text)))
+        entries.append(ChatEntry(content: .message(.user, text), photos: photos))
+    }
+
+    fileprivate mutating func restorePhotos(from store: SentPhotoStore, in sessionID: String) {
+        for index in entries.indices {
+            guard case .message(.user, let text) = entries[index].content,
+                  text.contains(ACPClient.photoReferencePrefix) else { continue }
+            var lines = text.components(separatedBy: "\n")
+            guard let reference = lines.firstIndex(where: {
+                $0.hasPrefix(ACPClient.photoReferencePrefix) && $0.hasSuffix(ACPClient.photoReferenceSuffix)
+                    && UUID(uuidString: String($0.dropFirst(ACPClient.photoReferencePrefix.count).dropLast())) != nil
+            }), let id = UUID(uuidString: String(lines[reference].dropFirst(ACPClient.photoReferencePrefix.count).dropLast()))
+            else { continue }
+            if let message = store.read(id: id.uuidString, chat: sessionID) {
+                entries[index].content = .message(.user, message.text)
+                entries[index].photos = message.photos
+            } else {
+                lines.remove(at: reference)
+                entries[index].content = .message(.user, lines.joined(separator: "\n"))
+            }
+        }
     }
 
     fileprivate mutating func addPairingReceipt(name: String, connected: Bool) {
@@ -208,6 +234,7 @@ public final class AgentChatModel {
     @ObservationIgnored private var liveEventsDuringLoad: [String: [ACPEvent]] = [:]
     @ObservationIgnored private var mainPreload: Task<Void, Never>?
     @ObservationIgnored private var catalogRefresh: (maximumPages: Int?, task: Task<Void, Never>)?
+    private var photoStore: SentPhotoStore { SentPhotoStore(workspace: target.id) }
     @ObservationIgnored private var attachmentDeliveries: [String: @MainActor () -> Void] = [:]
     @ObservationIgnored private var prompts: [String: Task<Void, Never>] = [:]
 
@@ -233,6 +260,7 @@ public final class AgentChatModel {
         fileprivate var steerAdmissionID: String?
         public fileprivate(set) var stopping = false
         fileprivate var preparingPrompt = false
+        public fileprivate(set) var sendingAttachmentDraft = false
         public fileprivate(set) var steering = false
         public fileprivate(set) var steeringError: String?
         public fileprivate(set) var queuedMessages: [QueuedChatMessage] = []
@@ -495,19 +523,27 @@ public final class AgentChatModel {
     @discardableResult
     public func submit(_ rawText: String, attachments: [ChatAttachment] = [],
                        onSent: (@MainActor () -> Void)? = nil,
+                       onWritten: (@MainActor @Sendable () -> Void)? = nil,
+                       onRejected: (@MainActor @Sendable () -> Void)? = nil,
                        beforePrompt: (@MainActor () async -> Void)? = nil) -> Bool {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return startPrompt(text, attachments: attachments, in: selectedID, onSent: onSent, beforePrompt: beforePrompt)
+        return startPrompt(text, attachments: attachments, in: selectedID, onSent: onSent,
+                           onWritten: onWritten, onRejected: onRejected, beforePrompt: beforePrompt)
     }
 
     @discardableResult
     private func startPrompt(_ text: String, attachments: [ChatAttachment] = [], in sessionID: String,
                              onSent: (@MainActor () -> Void)? = nil,
+                             onWritten: (@MainActor @Sendable () -> Void)? = nil,
+                             onRejected: (@MainActor @Sendable () -> Void)? = nil,
                              beforePrompt: (@MainActor () async -> Void)? = nil) -> Bool {
-        let display = ChatAttachment.messageText(text, attachments: attachments)
-        guard let client = preparePrompt(display, for: sessionID) else { return false }
+        let message = SentPhotoMessage(text: text, attachments: attachments)
+        guard let client = preparePrompt(message.text, photos: message.photos, for: sessionID) else { return false }
+        let entryID = chats[sessionID]?.transcript.activePromptID
+        let photoID = message.photos.isEmpty ? nil : entryID
         attachmentDeliveries[sessionID] = onSent
         chats[sessionID]?.preparingPrompt = beforePrompt != nil
+        chats[sessionID]?.sendingAttachmentDraft = onWritten != nil
         prompts[sessionID] = Task {
             var completed = false
             defer { finishPrompt(sessionID, from: client, advanceQueue: completed) }
@@ -519,9 +555,16 @@ public final class AgentChatModel {
                 return
             }
             do {
-                let reason = try await client.prompt(text, sessionID: sessionID, attachments: attachments)
+                if let photoID { try photoStore.save(message, id: photoID.uuidString, chat: sessionID) }
+                let reason = try await client.promptWithDelivery(text, sessionID: sessionID, attachments: attachments,
+                                                                 photoID: photoID) {
+                    await self.promptWritten(in: sessionID, entryID: entryID, onWritten: onWritten)
+                }
                 guard self.client === client else { return }
-                if reason != "cancelled" { attachmentDeliveries.removeValue(forKey: sessionID)?() }
+                if reason != "cancelled" {
+                    promptWritten(in: sessionID, entryID: entryID, onWritten: onWritten)
+                    attachmentDeliveries.removeValue(forKey: sessionID)?()
+                }
                 chats[sessionID]?.transcript.acknowledgePrompt()
                 switch reason {
                 case "end_turn":
@@ -536,10 +579,28 @@ public final class AgentChatModel {
                 default: chats[sessionID]?.notice = "The agent ended this turn early."
                 }
             } catch {
-                if self.client === client { chats[sessionID]?.error = error.localizedDescription }
+                guard self.client === client else { return }
+                if let error = error as? ACPError,
+                   chats[sessionID]?.transcript.entries.first(where: { $0.id == entryID })?.receipt == nil {
+                    switch error {
+                    case .rejected, .invalidParameters, .methodUnavailable:
+                        onRejected?()
+                        if let photoID { photoStore.remove(id: photoID.uuidString, chat: sessionID) }
+                    default: break
+                    }
+                }
+                chats[sessionID]?.error = error.localizedDescription
             }
         }
         return true
+    }
+
+    private func promptWritten(in sessionID: String, entryID: UUID?,
+                               onWritten: (@MainActor @Sendable () -> Void)?) {
+        guard let onWritten, let entryID, let chat = chats[sessionID], chat.submittingPrompt,
+              chat.sendingAttachmentDraft, chat.transcript.activePromptID == entryID else { return }
+        chats[sessionID]?.sendingAttachmentDraft = false
+        onWritten()
     }
 
     public func steer(_ rawText: String, in sessionID: String) async -> Bool {
@@ -656,16 +717,16 @@ public final class AgentChatModel {
         return key
     }
 
-    private func preparePrompt(_ text: String, for sessionID: String) -> ACPClient? {
-        guard let client, let chat = chats[sessionID], !text.isEmpty, chat.loaded, !chat.loading,
+    private func preparePrompt(_ text: String, photos: [TranscriptPhoto] = [], for sessionID: String) -> ACPClient? {
+        guard let client, let chat = chats[sessionID], !text.isEmpty || !photos.isEmpty, chat.loaded, !chat.loading,
               !chat.working, !chat.configuring else { return nil }
         if let index = sessions.firstIndex(where: { $0.id == sessionID && $0.title == "Untitled chat" }) {
             let row = sessions[index]
-            sessions[index] = SessionSummary(id: sessionID, title: String(text.prefix(48)), cwd: row.cwd,
+            sessions[index] = SessionSummary(id: sessionID, title: String((text.isEmpty ? photos.first?.name ?? text : text).prefix(48)), cwd: row.cwd,
                                              nativeSessionKey: row.nativeSessionKey)
         }
         observe(client)
-        chats[sessionID]?.transcript.addPrompt(text)
+        chats[sessionID]?.transcript.addPrompt(text, photos: photos)
         chats[sessionID]?.submittingPrompt = true
         recordWorkingState(sessionID)
         chats[sessionID]?.plan = []
@@ -682,6 +743,7 @@ public final class AgentChatModel {
         guard var chat = chats[sessionID] else { return }
         chat.sendingQueuedID = nil
         chat.submittingPrompt = false
+        chat.sendingAttachmentDraft = false
         chat.stopping = false
         if !chat.working { chat.transcript.finishPrompt() }
         if !advanceQueue, !chat.queuedMessages.isEmpty { chat.queuePaused = true }
@@ -752,6 +814,7 @@ public final class AgentChatModel {
                 chat.loading = false
                 chat.loaded = false
                 chat.submittingPrompt = false
+                chat.sendingAttachmentDraft = false
                 chat.agentWorking = false
                 chat.steerAdmissionID = nil
                 chat.stopping = false
@@ -796,6 +859,7 @@ public final class AgentChatModel {
         var chat = chats[opened.id] ?? ChatState()
         chat.transcript = Transcript()
         for event in opened.events { chat.receive(event, replaying: true) }
+        chat.transcript.restorePhotos(from: photoStore, in: opened.id)
         if chat.agentWorking { chat.transcript.beginObservedTurn() }
         if let options = opened.configOptions { chat.configOptions = options }
         chat.reportedModelName = opened.reportedModelName

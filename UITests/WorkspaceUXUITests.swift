@@ -52,6 +52,135 @@ final class WorkspaceUXUITests: XCTestCase {
         let sent = app.scrollViews["chat-transcript"].staticTexts
             .matching(NSPredicate(format: "label CONTAINS %@", "Attached: Fixture report.pdf")).firstMatch
         XCTAssertTrue(sent.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["sent-photo-0"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["remove-attachment"].firstMatch.waitForNonExistence(timeout: 8))
+    }
+
+    @MainActor
+    func testSentPhotosScrollAboveMessageAndRemainAfterRelaunch() {
+        continueAfterFailure = false
+        let app = freshApp()
+        openMainChat(in: app, agent: "hermes")
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        editor.tap()
+        let text = "Please review these photos before approval"
+        editor.typeText(text)
+        pastePhotos([.systemTeal, .systemIndigo, .systemOrange, .systemPink], into: editor, in: app)
+        XCTAssertEqual(app.buttons.matching(identifier: "remove-attachment").count, 4)
+
+        app.buttons["send-message"].tap()
+        let body = app.staticTexts[text]
+        let first = app.buttons["sent-photo-0"]
+        XCTAssertTrue(first.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(body.exists)
+        XCTAssertLessThan(first.frame.maxY, body.frame.minY)
+        XCTAssertTrue(app.buttons["remove-attachment"].firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertNotEqual(editor.value as? String, text)
+        XCTAssertTrue(app.staticTexts["Review sample context"].waitForExistence(timeout: 8))
+        capture(app, as: "Riptide sent photos above the message and empty composer")
+        let strip = app.scrollViews["sent-photos"]
+        let fourth = app.buttons["sent-photo-3"]
+        let lastPhoto = strip.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        lastPhoto.press(forDuration: 0.05, thenDragTo: strip.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)))
+        XCTAssertTrue(fourth.isHittable)
+        fourth.tap()
+        XCTAssertTrue(app.images["sent-photo-preview-image"].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+        capture(app, as: "Riptide sent photo preview")
+        app.buttons["Done"].tap()
+
+        app.terminate()
+        app.launch()
+        if !app.buttons["sent-photo-0"].waitForExistence(timeout: 4) {
+            openMainChat(in: app, agent: "hermes")
+        }
+        XCTAssertTrue(app.buttons["sent-photo-0"].waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(app.staticTexts[text].exists)
+    }
+
+    @MainActor
+    func testSavedCodexPhotoAppearsAndOpensInTheTranscript() throws {
+        continueAfterFailure = false
+        let (app, editor) = try openCodexFixture()
+        editor.tap()
+        let text = "Review this image"
+        editor.typeText(text)
+        pastePhotos([.systemIndigo], into: editor, in: app)
+        app.buttons["send-message"].tap()
+        let photo = app.buttons["sent-photo-0"]
+        XCTAssertTrue(photo.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(app.staticTexts[text].exists)
+        XCTAssertTrue(app.buttons["remove-attachment"].firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertNotEqual(editor.value as? String, text)
+        photo.tap()
+        XCTAssertTrue(app.images["sent-photo-preview-image"].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
+    }
+
+    @MainActor
+    func testOpenClawPhotoAppearsAndOpensInTheTranscript() {
+        continueAfterFailure = false
+        let app = freshApp()
+        openMainChat(in: app)
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        editor.tap()
+        pastePhotos([.systemOrange], into: editor, in: app)
+        app.buttons["send-message"].tap()
+        let photo = app.buttons["sent-photo-0"]
+        XCTAssertTrue(photo.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(app.buttons["remove-attachment"].firstMatch.waitForNonExistence(timeout: 5))
+        photo.tap()
+        XCTAssertTrue(app.images["sent-photo-preview-image"].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+    }
+
+    @MainActor
+    func testSteeredCodexPhotoAppearsInTheDesktopWatcher() throws {
+        continueAfterFailure = false
+        let app = try launchCodexFixture(portKey: "RIPTIDE_UX_LIVE_FIXTURE_PORT")
+        app.buttons["watch-desktop-codex"].tap()
+        let editor = app.descendants(matching: .any).matching(identifier: "codex-steer-input").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        editor.tap()
+        let text = "Use this photo instead"
+        editor.typeText(text)
+        pastePhotos([.systemTeal], into: editor, in: app)
+        app.buttons["codex-steer-send"].tap()
+        let photo = app.buttons["sent-photo-0"]
+        XCTAssertTrue(photo.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(app.staticTexts[text].exists)
+        XCTAssertTrue(app.buttons["remove-attachment"].firstMatch.waitForNonExistence(timeout: 5))
+        photo.tap()
+        XCTAssertTrue(app.images["sent-photo-preview-image"].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+    }
+
+    @MainActor
+    private func pastePhotos(_ colors: [UIColor], into editor: XCUIElement, in app: XCUIApplication) {
+        let photos = colors.map { color in
+            UIGraphicsImageRenderer(size: CGSize(width: 300, height: 210)).image { context in
+                color.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 300, height: 210))
+                UIColor.white.withAlphaComponent(0.75).setFill()
+                context.cgContext.fillEllipse(in: CGRect(x: 186, y: 26, width: 48, height: 48))
+                UIColor.black.withAlphaComponent(0.25).setFill()
+                let hills = UIBezierPath()
+                hills.move(to: CGPoint(x: 0, y: 170))
+                hills.addQuadCurve(to: CGPoint(x: 140, y: 145), controlPoint: CGPoint(x: 75, y: 75))
+                hills.addQuadCurve(to: CGPoint(x: 300, y: 125), controlPoint: CGPoint(x: 210, y: 195))
+                hills.addLine(to: CGPoint(x: 300, y: 210))
+                hills.addLine(to: CGPoint(x: 0, y: 210))
+                hills.close()
+                hills.fill()
+            }
+        }
+        UIPasteboard.general.images = photos
+        editor.press(forDuration: 0.65)
+        let paste = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Paste")).firstMatch
+        XCTAssertTrue(paste.waitForExistence(timeout: 5), app.debugDescription)
+        paste.tap()
+        let attached = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.buttons.matching(identifier: "remove-attachment").count == photos.count
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [attached], timeout: 8), .completed, app.debugDescription)
     }
 
     @MainActor
@@ -107,8 +236,7 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertFalse(app.buttons["send-message"].isEnabled)
         selectPhoto()
         app.buttons["send-message"].tap()
-        XCTAssertTrue(app.scrollViews["chat-transcript"].staticTexts
-            .matching(NSPredicate(format: "label BEGINSWITH %@", "Attached: Photo-")).firstMatch.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["sent-photo-0"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.buttons["remove-attachment"].waitForNonExistence(timeout: 8))
     }
 

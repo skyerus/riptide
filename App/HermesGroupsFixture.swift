@@ -1,4 +1,5 @@
 #if DEBUG
+import CryptoKit
 import Foundation
 import RiptideCore
 
@@ -69,7 +70,8 @@ actor HermesGroupsFixture {
             let thread = payload["thread_id"]!
             if !admitted.contains(id) {
                 let members = room["members"] as! [[String: String]]
-                events.append(event(id, events.count + 1, "message.user",
+                let digest = SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined()
+                events.append(event("user:" + digest, events.count + 1, "message.user",
                                     actor: ["kind": "user", "id": "desktop"], text: payload["text"]!, thread: thread))
                 let responses = [
                     "I’d start by matching the bank balance to the ledger, then review any unreconciled transactions.",

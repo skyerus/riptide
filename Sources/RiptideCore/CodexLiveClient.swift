@@ -343,6 +343,22 @@ public actor CodexLiveClient {
         return (.array(input), directory)
     }
 
+    public func readTranscriptPhoto(at path: String) async throws -> Data {
+        guard let codexHome, codexHome.hasPrefix("/") else { throw CodexLiveError.invalidResponse }
+        let directory = URL(fileURLWithPath: codexHome).standardizedFileURL.appending(path: "attachments")
+        let photo = URL(fileURLWithPath: path)
+        let parent = photo.deletingLastPathComponent()
+        guard photo.path == photo.standardizedFileURL.path,
+              parent.deletingLastPathComponent().path == directory.path,
+              UUID(uuidString: parent.lastPathComponent) != nil else { throw CodexLiveError.invalidResponse }
+        let result = try await call("fs/readFile", ["path": .string(path)])
+        guard let encoded = result["dataBase64"]?.string, encoded.utf8.count <= ChatAttachment.codexByteLimit * 2,
+              let data = Data(base64Encoded: encoded), data.count <= ChatAttachment.codexByteLimit else {
+            throw CodexLiveError.invalidResponse
+        }
+        return data
+    }
+
     private func removeUnsentAttachments(_ directory: String?) async {
         guard let directory else { return }
         _ = try? await call("fs/remove", ["path": .string(directory), "recursive": .boolean(true)])

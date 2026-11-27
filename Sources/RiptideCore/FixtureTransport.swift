@@ -189,14 +189,16 @@ public actor FixtureTransport: ACPTransport {
                 emit(.reply(id, result: ["paths": .array(paths)]))
             case "session/prompt":
                 guard turns[sessionID] == nil, let index = index(of: sessionID),
-                      let text = params["prompt"]?.array?.first?["text"]?.string else {
+                      let blocks = params["prompt"]?.array, !blocks.isEmpty else {
                     emit(.failure(id, code: -32602, message: "This conversation is unavailable or already working."))
                     return
                 }
+                let history = blocks.compactMap { $0["text"]?.string }.joined(separator: "\n")
+                let text = blocks.first?["text"]?.string ?? ""
                 if sessions[index].title == "Untitled chat" { sessions[index].title = String(text.prefix(48)) }
                 let item = sessions.remove(at: index)
                 sessions.insert(item, at: 0)
-                try record(Self.chunk("user_message_chunk", id: UUID().uuidString, text: text), in: sessionID, live: false)
+                try record(Self.chunk("user_message_chunk", id: UUID().uuidString, text: history), in: sessionID, live: false)
                 let toolID = UUID().uuidString
                 try record([
                     "sessionUpdate": "tool_call", "toolCallId": .string(toolID),

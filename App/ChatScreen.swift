@@ -233,7 +233,7 @@ struct ChatScreen: View {
         let message = ComposerDraft(text: draft, files: attachments)
         let selected = model.selected
         guard model.selectedID == chat.chat, selected.loaded, !selected.loading, !selected.configuring,
-              !selected.stopping, !selected.steering, message.hasContent else { return }
+              !selected.stopping, !selected.steering, !selected.sendingAttachmentDraft, message.hasContent else { return }
         viewport.jumpToLatest()
         if queue || (selected.working && !message.attachments.isEmpty) {
             if model.enqueue(message.text, attachments: message.attachments, in: chat.chat) { message.clear() }
@@ -244,7 +244,8 @@ struct ChatScreen: View {
         } else if message.attachments.isEmpty {
             if model.submit(message.text) { message.clear() }
         } else {
-            _ = model.submit(message.text, attachments: message.attachments, onSent: message.clear)
+            _ = model.submit(message.text, attachments: message.attachments, onWritten: message.clear,
+                             onRejected: message.restoreIfEmpty)
         }
     }
 
@@ -302,7 +303,7 @@ struct ChatScreen: View {
                         ready: selected.loaded,
                         canDictate: selected.loaded,
                         canSubmit: selected.loaded && !selected.loading && !selected.configuring
-                            && !selected.stopping && !selected.steering,
+                            && !selected.stopping && !selected.steering && !selected.sendingAttachmentDraft,
                         transcribe: dictationTranscriber,
                         submission: submission, stopping: selected.stopping,
                         stop: selected.canStop ? { Task { await model.stop() } } : nil,
@@ -371,7 +372,8 @@ struct ChatScreen: View {
                 ForEach(model.selected.transcript.visibleEntries(showCompletedToolCalls: showsCompletedToolCalls)) { entry in
                     switch entry.content {
                     case .message(.user, let text):
-                        TranscriptUserMessage(text: text, receipt: entry.id == latestUserMessageID ? entry.receipt : nil)
+                        TranscriptUserMessage(text: text, photos: entry.photos,
+                                              receipt: entry.id == latestUserMessageID ? entry.receipt : nil)
                     case .message(.assistant, let text):
                         ChatMarkdown(
                             source: text,

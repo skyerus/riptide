@@ -373,6 +373,12 @@ struct ComposerDraft {
 
     var hasContent: Bool { !text.isEmpty || !attachments.isEmpty }
 
+    func restoreIfEmpty() {
+        guard editor.wrappedValue.isEmpty, files.wrappedValue.isEmpty else { return }
+        editor.wrappedValue = text
+        files.wrappedValue = attachments
+    }
+
     func clear() {
         if editor.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == text { editor.wrappedValue = "" }
         let sent = Set(attachments.map(\.id))

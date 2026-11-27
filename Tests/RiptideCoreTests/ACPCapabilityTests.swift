@@ -27,6 +27,7 @@ struct ACPCapabilityTests {
         let thread: JSON = ["id": "selected", "cwd": "/disposable"]
         let photo = ChatAttachment(name: "Photo.png", data: Data([1, 2, 3]), imageMIMEType: "image/png")
         let document = ChatAttachment(name: "Report.pdf", data: Data([37, 80, 68, 70]))
+        let stagedPath = "/test-codex-home/attachments/af98aad7-a042-4c6e-9476-bbf1b5e4ea40/1-Photo.png"
         let transport = ScriptedTransport { request in
             let method = request["method"]?.string
             if method == "initialized" { return [] }
@@ -52,6 +53,9 @@ struct ACPCapabilityTests {
                     #expect(params?["dataBase64"]?.string == document.data.base64EncodedString())
                 }
                 return [.reply(id, result: [:])]
+            case "fs/readFile":
+                #expect(params?["path"]?.string == stagedPath)
+                return [.reply(id, result: ["dataBase64": .string(photo.data.base64EncodedString())])]
             case "turn/start":
                 #expect(params?["threadId"] == "selected")
                 let input = try #require(params?["input"]?.array)
@@ -61,7 +65,9 @@ struct ACPCapabilityTests {
                 #expect(input.last?["text"]?.string?.hasSuffix("/2-Report.pdf") == true)
                 #expect(input.last?["text"]?.string?.contains("Attached file: Report.pdf") == true)
                 let message = CodexChatMessage(["id": "message", "type": "userMessage", "content": .array(input)])
-                #expect(message?.text.hasPrefix("Attached image: Photo.png") == true)
+                let photoPath = try #require(input.first?["path"]?.string)
+                #expect(message?.text.hasPrefix("Attached file: Report.pdf") == true)
+                #expect(message?.photos == [.init(name: "Photo.png", source: .codexPath(photoPath))])
                 return [.reply(id, result: ["turn": ["id": "new-turn"]])]
             default:
                 Issue.record("Unexpected attachment RPC: \(method ?? "missing")")
@@ -71,6 +77,10 @@ struct ACPCapabilityTests {
         let client = CodexLiveClient(transport: transport, workspace: "/disposable")
         _ = try await client.openSavedChat("selected")
         try await client.sendToSavedChat("", attachments: [photo, document])
+        #expect(try await client.readTranscriptPhoto(at: stagedPath) == photo.data)
+        await #expect(throws: CodexLiveError.invalidResponse) {
+            _ = try await client.readTranscriptPhoto(at: "/unrelated/1-Photo.png")
+        }
         await client.close()
     }
 
