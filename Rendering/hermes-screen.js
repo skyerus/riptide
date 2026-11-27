@@ -46,15 +46,16 @@ rfb.viewOnly = true;
 rfb.addEventListener("connect", () => bridge.postMessage("connected"));
 rfb.addEventListener("disconnect", () => bridge.postMessage("disconnected"));
 
-function fitPortrait() {
-  if (!chromeMinimumWidth || !screen.clientWidth || !screen.clientHeight) return;
+function fitDesktop() {
+  // Fit once per control lease. noVNC scales the stable framebuffer as the
+  // phone viewport changes; resizing the host here would move Chrome on focus.
+  if (requestedSize || !chromeMinimumWidth || !screen.clientWidth || !screen.clientHeight) return;
   const width = Math.max(chromeMinimumWidth, screen.clientWidth);
   const height = Math.round(screen.clientHeight * width / screen.clientWidth);
-  if (requestedSize?.width === width && requestedSize?.height === height) return;
   if (rfb.requestSize(width, height)) requestedSize = { width, height };
 }
 
-const viewport = new ResizeObserver(fitPortrait);
+const viewport = new ResizeObserver(fitDesktop);
 viewport.observe(screen);
 
 window.hermesScreen = {
@@ -65,7 +66,7 @@ window.hermesScreen = {
   frame(data) {
     const bytes = Uint8Array.from(atob(data), character => character.charCodeAt(0));
     channel.onmessage({ data: bytes.buffer });
-    if (!requestedSize) fitPortrait();
+    fitDesktop();
   },
   control(allowed, minimumWidth = 0) {
     rfb.viewOnly = !allowed;
@@ -84,7 +85,7 @@ window.hermesScreen = {
         };
         windowFit = new MutationObserver(fit);
         windowFit.observe(canvas, { attributes: true, attributeFilter: ["width", "height"] });
-        fitPortrait();
+        fitDesktop();
         fit();
       }
     } else if (!allowed) {
@@ -147,7 +148,7 @@ for (const phase of ["gesturestart", "gesturemove", "gestureend"]) {
   }, { capture: true });
 }
 
-keyboard.addEventListener("click", () => keys.focus());
+keyboard.addEventListener("click", () => keys.focus({ preventScroll: true }));
 keys.addEventListener("blur", () => {
   sentKeys = "";
   keys.value = "";
