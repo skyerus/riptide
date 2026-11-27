@@ -122,6 +122,21 @@ class BrowserWindow:
         match = re.fullmatch(r"_NET_WM_PID\(CARDINAL\) = (\d+)\s*", property_value)
         return int(match[1]) if match else None
 
+    def capture_fits(self, window):
+        def geometry(target):
+            result = subprocess.run(["xwininfo", *target], env={**self.env, "LC_ALL": "C"},
+                                    capture_output=True, text=True, check=True, timeout=1)
+            fields = re.findall(r"^\s*(Absolute upper-left [XY]|Width|Height):\s*(-?\d+)\s*$",
+                                result.stdout, re.MULTILINE)
+            return {name: int(value) for name, value in fields}
+
+        desktop = geometry(["-root"])
+        client = geometry(["-id", hex(window)])
+        left, top = client["Absolute upper-left X"], client["Absolute upper-left Y"]
+        # XGetImage requires the entire client area to be inside the screen.
+        return (0 <= left and left + client["Width"] <= desktop["Width"]
+                and 0 <= top and top + client["Height"] <= desktop["Height"])
+
     def is_maximized(self):
         active = self.active_browser()
         return active is not None and ("_NET_WM_STATE_FULLSCREEN" in active[1]
