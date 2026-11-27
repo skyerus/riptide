@@ -22,6 +22,7 @@ struct MessageComposer<Options: View, Actions: View>: View {
     let canSubmit: Bool
     let submitDraft: () -> Void
     let queueDraft: (() -> Void)?
+    let compact: Bool
     @ViewBuilder let options: () -> Options
     @ViewBuilder let actions: (_ canSend: Bool) -> Actions
 
@@ -31,7 +32,8 @@ struct MessageComposer<Options: View, Actions: View>: View {
     @State private var clipboard: [NSItemProvider] = []
 
     var body: some View {
-        ComposerSurface(focused: focused && !dictation.active, showsOptions: !dictation.active) {
+        ComposerSurface(focused: focused && !dictation.active, showsOptions: !dictation.active,
+                        compact: compact && !dictation.active) {
             if dictation.active {
                 recordingDisplay
             } else {
@@ -53,11 +55,12 @@ struct MessageComposer<Options: View, Actions: View>: View {
                     }
                 }
             }
-        } options: {
+        } attachment: {
             ComposerAttachmentPicker(attachments: $attachments, isImporting: $importingAttachments,
                                      clipboard: $clipboard, acceptsImages: acceptsImages, byteLimit: attachmentByteLimit,
                                      canAttach: canAttach, privateFileTransfer: privateFileTransfer)
                 .id(chatID)
+        } options: {
             options()
         } actions: {
             if dictation.active {

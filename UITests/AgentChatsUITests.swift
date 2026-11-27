@@ -13,10 +13,15 @@ final class AgentChatsUITests: XCTestCase {
 
         let progress = app.staticTexts["Checking the saved settings."]
         XCTAssertTrue(progress.waitForExistence(timeout: 6))
-        capture(app, as: "Hermes while progress is visible")
+        let timer = app.staticTexts["turn-working"]
+        XCTAssertTrue(timer.exists)
+        XCTAssertTrue(timer.label.hasPrefix("Working for "))
+        XCTAssertLessThan(timer.frame.maxY, progress.frame.minY)
+        capture(app, as: "Hermes working timer and commentary")
         let final = app.staticTexts["You can come back to this conversation whenever you need it."]
         XCTAssertTrue(final.waitForExistence(timeout: 15))
         XCTAssertTrue(progress.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(timer.exists)
         capture(app, as: "Hermes after progress disappears")
         app.navigationBars.buttons["BackButton"].tap()
         app.buttons["sidebar-main-chat"].tap()
@@ -371,17 +376,26 @@ final class AgentChatsUITests: XCTestCase {
         let receipt = app.staticTexts["message-receipt"]
         let tool = app.descendants(matching: .any).matching(identifier: "chat-tool-call").firstMatch
         let activity = app.buttons["live-turn-activity"]
+        let timer = app.staticTexts["turn-working"]
         XCTAssertEqual(receipt.label, "Seen")
-        XCTAssertEqual(app.staticTexts["turn-working"].label, "Working")
+        let firstReading = timer.label
+        let elapsedFormat = "Working for [0-9]+s"
+        XCTAssertTrue(NSPredicate(format: "SELF MATCHES %@", elapsedFormat).evaluate(with: firstReading))
+        let tick = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label MATCHES %@ AND label != %@", elapsedFormat, firstReading),
+            object: timer
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [tick], timeout: 4), .completed)
         XCTAssertEqual(activity.label, "Review context")
         XCTAssertTrue(app.buttons["stop-reply"].exists)
         XCTAssertFalse(tool.exists)
         activity.tap()
         XCTAssertTrue(tool.waitForExistence(timeout: 5))
-        capture(app, as: "OpenClaw live activity")
+        capture(app, as: "OpenClaw working timer")
         deny.tap()
         XCTAssertTrue(app.staticTexts["I skipped the sample action. Nothing was run."].waitForExistence(timeout: 5))
         XCTAssertTrue(activity.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(timer.exists)
         XCTAssertTrue(tool.waitForNonExistence(timeout: 5))
         XCTAssertEqual(receipt.label, "Seen")
         app.buttons["chat-actions"].tap()

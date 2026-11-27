@@ -84,6 +84,10 @@ final class CodexLiveUITests: XCTestCase {
         let app = try openLiveCodexFixture(portKey: "RIPTIDE_UX_LIVE_FIXTURE_PORT", mode: "--live")
         let editor = app.descendants(matching: .any).matching(identifier: "codex-steer-input").firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        let timer = app.staticTexts["turn-working"]
+        XCTAssertTrue(timer.waitForExistence(timeout: 5))
+        XCTAssertTrue(timer.label.hasPrefix("Working for "))
+        capture(app, as: "Desktop Codex working timer")
         editor.tap()
         editor.typeText("Check the first paragraph")
         let send = app.buttons["codex-steer-send"]

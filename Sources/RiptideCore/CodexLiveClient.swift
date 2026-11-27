@@ -42,6 +42,7 @@ public struct CodexLocalEndpoint: Sendable {
 public struct CodexLiveTurn: Equatable, Sendable {
     public let threadID: String
     public let turnID: String
+    public let startedAt: Date?
     public let model: String?
     public let prompt: String?
     public let compactions: [ContextCompaction]
@@ -222,7 +223,9 @@ public actor CodexLiveClient {
             }
             return entry
         }
+        let activeTurn = activeTurnID.flatMap { id in turns.first { $0["id"]?.string == id } }
         return CodexChatSnapshot(turns: transcript, activeTurnID: activeTurnID,
+                                 activeTurnStartedAt: activeTurn.flatMap(Self.turnStartDate),
                                  hasOlderTurns: history["nextCursor"]?.string != nil)
     }
 
@@ -309,10 +312,12 @@ public actor CodexLiveClient {
             }
         }
         let result = try await call("turn/start", ["threadId": .string(threadID), "input": input])
-        guard let id = result["turn"]?["id"]?.string else { throw CodexLiveError.invalidResponse }
-        if (activeTurnID == nil || activeTurnID == turnID), latestCompletedTurn != id {
+        guard let turn = result["turn"], let id = turn["id"]?.string else { throw CodexLiveError.invalidResponse }
+        let startedAt = Self.turnStartDate(turn)
+        if latestCompletedTurn != id, activeTurnID == nil || activeTurnID == turnID
+            || (activeTurnID == id && startedAt != nil) {
             activeTurnID = id
-            emitChat.yield(.turnStarted(id))
+            emitChat.yield(.turnStarted(id, startedAt: startedAt))
         }
         return .started(turnID: id)
     }
@@ -459,7 +464,8 @@ public actor CodexLiveClient {
         let compactions = (turn["items"]?.array ?? []).compactMap {
             ContextCompaction(historicalItem: $0, turnInProgress: true)
         }
-        return CodexLiveTurn(threadID: selected, turnID: inFlight, model: resume["model"]?.string,
+        return CodexLiveTurn(threadID: selected, turnID: inFlight, startedAt: Self.turnStartDate(turn),
+                             model: resume["model"]?.string,
                              prompt: prompt, compactions: compactions)
     }
 
@@ -702,11 +708,12 @@ public actor CodexLiveClient {
             if configOptions != previous { emitChat.yield(.configOptions(configOptions)) }
             return
         }
-        if method == "turn/started", let id = params["turn"]?["id"]?.string {
-            guard id != latestCompletedTurn, id != activeTurnID else { return }
+        if method == "turn/started", let turn = params["turn"], let id = turn["id"]?.string {
+            let startedAt = Self.turnStartDate(turn)
+            guard id != latestCompletedTurn, id != activeTurnID || startedAt != nil else { return }
             turnChanged = true
             activeTurnID = id
-            emitChat.yield(.turnStarted(id))
+            emitChat.yield(.turnStarted(id, startedAt: startedAt))
             return
         }
         if let reportedTurn = params["turnId"]?.string,
@@ -740,6 +747,11 @@ public actor CodexLiveClient {
             }
             emitChat.yield(.live(event))
         }
+    }
+
+    private static func turnStartDate(_ turn: JSON) -> Date? {
+        guard let seconds = turn["startedAt"]?.integer, seconds > 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(seconds))
     }
 
     private static func event(_ method: String, _ params: JSON) -> CodexLiveEvent? {

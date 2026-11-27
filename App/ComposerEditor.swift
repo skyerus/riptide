@@ -30,6 +30,7 @@ struct ComposerEditor: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.editor = self
         view.pasteAttachments = pasteAttachments
+        view.accessibilityLabel = prompt
         if view.text != text, view.markedTextRange == nil { view.text = text }
         view.isEditable = enabled
         guard view.isFirstResponder != (enabled && focused) else { return }

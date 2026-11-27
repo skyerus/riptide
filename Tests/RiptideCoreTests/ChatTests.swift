@@ -220,13 +220,16 @@ struct ChatTests {
         model.submit("Review the project")
         try await waitUntil { await initial.promptCount == 1 }
         #expect(model.selected.canStop)
+        #expect(model.selected.turnStartedAt != nil)
         await first.close()
         try await waitUntil { model.selected.connectionLost }
         #expect(!model.selected.working)
+        #expect(model.selected.turnStartedAt == nil)
 
         await model.showMain()
         #expect(!model.selected.connectionLost)
         #expect(model.selected.working)
+        let resumedStart = try #require(model.selected.turnStartedAt)
         #expect(!model.selected.canStop)
         #expect(model.selected.canSteer == supportsSteering)
         #expect(model.workingChats == [target.mainSessionID])
@@ -235,6 +238,7 @@ struct ChatTests {
         if supportsSteering {
             #expect(await model.steer("Focus on the draft", in: target.mainSessionID))
             #expect(await resumed.steers == ["Focus on the draft"])
+            #expect(model.selected.turnStartedAt == resumedStart)
             #expect(model.selected.transcript.entries.last?.content == .message(.user, "Focus on the draft"))
             #expect(model.selected.queuedMessages.isEmpty)
             await resumed.expireSteeringTarget()
@@ -263,6 +267,7 @@ struct ChatTests {
             ])
         } else {
             try await waitUntil { !model.selected.working }
+            #expect(model.selected.turnStartedAt == nil)
             #expect(!model.selected.canSteer)
             #expect(model.workingChats.isEmpty)
             #expect(model.selected.transcript.entries.last?.content == .message(.assistant, "The review is ready."))

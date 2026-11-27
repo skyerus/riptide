@@ -52,6 +52,20 @@ public struct Transcript: Equatable, Sendable {
         return entries[latestPromptIndex].id
     }
 
+    public var firstActiveOutputID: UUID? {
+        guard let activePromptIndex else { return nil }
+        return entries[activePromptIndex...].first { entry in
+            switch entry.content {
+            case .message(.assistant, _):
+                showsMessage(entry)
+            case .contextCompaction:
+                true
+            default:
+                false
+            }
+        }?.id
+    }
+
     fileprivate var activePromptID: UUID? {
         guard let activePromptIndex, entries.indices.contains(activePromptIndex) else { return nil }
         return entries[activePromptIndex].id
@@ -118,9 +132,13 @@ public struct Transcript: Equatable, Sendable {
         let activeStart = activePromptIndex ?? entries.endIndex
         return entries.enumerated().compactMap { index, entry in
             if case .tool = entry.content, !showCompletedToolCalls || index >= activeStart { return nil }
-            if entry.isAssistantProgress, !visibleProgress.contains(entry.id) { return nil }
+            if !showsMessage(entry) { return nil }
             return entry
         }
+    }
+
+    private func showsMessage(_ entry: ChatEntry) -> Bool {
+        !entry.isAssistantProgress || visibleProgress.contains(entry.id)
     }
 
     public var activeToolCalls: [ToolActivity] {
@@ -279,6 +297,7 @@ public final class AgentChatModel {
         public fileprivate(set) var loading = false
         public fileprivate(set) var loaded = false
         public fileprivate(set) var connectionLost = false
+        public fileprivate(set) var turnStartedAt: Date?
         fileprivate var submittingPrompt = false
         fileprivate var agentWorking = false
         fileprivate var steerAdmissionID: String?
@@ -309,7 +328,9 @@ public final class AgentChatModel {
                 let wasWorking = working
                 agentWorking = active
                 steerAdmissionID = admissionID
-                guard !replaying, wasWorking != working else { return }
+                guard wasWorking != working else { return }
+                turnStartedAt = working ? .now : nil
+                guard !replaying else { return }
                 if working { transcript.beginObservedTurn() }
                 else { transcript.finishPrompt() }
             case .message(_, _, .user, _) where submittingPrompt:
@@ -791,6 +812,7 @@ public final class AgentChatModel {
         observe(client)
         chats[sessionID]?.transcript.addPrompt(text, photos: photos)
         chats[sessionID]?.submittingPrompt = true
+        chats[sessionID]?.turnStartedAt = .now
         recordWorkingState(sessionID)
         chats[sessionID]?.plan = []
         chats[sessionID]?.error = nil
@@ -808,7 +830,10 @@ public final class AgentChatModel {
         chat.submittingPrompt = false
         chat.sendingAttachmentDraft = false
         chat.stopping = false
-        if !chat.working { chat.transcript.finishPrompt() }
+        if !chat.working {
+            chat.turnStartedAt = nil
+            chat.transcript.finishPrompt()
+        }
         if !advanceQueue, !chat.queuedMessages.isEmpty { chat.queuePaused = true }
         chats[sessionID] = chat
         recordWorkingState(sessionID)
@@ -914,6 +939,7 @@ public final class AgentChatModel {
             chat.submittingPrompt = false
             chat.sendingAttachmentDraft = false
             chat.agentWorking = false
+            chat.turnStartedAt = nil
             chat.steerAdmissionID = nil
             chat.stopping = false
             chat.preparingPrompt = false

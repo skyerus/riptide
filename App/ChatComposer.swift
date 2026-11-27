@@ -45,9 +45,12 @@ struct ChatComposer: View {
     var onMention: ((String) -> Void)? = nil
     let submit: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showContext = false
 
     var body: some View {
+        let compact = submission != .send && draft.isEmpty && attachments.isEmpty
+            && !editorFocus && !modelPickerVisible && !dynamicTypeSize.isAccessibilitySize
         VStack(spacing: 0) {
             if !modelPickerVisible, let error = settings.error {
                 Text(error).font(.footnote).foregroundStyle(ChatTheme.warning)
@@ -66,11 +69,14 @@ struct ChatComposer: View {
                 },
                 canSubmit: canSubmit,
                 submitDraft: submitDraft,
-                queueDraft: queueDraft
+                queueDraft: queueDraft,
+                compact: compact
             ) {
                 contextButton
-                ChatModelControls(settings: settings, isExpanded: $modelPickerVisible)
-                FastModeButton(settings: settings)
+                if !compact {
+                    ChatModelControls(settings: settings, isExpanded: $modelPickerVisible)
+                    FastModeButton(settings: settings)
+                }
                 if let onMention, !mentions.isEmpty {
                     Menu {
                         ForEach(mentions) { mention in
@@ -169,45 +175,56 @@ struct ChatComposer: View {
     }
 }
 
-struct ComposerSurface<Field: View, Options: View, Actions: View>: View {
+struct ComposerSurface<Field: View, Attachment: View, Options: View, Actions: View>: View {
     let focused: Bool
     let showsOptions: Bool
+    let compact: Bool
     private let field: Field
+    private let attachment: Attachment
     private let options: Options
     private let actions: Actions
 
-    init(focused: Bool, showsOptions: Bool, @ViewBuilder field: () -> Field,
+    init(focused: Bool, showsOptions: Bool, compact: Bool, @ViewBuilder field: () -> Field,
+         @ViewBuilder attachment: () -> Attachment,
          @ViewBuilder options: () -> Options, @ViewBuilder actions: () -> Actions) {
         self.focused = focused
         self.showsOptions = showsOptions
+        self.compact = compact
         self.field = field()
+        self.attachment = attachment()
         self.options = options()
         self.actions = actions()
     }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 26)
-        let layout = showsOptions ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
-            : AnyLayout(HStackLayout(alignment: .bottom, spacing: 8))
+        let expanded = showsOptions && !compact
+        let layout = expanded ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
+            : AnyLayout(HStackLayout(alignment: compact ? .center : .bottom, spacing: 8))
+        let attachmentInset: CGFloat = 4 + 44
         layout {
             field
                 .font(.body)
                 .foregroundStyle(ChatTheme.ink)
                 .tint(ChatTheme.ink)
-                .padding(.leading, 15)
-                .padding(.trailing, showsOptions ? 15 : 0)
-                .padding(.vertical, showsOptions ? 8 : 10)
+                .padding(.leading, compact ? attachmentInset + 5 : 15)
+                .padding(.trailing, expanded ? 15 : 0)
+                .padding(.vertical, compact ? 0 : expanded ? 8 : 10)
                 .frame(minHeight: 44, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 1) {
                 if showsOptions {
                     options
-                    Spacer(minLength: 4)
+                    if expanded { Spacer(minLength: 4) }
                 }
                 actions
             }
-            .padding(.leading, showsOptions ? 4 : 0)
+            .padding(.leading, expanded ? attachmentInset + 1 : 0)
             .padding(.trailing, 4)
+        }
+        .overlay(alignment: .bottomLeading) {
+            // Keep picker state when the editor expands or a turn finishes.
+            if showsOptions { attachment.padding(.leading, 4) }
         }
         .padding(.vertical, 3)
         .chatGlass(in: shape, focused: focused)

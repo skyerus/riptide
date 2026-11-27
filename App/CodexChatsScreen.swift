@@ -238,6 +238,12 @@ struct CodexSavedChatScreen: View {
 
     private var transcript: some View {
         let latestUserMessage = turns.latestUserMessageLocation(activeTurnID: activeTurnID)
+        let activeTurn = turns.last { $0.id == activeTurnID }
+        let firstActiveOutput = activeTurn?.entries.first { entry in
+            if case .message(let message) = entry { return message.role != .user }
+            return true
+        }
+        let startedAt = session?.activeTurnStartedAt
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 if session?.hasOlderTurns == true {
@@ -245,6 +251,9 @@ struct CodexSavedChatScreen: View {
                 }
                 ForEach(turns) { turn in
                     ForEach(turn.visibleEntries(isActive: turn.id == activeTurnID)) { entry in
+                        if turn.id == activeTurnID, entry.id == firstActiveOutput?.id, let startedAt {
+                            WorkingTurnHeader(startedAt: startedAt)
+                        }
                         switch entry {
                         case .message(let message):
                             let showsReceipt = turn.id == latestUserMessage?.turnID &&
@@ -259,6 +268,9 @@ struct CodexSavedChatScreen: View {
                             .padding(12)
                             .contentPanel()
                     }
+                }
+                if firstActiveOutput == nil, let startedAt {
+                    WorkingTurnHeader(startedAt: startedAt)
                 }
                 if let diff = session?.diff {
                     DisclosureGroup("Changes") { DiffPreview(source: diff, title: "Turn diff") }
@@ -284,7 +296,7 @@ struct CodexSavedChatScreen: View {
                     Text(sendIssue).font(.footnote).foregroundStyle(.secondary)
                 }
                 if !progress.plan.isEmpty { TurnPlanCard(steps: progress.plan) }
-                if let activeTurnID, turns.last(where: { $0.id == activeTurnID })?.isCompactingContext != true {
+                if let activeTurnID, activeTurn?.isCompactingContext != true {
                     let current = progress.items.last {
                         $0.state == .running && $0.kind != .summary && $0.kind != .planning
                     }
@@ -307,19 +319,13 @@ struct CodexSavedChatScreen: View {
             TranscriptUserMessage(text: message.text, photos: message.photos,
                                   receipt: showsReceipt ? message.receipt : nil, photoClient: session?.client)
         } else if !message.text.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                if message.phase == .commentary {
-                    Label("Progress update", systemImage: "waveform").font(.caption.weight(.medium))
-                        .foregroundStyle(ChatTheme.muted)
-                }
-                ChatMarkdown(source: message.text, streaming: message.streaming)
-            }
+            ChatMarkdown(source: message.text, streaming: message.streaming)
         }
     }
 
     private var composer: some View {
         ChatComposer(
-            prompt: working ? "Steer this turn" : "Message Codex",
+            prompt: working ? "Follow up" : "Message Codex",
             chatID: chatKey?.chat, fieldID: "codex-composer",
             sendID: working ? "codex-steer-send" : "send-message", stopID: "stop-codex-turn", stopTitle: "Stop turn", draft: editor, attachments: attachments,
             modelPickerVisible: $showModelPicker, editorFocus: $composerFocused,
