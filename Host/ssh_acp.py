@@ -23,7 +23,7 @@ REQUESTS = {
     "session/new": {"cwd", "mcpServers"},
     "session/load": {"sessionId", "cwd", "mcpServers"},
     "session/prompt": {"sessionId", "prompt"},
-    "_riptide/session/steer": {"sessionId", "text"},
+    "_riptide/session/steer": {"sessionId", "text", "admissionId"},
     "session/cancel": {"sessionId"},
     "session/set_config_option": {"sessionId", "configId", "value"},
 }
@@ -223,7 +223,9 @@ def admitted(packet, workspace, pending):
         return params.get("configId") in ("model", "effort", "reasoning_effort") and isinstance(params.get("value"), str)
     if method == "_riptide/session/steer":
         text = params.get("text")
-        return isinstance(text, str) and bool(text.strip()) and len(text) <= 65_536
+        admission = params.get("admissionId")
+        return (isinstance(text, str) and bool(text.strip()) and len(text) <= 65_536
+                and ("admissionId" not in params or isinstance(admission, str) and 0 < len(admission) <= 256))
     if method == "session/prompt":
         blocks = params.get("prompt")
         return isinstance(blocks, list) and bool(blocks) and all(map(prompt_block, blocks))

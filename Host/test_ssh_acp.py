@@ -23,6 +23,7 @@ class SSHACPPolicyTests(unittest.TestCase):
             ("session/load", {"cwd": workspace, "sessionId": "main", "mcpServers": []}),
             ("session/prompt", {"sessionId": "main", "prompt": [{"type": "text", "text": "Hello"}]}),
             ("_riptide/session/steer", {"sessionId": "main", "text": "Focus on the draft"}),
+            ("_riptide/session/steer", {"sessionId": "main", "text": "Focus on the draft", "admissionId": "active-admission"}),
             ("session/set_config_option", {"sessionId": "main", "configId": "model", "value": "default"}),
             ("session/set_config_option", {"sessionId": "main", "configId": "service_tier", "value": "fast"}),
             ("session/set_config_option", {"sessionId": "main", "configId": "service_tier", "value": "normal"}),
@@ -33,6 +34,14 @@ class SSHACPPolicyTests(unittest.TestCase):
         response = {"jsonrpc": "2.0", "id": 2, "result": {"outcome": {"outcome": "cancelled"}}}
         self.assertTrue(admitted(response, workspace, pending))
         self.assertFalse(admitted(response, workspace, pending))
+
+    def test_steering_requires_a_valid_admission_when_supplied(self):
+        for admission in (None, 1, "", "x" * 257):
+            with self.subTest(admission=admission):
+                packet = {"jsonrpc": "2.0", "id": 1, "method": "_riptide/session/steer", "params": {
+                    "sessionId": "main", "text": "Follow up", "admissionId": admission,
+                }}
+                self.assertFalse(admitted(packet, "/agent/workspace", set()))
 
     def test_staging_preserves_bytes_and_limits_filenames_and_permissions(self):
         data = b"%PDF-example"

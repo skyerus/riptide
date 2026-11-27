@@ -49,7 +49,7 @@ public enum ACPEvent: Sendable, Equatable {
     case message(sessionID: String, messageID: String?, role: ChatRole, text: String)
     case assistantProgress(sessionID: String, messageID: String, text: String)
     case agentActivity(sessionID: String)
-    case turnActivity(sessionID: String, working: Bool)
+    case turnActivity(sessionID: String, working: Bool, steerAdmissionID: String?)
     case tool(sessionID: String, activity: ToolActivity)
     case plan(sessionID: String, steps: [TurnPlanStep])
     case configOptions(sessionID: String, options: [SessionConfigOption])
@@ -62,7 +62,7 @@ public enum ACPEvent: Sendable, Equatable {
         case .message(let sessionID, _, _, _), .assistantProgress(let sessionID, _, _),
              .tool(let sessionID, _), .configOptions(let sessionID, _),
              .context(let sessionID, _), .permissionClosed(let sessionID, _), .plan(let sessionID, _),
-             .agentActivity(let sessionID), .turnActivity(let sessionID, _):
+             .agentActivity(let sessionID), .turnActivity(let sessionID, _, _):
             sessionID
         case .permission(let request):
             request.sessionID
@@ -216,13 +216,13 @@ public actor ACPClient {
     }
 
     /// False means the host confirmed that the turn ended before it accepted the follow-up.
-    public func steer(_ text: String, sessionID: String) async throws -> Bool {
-        guard activePrompts.contains(sessionID) else { return false }
+    public func steer(_ text: String, sessionID: String, observedAdmissionID: String? = nil) async throws -> Bool {
+        guard loadedSessions.contains(sessionID), observedAdmissionID != nil || activePrompts.contains(sessionID) else { return false }
+        var params: [String: JSON] = ["sessionId": .string(sessionID), "text": .string(text)]
+        params["admissionId"] = observedAdmissionID.map(JSON.string)
         let result: JSON
         do {
-            result = try await call("_riptide/session/steer", [
-                "sessionId": .string(sessionID), "text": .string(text)
-            ])
+            result = try await call("_riptide/session/steer", .object(params))
         } catch ACPError.methodUnavailable {
             throw ACPError.rejected("This host can’t steer an active reply. Hold Send to queue the message instead.")
         }
@@ -439,8 +439,11 @@ public actor ACPClient {
     private static func event(_ update: JSON, sessionID: String) -> ACPEvent? {
         switch update["sessionUpdate"]?.string {
         case "session_info_update":
-            guard case .boolean(let working)? = update["_meta"]?["app.riptide.turnWorking"] else { return nil }
-            return .turnActivity(sessionID: sessionID, working: working)
+            let metadata = update["_meta"]
+            guard case .boolean(let working)? = metadata?["app.riptide.turnWorking"] else { return nil }
+            let admissionID = metadata?["app.riptide.steerAdmissionId"]?.string
+                .flatMap { !$0.isEmpty && $0.utf8.count <= 256 ? $0 : nil }
+            return .turnActivity(sessionID: sessionID, working: working, steerAdmissionID: working ? admissionID : nil)
         case "agent_thought_chunk":
             guard update["content"]?["type"] == "text", let text = update["content"]?["text"]?.string,
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }

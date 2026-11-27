@@ -160,11 +160,11 @@ struct ChatTests {
         #expect(model.selected.transcript.latestAssistantEntryID != nil)
     }
 
-    @Test(arguments: [false, true])
-    func reconnectRestoresAnActiveHermesTurnWithoutResubmitting(queueFollowUp: Bool) async throws {
+    @Test(arguments: [false, true], [false, true])
+    func reconnectRestoresAnActiveHermesTurnWithoutResubmitting(supportsSteering: Bool, queueFollowUp: Bool) async throws {
         let target = AgentTarget.demos[1]
         let initial = TurnActivityTransport(sessionID: target.mainSessionID, reopened: false)
-        let resumed = TurnActivityTransport(sessionID: target.mainSessionID, reopened: true)
+        let resumed = TurnActivityTransport(sessionID: target.mainSessionID, reopened: true, supportsSteering: supportsSteering)
         let first = ACPClient(transport: initial)
         let second = ACPClient(transport: resumed)
         let clients = Mutex([first, second])
@@ -182,10 +182,22 @@ struct ChatTests {
         #expect(!model.selected.connectionLost)
         #expect(model.selected.working)
         #expect(!model.selected.canStop)
+        #expect(model.selected.canSteer == supportsSteering)
         #expect(model.workingChats == [target.mainSessionID])
         #expect(model.selected.transcript.entries.map(\.content) == [.message(.user, "Review the project")])
         #expect(!model.submit("Do not send a second message"))
-        #expect(!(await model.steer("Do not steer this turn", in: target.mainSessionID)))
+        if supportsSteering {
+            #expect(await model.steer("Focus on the draft", in: target.mainSessionID))
+            #expect(await resumed.steers == ["Focus on the draft"])
+            #expect(model.selected.transcript.entries.last?.content == .message(.user, "Focus on the draft"))
+            #expect(model.selected.queuedMessages.isEmpty)
+            await resumed.expireSteeringTarget()
+            #expect(!(await model.steer("Keep this draft", in: target.mainSessionID)))
+            #expect(model.selected.steeringError != nil)
+        } else {
+            #expect(!(await model.steer("Do not steer this turn", in: target.mainSessionID)))
+            #expect(await resumed.steers.isEmpty)
+        }
         if queueFollowUp {
             #expect(model.enqueue("Queued follow-up", in: target.mainSessionID))
             #expect(model.selected.queuedMessages.map(\.text) == ["Queued follow-up"])
@@ -205,6 +217,7 @@ struct ChatTests {
             ])
         } else {
             try await waitUntil { !model.selected.working }
+            #expect(!model.selected.canSteer)
             #expect(model.workingChats.isEmpty)
             #expect(model.selected.transcript.entries.last?.content == .message(.assistant, "The review is ready."))
         }
@@ -351,13 +364,17 @@ private actor TurnActivityTransport: ACPTransport {
     private let output: AsyncThrowingStream<Data, any Error>.Continuation
     private let sessionID: String
     private let reopened: Bool
+    private let supportsSteering: Bool
+    private var rejectsSteer = false
     private(set) var promptCount = 0
     private(set) var cancelCount = 0
+    private(set) var steers: [String] = []
 
-    init(sessionID: String, reopened: Bool) {
+    init(sessionID: String, reopened: Bool, supportsSteering: Bool = false) {
         (incoming, output) = AsyncThrowingStream.makeStream()
         self.sessionID = sessionID
         self.reopened = reopened
+        self.supportsSteering = supportsSteering
     }
 
     func send(_ data: Data) async throws {
@@ -380,10 +397,20 @@ private actor TurnActivityTransport: ACPTransport {
             try reportActivity(true)
         case "session/cancel":
             cancelCount += 1
+        case "_riptide/session/steer":
+            if supportsSteering, !rejectsSteer, packet["params"]?["admissionId"] == "active-reply",
+               let text = packet["params"]?["text"]?.string {
+                steers.append(text)
+                try emit(.reply(id, result: ["status": "steered"]))
+            } else {
+                try emit(.reply(id, result: ["status": "idle"]))
+            }
         default:
             break
         }
     }
+
+    func expireSteeringTarget() { rejectsSteer = true }
 
     func reportTool() throws {
         try update(["sessionUpdate": "tool_call", "toolCallId": "tool",
@@ -398,7 +425,9 @@ private actor TurnActivityTransport: ACPTransport {
     }
 
     private func reportActivity(_ working: Bool) throws {
-        try update(["sessionUpdate": "session_info_update", "_meta": ["app.riptide.turnWorking": .boolean(working)]])
+        var metadata: [String: JSON] = ["app.riptide.turnWorking": .boolean(working)]
+        if working, supportsSteering { metadata["app.riptide.steerAdmissionId"] = "active-reply" }
+        try update(["sessionUpdate": "session_info_update", "_meta": .object(metadata)])
     }
 
     private func update(_ update: JSON) throws {

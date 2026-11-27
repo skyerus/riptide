@@ -27,6 +27,8 @@ public actor FixtureTransport: ACPTransport {
     private let historyDelay: Duration
     private let pairingDemo: Bool
     private let progressDemo: Bool
+    private var startObservedTurn: Bool
+    private static let observedAdmissionID = "fixture-observed-reply"
     private let cwd: String
     private let mainSessionID: String
     private var sessions: [SavedSession]
@@ -53,13 +55,14 @@ public actor FixtureTransport: ACPTransport {
 
     public init(target: AgentTarget, file: URL? = nil, pace: Duration = .milliseconds(280),
                 catalog: [String] = [], historyDelay: Duration = .zero, pairingDemo: Bool = false,
-                progressDemo: Bool = false) throws {
+                progressDemo: Bool = false, observedTurnDemo: Bool = false) throws {
         (incoming, output) = AsyncThrowingStream.makeStream()
         self.file = file
         self.pace = pace
         self.historyDelay = historyDelay
         self.pairingDemo = pairingDemo
         self.progressDemo = progressDemo
+        startObservedTurn = observedTurnDemo
         cwd = target.cwd
         mainSessionID = target.mainSessionID
         if let file, FileManager.default.fileExists(atPath: file.path) {
@@ -129,9 +132,20 @@ public actor FixtureTransport: ACPTransport {
                     emit(.failure(id, code: -32602, message: "This conversation is no longer available."))
                     return
                 }
+                if startObservedTurn, sessionID == mainSessionID {
+                    startObservedTurn = false
+                    try record(Self.chunk("user_message_chunk", id: "observed-prompt", text: "Review the project"),
+                               in: sessionID, live: false)
+                    turns[sessionID] = Turn(id: .null, toolID: "observed-tool", response: [])
+                }
                 for update in sessions[index].updates { stream(update, in: sessionID) }
+                let observing = turns[sessionID]?.id == JSON.null
+                if observing { reportObservedTurn(working: true, in: sessionID) }
                 reportUsage(for: sessions[index])
                 emit(.reply(id, result: ["configOptions": configuration(sessions[index])]))
+                if observing, !approvals.values.contains(sessionID) {
+                    begin(in: sessionID, id: .null, needsApproval: true)
+                }
             case "session/set_config_option":
                 guard let index = index(of: sessionID), let option = params["configId"]?.string,
                       let value = params["value"]?.string,
@@ -158,7 +172,8 @@ public actor FixtureTransport: ACPTransport {
                     emit(.failure(id, code: -32602, message: "Enter a follow-up message."))
                     return
                 }
-                if turns[sessionID] != nil {
+                if let turn = turns[sessionID],
+                   params["admissionId"]?.string == (turn.id == .null ? Self.observedAdmissionID : nil) {
                     try record(Self.chunk("user_message_chunk", id: UUID().uuidString, text: text),
                                in: sessionID, live: false)
                     emit(.reply(id, result: ["status": "steered"]))
@@ -367,7 +382,14 @@ public actor FixtureTransport: ACPTransport {
     private func finish(_ sessionID: String, reason: String) {
         guard let turn = removeTurn(sessionID) else { return }
         if let index = index(of: sessionID) { reportUsage(for: sessions[index]) }
-        emit(.reply(turn.id, result: ["stopReason": .string(reason)]))
+        if turn.id == .null { reportObservedTurn(working: false, in: sessionID) }
+        else { emit(.reply(turn.id, result: ["stopReason": .string(reason)])) }
+    }
+
+    private func reportObservedTurn(working: Bool, in sessionID: String) {
+        var metadata: [String: JSON] = ["app.riptide.turnWorking": .boolean(working)]
+        if working { metadata["app.riptide.steerAdmissionId"] = .string(Self.observedAdmissionID) }
+        stream(["sessionUpdate": "session_info_update", "_meta": .object(metadata)], in: sessionID)
     }
 
     private func fail(_ sessionID: String) {
