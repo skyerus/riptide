@@ -200,6 +200,39 @@ Install `Host/hermes-browser-handoff/SKILL.md` under the profile’s `skills/rip
 
 In Riptide, choose **Chat actions → Open Hermes browser** or open the browser from the agent’s handoff card. Tap **Take over** to sign in directly in Chrome. Riptide fits the desktop to the phone and provides a keyboard and Password AutoFill. Tap **Hand back** to restore agent control and resume the chat. If the connection drops, reopen the browser and take over again. The adapter streams the existing desktop over the paired SSH connection using [noVNC 1.7.0](https://github.com/novnc/noVNC/tree/v1.7.0).
 
+#### Share one existing Chrome desktop among trusted agents
+
+By default every pairing uses its own Hermes desktop. To opt in on a VPS,
+deploy this versioned Host release to the browser-enabled pairings. Then create
+`riptide-shared-browser.json` in the root Hermes home (not in a named profile)
+as an owner-controlled file, for example:
+
+```json
+{"owner":"browser-owner","members":["browser-owner","default","another-trusted-agent"]}
+```
+
+Use the slug of the existing Hermes profile whose desktop already has the Chrome
+windows and sign-ins you want. The owner must also be a member. Include only
+agents and their paired devices that you trust to see and interact with every
+open Chrome window and signed-in browser session on that desktop. This does
+not migrate, copy, or merge browser data or share any other agent capability.
+
+On reconnect, listed Riptide pairings use that same desktop for browser
+capture, reviewed input, and the phone's **Open Hermes browser** handoff. The
+desktop's human control lease applies to all members, and input must follow
+the latest capture across agents. Unlisted pairings, non-Riptide tools, and
+the agents' own chats, workspaces, and account integrations are unchanged.
+Before opening a sign-in page, agents call `computer_use(action="status")` to
+distinguish an isolated route from a shared one without opening Chrome. If the
+owner policy changes, the old connector reports that a reconnect is required
+and does not open or operate the browser. The status is about desktop routing;
+the agent must still verify the requested Chrome profile on that desktop.
+Check **Open Hermes browser** from two listed pairings and confirm you see the
+same tab; take control from one and confirm agent capture is blocked until
+handback. To revert, remove the member or the policy file and reconnect the
+affected chats to discard their old browser connector processes. The Chrome
+data stays in the owner's original desktop.
+
 ## Local Codex handoff proof
 
 The debug build can also talk directly to a native Codex App Server on the same Mac. This proof path requires an explicit loopback WebSocket URL, a bearer token, and an absolute disposable workspace, supplied at launch as `RIPTIDE_CODEX_URL`, `RIPTIDE_CODEX_BEARER`, and `RIPTIDE_CODEX_WORKSPACE`. Use the `SIMCTL_CHILD_` prefix with `simctl launch`. Keep the listener on `127.0.0.1`, require capability-token authentication, and never put the token in the repo.

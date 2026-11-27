@@ -1,9 +1,11 @@
 """Prepare a trusted Hermes profile for Chrome computer use."""
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+import fcntl
 from io import StringIO
+import json
 import os
 from pathlib import Path
 import stat
@@ -12,6 +14,7 @@ from ssh_pairing_files import Edit, PROFILE, read_owned, require
 
 CHROME = Path("/usr/bin/google-chrome-stable")
 SKILL = Path("skills/riptide-browser-handoff/SKILL.md")
+SHARED_BROWSER = "riptide-shared-browser.json"
 
 
 def absolute_path(value):
@@ -26,6 +29,53 @@ def owned_directory(path):
     info = path.lstat()
     require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o022,
             f"Use an owner-controlled directory at {path}.")
+
+
+@dataclass(frozen=True)
+class SharedBrowser:
+    home: Path
+    lock: Path
+
+    @contextmanager
+    def turn(self):
+        # All admitted MCP connectors for this screen share one ordering. A
+        # capture from one connector cannot authorize input after another
+        # connector has taken an action, even when Hermes still says "agent".
+        with os.fdopen(os.open(self.lock, os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR, 0o600), "r+") as stream:
+            info = os.fstat(stream.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o022,
+                    "Invalid shared Chrome operation lock.")
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            generation = int(stream.read() or "0") + 1
+            stream.seek(0)
+            stream.write(str(generation))
+            stream.truncate()
+            stream.flush()
+            yield generation
+
+
+def shared_browser(profile_home):
+    """Resolve a host-owner opt-in without taking a desktop from chat/tool input."""
+    home = Path(profile_home)
+    named = home.parent.name == "profiles"
+    root = home.parent.parent if named else home
+    source, _ = read_owned(root / SHARED_BROWSER)
+    if source is None:
+        return None
+    owned_directory(root)
+    config = json.loads(source)
+    require(isinstance(config, dict) and set(config) == {"owner", "members"},
+            "Invalid shared Chrome policy.")
+    owner, members = config["owner"], config["members"]
+    require(isinstance(members, list) and all(isinstance(slug, str) and PROFILE.fullmatch(slug) for slug in members)
+            and isinstance(owner, str) and owner in members, "Invalid shared Chrome owner or members.")
+    if (home.name if named else "default") not in members:
+        return None
+    if owner != "default":
+        owned_directory(root / "profiles")
+    owner_home = root if owner == "default" else root / "profiles" / owner
+    owned_directory(owner_home)
+    return SharedBrowser(owner_home, root / ".riptide-shared-browser.lock")
 
 
 @dataclass(frozen=True)
