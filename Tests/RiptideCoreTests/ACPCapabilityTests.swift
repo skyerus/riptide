@@ -407,7 +407,7 @@ struct ACPCapabilityTests {
                 #expect(params?["threadId"] == "existing")
                 #expect(params?["voice"] == "juniper")
                 #expect(params?["includeStartupContext"] == .boolean(true))
-                #expect(params?["flushTranscriptTailOnSessionEnd"] == .boolean(true))
+                #expect(params?["flushTranscriptTailOnSessionEnd"] == nil)
                 return [
                     .notification("thread/realtime/started", params: [
                         "threadId": "existing", "realtimeSessionId": "this-call", "version": "v3"

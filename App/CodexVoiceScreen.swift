@@ -50,6 +50,8 @@ struct CodexVoiceScreen: View {
             }
         }
         .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ChatTheme.background.ignoresSafeArea())
         .overlay(alignment: .topTrailing) {
             if !call.finished {
                 Button("Minimize call", systemImage: "chevron.down", action: minimize)
@@ -59,11 +61,6 @@ struct CodexVoiceScreen: View {
                     .padding(12)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .presentationBackground(ChatTheme.background)
-        .presentationDetents([.medium, .large])
-        .interactiveDismissDisabled()
-
     }
 
     private func control(_ label: String, symbol: String, tint: Color,

@@ -40,8 +40,11 @@ final class CodexLiveUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label == %@", "Connected · Microphone off"), object: status
         )], timeout: 8), .completed)
-        capture(app, as: "Expanded voice call")
-        app.buttons["minimize-voice-call"].tap()
+        let minimize = app.buttons["minimize-voice-call"]
+        XCTAssertTrue(minimize.isHittable)
+        XCTAssertLessThan(minimize.frame.midY, app.frame.height * 0.2)
+        capture(app, as: "Full-screen voice call")
+        minimize.tap()
         let resume = app.buttons["resume-voice-call"]
         XCTAssertTrue(resume.waitForExistence(timeout: 5))
         let back = app.navigationBars.buttons["BackButton"]

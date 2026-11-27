@@ -562,7 +562,6 @@ public actor CodexLiveClient {
         var params: [String: JSON] = [
             "threadId": .string(id), "version": "v3", "model": "gpt-live-1.1-codex",
             "outputModality": "audio", "includeStartupContext": .boolean(threadID != nil),
-            "flushTranscriptTailOnSessionEnd": .boolean(threadID != nil),
             "voiceSessionId": .string(attempt.uuidString.lowercased()),
             "transport": ["type": "webrtc", "sdp": .string(offer)]
         ]

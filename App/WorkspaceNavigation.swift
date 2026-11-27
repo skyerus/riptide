@@ -19,7 +19,7 @@ struct WorkspaceNavigation: View {
                     }
             }
         }
-        .sheet(item: Binding(
+        .fullScreenCover(item: Binding(
             get: { workspace.calls.presentation }, set: { workspace.calls.presentation = $0 }
         )) { presentation in
             switch presentation {
@@ -28,7 +28,6 @@ struct WorkspaceNavigation: View {
             case .native(let call):
                 NativeAgentCallScreen(call: call, agent: workspace.agent(call.locator.workspace),
                                       minimize: { workspace.calls.presentation = nil })
-                    .presentationDetents([.large])
             }
         }
         .environment(workspace)

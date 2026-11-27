@@ -142,8 +142,8 @@ async def fixture(socket, live=False, watch_progress=False, compaction=False, vo
             elif voice and method == "thread/realtime/listVoices":
                 result = {"voices": {"v1": ["arbor", "cove"], "v3": ["cove", "juniper", "spruce"]}}
             elif voice and method == "thread/realtime/start" and params.get("threadId") == CHAT:
-                if params.get("voice") != "juniper" or not params.get("flushTranscriptTailOnSessionEnd"):
-                    await send({"id": request, "error": {"code": -32602, "message": "Expected the selected voice and transcript flush."}})
+                if params.get("voice") != "juniper" or "flushTranscriptTailOnSessionEnd" in params:
+                    await send({"id": request, "error": {"code": -32602, "message": "Expected the selected voice with standard hangup routing."}})
                     continue
                 await notify("thread/realtime/started", {"realtimeSessionId": "fixture-voice", "version": "v3"})
                 await notify("thread/realtime/sdp", {"sdp": "v=0 fixture answer"})
