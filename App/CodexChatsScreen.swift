@@ -1,113 +1,61 @@
 import RiptideCore
 import SwiftUI
 
-struct CodexChatsScreen: View {
+struct CodexMainChatScreen: View {
     let endpoint: CodexLocalEndpoint
-    let name: String
-    private let opensLastChat: Bool
-    private let workspaceID: String
-    @AppStorage private var lastChat: String
-    @State private var chats: [CodexChatSummary] = []
-    @State private var selected: CodexChatSummary?
-    @State private var loading = false
-    @State private var didOpen = false
-    @State private var failure: String?
-    @State private var newChat = false
-    @State private var showVoiceSettings = false
-    @State private var query = ""
+    let workspaceID: String
     @Environment(WorkspaceState.self) private var workspace
-
-    init(endpoint: CodexLocalEndpoint, name: String, selectionKey: String? = nil,
-         workspaceID: String = WorkspaceState.localID) {
-        self.endpoint = endpoint
-        self.name = name
-        opensLastChat = selectionKey != nil
-        self.workspaceID = workspaceID
-        _lastChat = AppStorage(wrappedValue: "", "codex.last-chat.\(selectionKey ?? "local-test")")
-    }
+    @State private var initialChat: CodexChatSummary?
+    @State private var resolved = false
+    @State private var failure: String?
+    @State private var attempt = 0
 
     var body: some View {
-        List {
-            if chats.isEmpty && !loading && failure == nil {
-                Text("No saved chats in this workspace.").foregroundStyle(.secondary)
-            }
-            ForEach(chats.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) }) { chat in
-                Button { selected = chat } label: {
-                    WorkspaceRow(title: chat.title, subtitle: status(chat.status), symbol: "bubble.left")
+        Group {
+            if resolved {
+                CodexSavedChatScreen(endpoint: endpoint, initialChat: initialChat, workspaceID: workspaceID, isMainChat: true)
+            } else if let failure {
+                ContentUnavailableView {
+                    Label("Chat unavailable", systemImage: "bubble.left")
+                } description: {
+                    Text(failure)
+                } actions: {
+                    Button("Retry") { attempt += 1 }.buttonStyle(.borderedProminent)
                 }
-                .accessibilityIdentifier("codex-saved-chat")
-                .contextMenu { FollowUpButton(chat: .init(workspace: workspaceID, chat: chat.id), title: chat.title) }
-            }
-            if loading { ProgressView("Opening chats…") }
-            if let failure {
-                Text(failure).font(.footnote).foregroundStyle(.secondary)
-                Button("Retry") { Task { await load() } }
+            } else {
+                ChatHistorySkeleton()
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .background(ChatTheme.background)
-        .navigationTitle(name)
+        .navigationTitle("Main Chat")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $query, prompt: "Find a Codex chat")
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button("Call Codex directly", systemImage: "phone") {
-                    workspace.calls.present(.codex(CodexVoiceCallModel(endpoint: endpoint, workspace: workspace, workspaceID: workspaceID)))
-                }
-                    .disabled(!workspace.calls.canOpen())
-                    .labelStyle(.iconOnly)
-                    .accessibilityIdentifier("call-codex-direct")
-                Menu {
-                    Button("Voice settings", systemImage: "waveform") { showVoiceSettings = true }
-                } label: { Label("Codex actions", systemImage: "ellipsis.circle") }
-                Button("New chat", systemImage: "square.and.pencil") { newChat = true }
-                    .labelStyle(.iconOnly)
-                    .accessibilityIdentifier("new-codex-chat")
-            }
-        }
-        .sheet(isPresented: $showVoiceSettings) {
-            AgentVoiceSettings(workspaceID: workspaceID, availableVoices: { try await endpoint.subscriptionVoices() })
-        }
-        .navigationDestination(item: $selected) { chat in
-            CodexSavedChatScreen(endpoint: endpoint, initialChat: chat, workspaceID: workspaceID) { lastChat = $0.id }
-        }
-        .navigationDestination(isPresented: $newChat) {
-            CodexSavedChatScreen(endpoint: endpoint, initialChat: nil, workspaceID: workspaceID) { chat in
-                lastChat = chat.id
-                if !chats.contains(where: { $0.id == chat.id }) { chats.insert(chat, at: 0) }
-            }
-        }
-        .task { await load() }
-        .refreshable { await load() }
+        .task(id: attempt) { await resolve() }
     }
 
-    private func load() async {
-        guard !loading else { return }
-        loading = true
+    private func resolve() async {
+        guard !resolved else { return }
+        if let id = workspace.mainChatID(for: workspaceID) {
+            initialChat = CodexChatSummary(id: id, title: workspace.displayName(for: .init(workspace: workspaceID, chat: id)))
+            resolved = true
+            return
+        }
         failure = nil
         let client = endpoint.makeClient()
         do {
-            chats = try await client.listSavedChats()
-            _ = workspace.updateCodexChats(chats, workspaceID: workspaceID)
-            if !didOpen {
-                didOpen = true
-                if opensLastChat { selected = chats.first { $0.id == lastChat } }
+            let chats = try await client.listSavedChats(maximumPages: 1)
+            try Task.checkCancellation()
+            workspace.rememberCodexCatalog(chats, workspaceID: workspaceID)
+            if let first = chats.first {
+                workspace.useCodexMainChat(first.id, workspaceID: workspaceID)
             }
+            if let id = workspace.mainChatID(for: workspaceID) {
+                initialChat = chats.first { $0.id == id } ??
+                    CodexChatSummary(id: id, title: workspace.displayName(for: .init(workspace: workspaceID, chat: id)))
+            }
+            resolved = true
         } catch {
             if !Task.isCancelled { failure = error.localizedDescription }
         }
         await client.close()
-        loading = false
-    }
-
-    private func status(_ status: CodexChatStatus) -> String {
-        switch status {
-        case .approval: "Approval needed"
-        case .input: "Waiting for input"
-        case .active: "In progress"
-        case .idle, .unknown: ""
-        }
     }
 }
 
@@ -115,12 +63,10 @@ struct CodexSavedChatScreen: View {
     let endpoint: CodexLocalEndpoint
     let initialChat: CodexChatSummary?
     let workspaceID: String
-    var includesSwitcher = true
-    let onOpen: (CodexChatSummary) -> Void
+    var isMainChat = false
     @State private var session: CodexWorkspaceSession?
     @State private var draft = ""
     @State private var draftAttachments: [ChatAttachment] = []
-    @State private var showChats = false
     @State private var showVoiceSettings = false
     @State private var showModelPicker = false
     @State private var composerHeight: CGFloat = 0
@@ -130,6 +76,7 @@ struct CodexSavedChatScreen: View {
     @Environment(WorkspaceState.self) private var workspace
 
     private var chat: CodexChatSummary? { session?.chat }
+    private var title: String { isMainChat ? "Main Chat" : chat?.title ?? initialChat?.title ?? "New chat" }
     private var turns: [CodexTranscriptTurn] { session?.turns ?? [] }
     private var activeTurnID: String? { session?.activeTurnID }
     private var hasCompletedToolCalls: Bool {
@@ -184,35 +131,33 @@ struct CodexSavedChatScreen: View {
         .modifier(ChatModelPicker(settings: composerSettings, composerHeight: composerHeight,
                                   chatID: chatKey?.chat, isExpanded: $showModelPicker))
         .background(ChatTheme.background)
-        .navigationTitle(chat?.title ?? initialChat?.title ?? "New chat")
+        .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                let name = workspace.agent(workspaceID)?.name ?? "Codex"
-                let title = chat?.title ?? initialChat?.title ?? "New chat"
-                Button { showChats = true } label: {
-                    WorkspaceChatHeading(title: title, workspaceName: name)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(title)
-                .accessibilityValue(name)
-                .accessibilityHint("Open saved Codex chats")
-                .accessibilityIdentifier("codex-chat-heading")
+                WorkspaceChatHeading(title: title, workspaceName: workspace.agent(workspaceID)?.name ?? "Codex")
+                    .accessibilityIdentifier("chat-heading")
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if includesSwitcher { WorkspaceSwitcherButton() }
-                if let chat, let chatKey {
-                    Menu {
+                Menu {
+                    if let chatKey {
                         if hasCompletedToolCalls {
                             ToolCallsMenuButton(showsCompletedCalls: $showsCompletedToolCalls)
                         }
-                        FollowUpButton(chat: chatKey, title: chat.title)
-                        Button("Voice settings", systemImage: "waveform") { showVoiceSettings = true }
-                            .accessibilityIdentifier("codex-voice-settings")
-                        Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
-                    } label: { Label("Chat actions", systemImage: "ellipsis.circle") }
-                    .accessibilityIdentifier("codex-chat-actions")
-                }
+                        FollowUpButton(chat: chatKey, title: title)
+                    }
+                    Button("Call Codex directly", systemImage: "phone") {
+                        workspace.calls.present(.codex(CodexVoiceCallModel(endpoint: endpoint, workspace: workspace,
+                                                                          workspaceID: workspaceID)))
+                    }
+                    .disabled(!workspace.calls.canOpen())
+                    .accessibilityIdentifier("call-codex-direct")
+                    Button("Voice settings", systemImage: "waveform") { showVoiceSettings = true }
+                        .accessibilityIdentifier("codex-voice-settings")
+                    WorkspaceSearchButton()
+                    Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
+                } label: { Label("Chat actions", systemImage: "ellipsis.circle") }
+                .accessibilityIdentifier("codex-chat-actions")
                 Button("Call in this chat", systemImage: "phone") {
                     if workspace.calls.active?.chat == chatKey, workspace.calls.active != nil { workspace.calls.resume() }
                     else if let session {
@@ -228,11 +173,9 @@ struct CodexSavedChatScreen: View {
         .sheet(isPresented: $showVoiceSettings) {
             AgentVoiceSettings(workspaceID: workspaceID, availableVoices: { try await endpoint.subscriptionVoices() })
         }
-        .navigationDestination(isPresented: $showChats) {
-            CodexChatsScreen(endpoint: endpoint, name: workspace.agent(workspaceID)?.name ?? "Codex", workspaceID: workspaceID)
-        }
         .task {
-            let active = session ?? workspace.codexSession(endpoint: endpoint, initialChat: initialChat, workspaceID: workspaceID)
+            let active = session ?? workspace.codexSession(endpoint: endpoint, initialChat: initialChat, workspaceID: workspaceID,
+                                                           isMainChat: isMainChat)
             session = active
             workspace.retain(active)
             active.start()
@@ -247,9 +190,8 @@ struct CodexSavedChatScreen: View {
     }
 
     private func visitIfReady() {
-        guard ready, let chat, let chatKey else { return }
-        onOpen(chat)
-        workspace.visit(chatKey, title: chat.title)
+        guard ready, let chatKey else { return }
+        workspace.visit(chatKey, title: title)
     }
 
     private var transcript: some View {

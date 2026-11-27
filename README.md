@@ -13,7 +13,7 @@ xcodegen generate
 open Riptide.xcodeproj
 ```
 
-Run the **Riptide** scheme to connect your first agent. To try the local fixtures instead, set `RIPTIDE_DEMO=1` in the Debug scheme's Run environment. The demo opens on Inbox with sample OpenClaw and Hermes agents. Open **Agents** and tap an avatar to see its main chat and saved side chats.
+Run the **Riptide** scheme to connect your first agent. To try the local fixtures instead, set `RIPTIDE_DEMO=1` in the Debug scheme's Run environment. The demo opens on Inbox with sample OpenClaw and Hermes agents. In **Agents**, tap an avatar to open its Main Chat. Tap another avatar above the conversation to switch agents, or tap **Side chats** to find or start a chat with the current agent.
 
 The composer’s model picker and context ring show session-specific settings and simulated usage from the demo backend. Send any text to see a streamed reply, tool status and a Markdown table; include `approval` to try the permission card. Chats and their settings stay in the app’s local fixture store across relaunches.
 

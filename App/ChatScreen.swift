@@ -6,7 +6,6 @@ struct ChatScreen: View {
     var voiceRemote: RemoteProfile? = nil
     var remoteStore: RemoteStore? = nil
     var initialChatID: String? = nil
-    @State private var showChats = false
     @State private var showModelPicker = false
     @State private var composerHeight: CGFloat = 0
     @State private var landing = true
@@ -30,6 +29,7 @@ struct ChatScreen: View {
     @Environment(WorkspaceState.self) private var workspace
 
     private var agentName: String { workspace.agent(model.target.id)?.name ?? model.target.name }
+    private var title: String { model.title(for: initialChatID ?? model.target.mainSessionID) }
 
     private var chatKey: WorkspaceChatID { .init(workspace: model.target.id, chat: model.selectedID) }
     private var dictationTranscriber: DictationTranscriber? {
@@ -83,12 +83,7 @@ struct ChatScreen: View {
                     Button("Retry") { openAttempt += 1 }
                         .buttonStyle(.borderedProminent)
                     Button("Open Main Chat") {
-                        Task {
-                            model.selectMain()
-                            couldNotOpen = false
-                            await model.showMain()
-                            visit()
-                        }
+                        workspace.openMainChat(model.target.id)
                     }
                     .buttonStyle(.bordered)
                 }
@@ -97,22 +92,13 @@ struct ChatScreen: View {
             }
         }
         .background(ChatTheme.background.ignoresSafeArea())
-        .navigationTitle(model.title)
+        .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarRole(.editor)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Button {
-                    showChats = true
-                } label: {
-                    WorkspaceChatHeading(title: model.title, workspaceName: agentName)
-                }
-                .buttonStyle(.plain)
-                .workspaceFlickNavigation(model.target.id)
-                .accessibilityLabel(model.title)
-                .accessibilityValue(agentName)
-                .accessibilityHint("Switch or start a chat")
-                .accessibilityIdentifier("chats-button")
+                WorkspaceChatHeading(title: title, workspaceName: agentName)
+                    .accessibilityIdentifier("chat-heading")
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
@@ -130,6 +116,7 @@ struct ChatScreen: View {
                     if workspace.supportsHermesGroups(model.target.id) {
                         Button("Group chats", systemImage: "person.2") { workspace.showSidebar(.groups) }
                     }
+                    WorkspaceSearchButton()
                     Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                 } label: {
                     Label("Chat actions", systemImage: "ellipsis.circle")
@@ -148,6 +135,7 @@ struct ChatScreen: View {
                                 Task {
                                     if await model.createChat(openClaw: voiceRemote.kind == .openClaw) {
                                         startCall()
+                                        workspace.open(model.target.id, chat: model.selectedID)
                                     } else if let error = model.listError {
                                         voiceError = error
                                     }
@@ -158,9 +146,6 @@ struct ChatScreen: View {
                         }
                 }
             }
-        }
-        .sheet(isPresented: $showChats) {
-            ChatPicker(model: model, openClaw: voiceRemote?.kind == .openClaw)
         }
         .sheet(isPresented: $pairingVoice) {
             if let voiceRemote, let remoteStore { PairNativeVoiceScreen(remote: voiceRemote, store: remoteStore) }
@@ -227,7 +212,7 @@ struct ChatScreen: View {
             if let disconnectedChat { await model.open(disconnectedChat.chat) }
         }
         .onDisappear {
-            workspace.leave(chatKey)
+            workspace.leave(.init(workspace: model.target.id, chat: initialChatID ?? model.target.mainSessionID))
         }
     }
 

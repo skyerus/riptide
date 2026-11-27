@@ -35,11 +35,8 @@ final class AgentRenameUITests: XCTestCase {
         XCTAssertTrue(agent.waitForExistence(timeout: 10))
         let agentID = agent.identifier
         agent.tap()
-        let main = app.buttons["sidebar-main-chat"]
-        XCTAssertTrue(main.waitForExistence(timeout: 10))
-        main.tap()
 
-        let heading = app.buttons["chats-button"]
+        let heading = app.chatHeading
         XCTAssertTrue(heading.waitForExistence(timeout: 10))
         XCTAssertEqual(heading.value as? String, "Hermes VPS")
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
@@ -52,9 +49,6 @@ final class AgentRenameUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [renamed], timeout: 10), .completed)
         capture(app, "renamed-agent-chat")
 
-        app.buttons["BackButton"].tap()
-        XCTAssertTrue(main.waitForExistence(timeout: 10))
-        XCTAssertEqual(app.buttons["agent-workspace-heading"].label, "Harbor")
         app.buttons["BackButton"].tap()
         let updated = app.showAgentGrid().buttons[agentID]
         XCTAssertEqual(updated.label, "Harbor")

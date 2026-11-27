@@ -24,7 +24,7 @@ final class AgentChatsUITests: XCTestCase {
         XCTAssertFalse(timer.exists)
         capture(app, as: "Hermes after progress disappears")
         app.navigationBars.buttons["BackButton"].tap()
-        app.buttons["sidebar-main-chat"].tap()
+        openMainChat(app, agent: "hermes")
         XCTAssertTrue(final.waitForExistence(timeout: 6))
         XCTAssertFalse(progress.exists)
     }
@@ -36,10 +36,9 @@ final class AgentChatsUITests: XCTestCase {
         continueAfterFailure = false
         app.launch()
 
-        app.openAgentWorkspace("hermes")
-        let newChat = app.buttons["workspace-new-chat"]
-        XCTAssertTrue(newChat.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["sidebar-main-chat"].isHittable)
+        openMainChat(app, agent: "hermes")
+        app.openSideChats()
+        let newChat = app.buttons["new-chat"]
         newChat.tap()
         XCTAssertTrue(app.staticTexts["empty-chat"].waitForExistence(timeout: 5))
         XCTAssertEqual(title(app).label, "Untitled chat")
@@ -47,14 +46,16 @@ final class AgentChatsUITests: XCTestCase {
 
         send("Launch checklist", in: app)
         XCTAssertTrue(app.staticTexts["Saved separately"].waitForExistence(timeout: 8))
-        app.navigationBars.buttons["BackButton"].tap()
-        let sideChat = app.buttons.containing(.staticText, identifier: "Launch checklist").firstMatch
+        app.returnToMainChat()
+        app.openSideChats()
+        let sideChat = app.scrollViews["chat-picker-list"].buttons["Launch checklist"]
         XCTAssertTrue(sideChat.waitForExistence(timeout: 5))
         XCTAssertTrue(newChat.isHittable)
-        capture(app, as: "Hermes workspace with New chat and saved side chat")
+        capture(app, as: "riptide-side-chats-drawer")
         sideChat.tap()
         XCTAssertTrue(app.staticTexts["Saved separately"].waitForExistence(timeout: 5))
         XCTAssertEqual(title(app).label, "Launch checklist")
+        capture(app, as: "riptide-side-chat-return")
     }
 
     @MainActor
@@ -262,7 +263,7 @@ final class AgentChatsUITests: XCTestCase {
         lastOpened.tap()
         XCTAssertTrue(history.waitForExistence(timeout: 5))
 
-        app.buttons["chats-button"].tap()
+        app.openSideChats()
         app.buttons["new-chat"].tap()
         XCTAssertTrue(app.staticTexts["empty-chat"].waitForExistence(timeout: 5))
 
@@ -284,23 +285,21 @@ final class AgentChatsUITests: XCTestCase {
         app.navigationBars.buttons["BackButton"].tap()
         XCTAssertTrue(app.buttons["sidebar-inbox"].isSelected)
 
-        app.openAgentWorkspace("openclaw")
-        let main = app.buttons["sidebar-main-chat"]
-        XCTAssertTrue(main.waitForExistence(timeout: 5))
+        openMainChat(app)
+        XCTAssertEqual(title(app).label, "Main Chat")
+        app.openSideChats()
         let saved = app.buttons["Project overview"]
         XCTAssertTrue(saved.waitForExistence(timeout: 5))
-        XCTAssertLessThan(main.frame.minY, saved.frame.minY)
-        capture(app, as: "Main chat above a saved side chat")
         saved.tap()
         XCTAssertTrue(app.staticTexts["Saved separately"].waitForExistence(timeout: 5))
         XCTAssertEqual(title(app).label, "Project overview")
         capture(app, as: "Reopened chat")
-        app.navigationBars.buttons["BackButton"].tap()
-        XCTAssertEqual(app.buttons["agent-workspace-heading"].label, "OpenClaw")
+        app.returnToMainChat()
+        XCTAssertEqual(title(app).label, "Main Chat")
     }
 
     @MainActor
-    func testChatPickerSearchesAndSwitchesBetweenMainAndSideChat() {
+    func testSideChatsDrawerSearchesAndReturnsToTheMainChat() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         continueAfterFailure = false
@@ -309,11 +308,8 @@ final class AgentChatsUITests: XCTestCase {
 
         let heading = title(app)
         let close = app.buttons["close-chats"]
-        let main = app.buttons["chat-picker-main"]
         let newChat = app.buttons["new-chat"]
-        heading.tap()
-        XCTAssertTrue(main.waitForExistence(timeout: 5))
-        XCTAssertTrue(main.isSelected)
+        app.openSideChats()
         XCTAssertTrue(app.staticTexts["No side chats yet."].waitForExistence(timeout: 5))
         newChat.tap()
         XCTAssertTrue(app.staticTexts["empty-chat"].waitForExistence(timeout: 5))
@@ -323,27 +319,20 @@ final class AgentChatsUITests: XCTestCase {
         send(chatTitle, in: app)
         let sideHeading = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", chatTitle), object: heading)
         XCTAssertEqual(XCTWaiter.wait(for: [sideHeading], timeout: 8), .completed)
-        heading.tap()
-        let side = app.scrollViews["chat-picker-list"].buttons[chatTitle]
-        XCTAssertTrue(side.waitForExistence(timeout: 5))
-        XCTAssertTrue(side.isSelected)
-        XCTAssertFalse(main.isSelected)
-        main.tap()
-        XCTAssertTrue(close.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["open-side-chats"].exists)
+        app.returnToMainChat()
         XCTAssertEqual(heading.label, "Main Chat")
 
-        heading.tap()
-        let search = app.textFields["chat-picker-search"]
+        app.openSideChats()
+        let side = app.scrollViews["chat-picker-list"].buttons[chatTitle]
         XCTAssertTrue(side.waitForExistence(timeout: 5))
+        let search = app.textFields["chat-picker-search"]
         XCTAssertTrue(search.isHittable)
         XCTAssertTrue(newChat.isHittable)
-        XCTAssertLessThan(newChat.frame.maxY, main.frame.minY)
-        XCTAssertTrue(main.isSelected)
-        capture(app, as: "Chats sheet")
+        XCTAssertLessThan(newChat.frame.maxY, side.frame.minY)
 
         search.tap()
         search.typeText("release")
-        XCTAssertTrue(main.waitForNonExistence(timeout: 5))
         XCTAssertTrue(side.isHittable)
         capture(app, as: "Chats search")
         search.typeText(" zz")
@@ -352,16 +341,16 @@ final class AgentChatsUITests: XCTestCase {
         XCTAssertFalse(side.exists)
 
         app.buttons["Clear chat search"].tap()
-        XCTAssertTrue(main.waitForExistence(timeout: 5))
+        XCTAssertTrue(side.waitForExistence(timeout: 5))
         side.tap()
         XCTAssertTrue(close.waitForNonExistence(timeout: 5))
         XCTAssertEqual(heading.label, chatTitle)
 
-        heading.tap()
-        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        app.returnToMainChat()
+        app.openSideChats()
         close.tap()
         XCTAssertTrue(close.waitForNonExistence(timeout: 5))
-        XCTAssertEqual(heading.label, chatTitle)
+        XCTAssertEqual(heading.label, "Main Chat")
     }
 
     @MainActor
@@ -483,11 +472,9 @@ final class AgentChatsUITests: XCTestCase {
 
     @MainActor
     private func openMainChat(_ app: XCUIApplication, agent: String = "openclaw") {
-        app.openAgentWorkspace(agent)
-        let row = app.buttons["sidebar-main-chat"]
-        XCTAssertTrue(row.waitForExistence(timeout: 5))
-        row.tap()
+        app.openAgentMainChat(agent)
         XCTAssertTrue(title(app).waitForExistence(timeout: 5))
+        XCTAssertEqual(title(app).label, "Main Chat")
     }
 
     @MainActor
@@ -623,7 +610,7 @@ final class AgentChatsUITests: XCTestCase {
 
     @MainActor
     private func title(_ app: XCUIApplication) -> XCUIElement {
-        app.buttons["chats-button"]
+        app.chatHeading
     }
 
     @MainActor
