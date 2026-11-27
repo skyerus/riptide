@@ -283,7 +283,7 @@ struct ChatScreen: View {
                                   paused: model.selected.queuePaused, canResume: model.selected.loaded,
                                   remove: { model.removeQueuedMessage($0, in: chatKey.chat) },
                                   resume: { model.resumeQueue(in: chatKey.chat) })
-                    if let error = model.selected.steeringError {
+                    if let error = model.selected.steeringError, !model.selected.replyTimedOut {
                         Text(error)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
@@ -439,6 +439,22 @@ struct ChatScreen: View {
                 }
                 if let notice = model.selected.notice {
                     Text(notice).font(.footnote).foregroundStyle(.secondary)
+                }
+                if model.selected.replyTimedOut && !model.selected.working {
+                    HStack {
+                        Text("Reply timed out").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Continue") {
+                            let followUp = model.selected.uncertainFollowUp
+                            if model.continueAfterTimeout(in: model.selectedID),
+                               let followUp, workspace.drafts[chatKey].trimmingCharacters(in: .whitespacesAndNewlines) == followUp {
+                                workspace.drafts[chatKey] = ""
+                            }
+                        }
+                        .accessibilityIdentifier("chat-continue-after-timeout")
+                        .disabled(model.selected.steering || !model.selected.loaded)
+                    }
+                    .font(.footnote)
                 }
                 if !model.selected.plan.isEmpty {
                     TurnPlanCard(steps: model.selected.plan)

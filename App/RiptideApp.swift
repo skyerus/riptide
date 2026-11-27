@@ -106,7 +106,9 @@ struct RiptideApp: App {
             let transport = try FixtureTransport(target: target, file: file, catalog: catalog,
                                                 historyDelay: historyDelay, pairingDemo: pairingDemo,
                                                 progressDemo: progressDemo, observedTurnDemo: observedTurnDemo,
-                                                compactionDemo: compactionDemo)
+                                                compactionDemo: compactionDemo,
+                                                timeoutOnSteer: target.id == "hermes"
+                                                    && ProcessInfo.processInfo.environment["RIPTIDE_FIXTURE_TIMEOUT_ON_STEER"] == "1")
             return AgentChatModel(target: target, client: ACPClient(transport: transport))
         } catch {
             return AgentChatModel(target: target, unavailable: "Saved demo chats could not be opened.")

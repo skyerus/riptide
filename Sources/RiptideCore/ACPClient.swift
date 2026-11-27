@@ -55,6 +55,7 @@ public enum ACPEvent: Sendable, Equatable {
     case assistantProgress(sessionID: String, messageID: String, text: String)
     case agentActivity(sessionID: String)
     case turnActivity(sessionID: String, working: Bool, steerAdmissionID: String?)
+    case replyTimedOut(sessionID: String)
     case contextCompaction(sessionID: String, ContextCompaction)
     case tool(sessionID: String, activity: ToolActivity)
     case plan(sessionID: String, steps: [TurnPlanStep])
@@ -68,7 +69,8 @@ public enum ACPEvent: Sendable, Equatable {
         case .message(let sessionID, _, _, _), .assistantProgress(let sessionID, _, _),
              .tool(let sessionID, _), .configOptions(let sessionID, _),
              .context(let sessionID, _), .permissionClosed(let sessionID, _), .plan(let sessionID, _),
-             .agentActivity(let sessionID), .turnActivity(let sessionID, _, _), .contextCompaction(let sessionID, _):
+             .agentActivity(let sessionID), .turnActivity(let sessionID, _, _), .replyTimedOut(let sessionID),
+             .contextCompaction(let sessionID, _):
             sessionID
         case .permission(let request):
             request.sessionID
@@ -219,20 +221,27 @@ public actor ACPClient {
     }
 
     func promptWithDelivery(_ text: String, sessionID: String, attachments: [ChatAttachment], photoID: UUID?,
-                            onWritten: @escaping @Sendable () async -> Void) async throws -> String {
-        try await runPrompt(text, sessionID: sessionID, collectReply: false, attachments: attachments,
-                            photoID: photoID, onWritten: onWritten).reason
+                            onWritten: @escaping @Sendable () async -> Void) async throws -> (reason: String, timedOut: Bool) {
+        let result = try await runPrompt(text, sessionID: sessionID, collectReply: false, attachments: attachments,
+                                         photoID: photoID, onWritten: onWritten)
+        return (result.reason, result.timedOut)
     }
 
     public func promptForVoice(_ text: String, sessionID: String) async throws -> String {
         let result = try await runPrompt(text, sessionID: sessionID, collectReply: true)
-        guard result.reason == "end_turn" else { return "" }
+        guard result.reason == "end_turn", !result.timedOut else { return "" }
         return result.reply
     }
 
-    /// False means the host confirmed that the turn ended before it accepted the follow-up.
+    enum SteerOutcome: Equatable, Sendable { case accepted, idle, notDelivered }
+
+    /// False means the host confirmed that it did not accept the follow-up.
     public func steer(_ text: String, sessionID: String, observedAdmissionID: String? = nil) async throws -> Bool {
-        guard loadedSessions.contains(sessionID), observedAdmissionID != nil || activePrompts.contains(sessionID) else { return false }
+        try await steerOutcome(text, sessionID: sessionID, observedAdmissionID: observedAdmissionID) == .accepted
+    }
+
+    func steerOutcome(_ text: String, sessionID: String, observedAdmissionID: String?) async throws -> SteerOutcome {
+        guard loadedSessions.contains(sessionID), observedAdmissionID != nil || activePrompts.contains(sessionID) else { return .idle }
         var params: [String: JSON] = ["sessionId": .string(sessionID), "text": .string(text)]
         params["admissionId"] = observedAdmissionID.map(JSON.string)
         let result: JSON
@@ -242,15 +251,15 @@ public actor ACPClient {
             throw ACPError.rejected("This host can’t steer an active reply. Hold Send to queue the message instead.")
         }
         switch result["status"]?.string {
-        case "steered": return true
-        case "idle": return false
+        case "steered": return .accepted
+        case "idle": return result["delivered"] == .boolean(false) ? .notDelivered : .idle
         default: throw ACPError.malformedResponse
         }
     }
 
     private func runPrompt(_ text: String, sessionID: String, collectReply: Bool,
                            attachments: [ChatAttachment] = [], photoID: UUID? = nil,
-                           onWritten: (@Sendable () async -> Void)? = nil) async throws -> (reason: String, reply: String) {
+                           onWritten: (@Sendable () async -> Void)? = nil) async throws -> (reason: String, reply: String, timedOut: Bool) {
         let capabilities = try await initialize()
         guard activePrompts.insert(sessionID).inserted else {
             throw ACPError.rejected("This conversation is already working.")
@@ -263,12 +272,13 @@ public actor ACPClient {
         }
         if collectReply { voiceReplies[sessionID] = "" }
         let blocks = try await promptBlocks(text, attachments: attachments, capabilities: capabilities, photoID: photoID)
-        if cancelledPrompts.contains(sessionID) { return ("cancelled", "") }
+        if cancelledPrompts.contains(sessionID) { return ("cancelled", "", false) }
         let response = try await call("session/prompt", [
             "sessionId": .string(sessionID), "prompt": .array(blocks)
         ], onWritten: onWritten)
         guard let reason = response["stopReason"]?.string else { throw ACPError.malformedResponse }
-        return (reason, voiceReplies[sessionID] ?? "")
+        let timedOut = response["_meta"]?["app.riptide.turnFailure"]?.string == "timeout"
+        return (reason, voiceReplies[sessionID] ?? "", timedOut)
     }
 
     private func acceptsImages(_ capabilities: JSON) -> Bool {
@@ -479,6 +489,7 @@ public actor ACPClient {
         switch update["sessionUpdate"]?.string {
         case "session_info_update":
             let metadata = update["_meta"]
+            if metadata?["app.riptide.turnFailure"]?.string == "timeout" { return .replyTimedOut(sessionID: sessionID) }
             if let item = metadata?["app.riptide.contextCompaction"],
                case .boolean(let running)? = item["running"],
                let compaction = ContextCompaction(item, running: running) {

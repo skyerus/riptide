@@ -53,6 +53,47 @@ struct ChatTests {
         #expect(model.selected.transcript.entries.contains { $0.content == .message(.user, "Attached: Report.pdf") })
     }
 
+    @Test func timedOutReplyKeepsUncertainFollowUpForExplicitContinuation() async throws {
+        let transport = try FixtureTransport(target: target, pace: .milliseconds(5), timeoutOnSteer: true)
+        let model = AgentChatModel(target: target, client: ACPClient(transport: transport))
+        await model.showMain()
+        let main = model.selectedID
+        #expect(model.submit("Show an approval"))
+        try await waitUntil { !model.selected.permissions.isEmpty }
+
+        #expect(!(await model.steer("Check the existing integration", in: main)))
+        try await waitUntil { model.selected.replyTimedOut && !model.selected.working }
+        #expect(model.selected.uncertainFollowUp == "Check the existing integration")
+        #expect(model.selected.transcript.entries.filter(\.isConversationMessage).count == 2)
+        #expect(model.completedReplies[main] == nil)
+
+        #expect(model.continueAfterTimeout(in: main))
+        #expect(!model.continueAfterTimeout(in: main))
+        #expect(model.selected.transcript.entries.contains { entry in
+            guard case .message(.user, let text) = entry.content else { return false }
+            return text.contains("verify what already happened") && text.hasSuffix("Check the existing integration")
+        })
+    }
+
+    @Test func confirmedUndeliveredSteerStartsExactlyOnceAfterObservedTimeout() async throws {
+        let main = target.mainSessionID
+        let transport = TurnActivityTransport(sessionID: main, reopened: true, supportsSteering: true)
+        let model = AgentChatModel(target: target, client: ACPClient(transport: transport))
+        await model.showMain()
+        await transport.expireSteeringTarget(confirmedUndelivered: true)
+        #expect(model.enqueue("An explicitly queued message", in: main))
+        #expect(await model.steer("Check the existing integration", in: main))
+        #expect(await transport.promptCount == 0)
+
+        try await transport.timeout()
+        try await waitUntil { await transport.promptCount == 1 }
+        #expect(model.selected.queuedMessages.map(\.text) == ["An explicitly queued message"])
+        #expect(model.selected.queuePaused)
+        #expect(model.selected.transcript.entries.filter {
+            $0.content == .message(.user, "Check the existing integration")
+        }.count == 1)
+    }
+
     @Test func openingMainJoinsAnInFlightPreloadWithoutChangingTheCurrentChatEarly() async throws {
         let fixture = try FixtureTransport(target: target, catalog: ["Side chat"])
         let transport = GatedHistoryTransport(fixture: fixture, mainID: target.mainSessionID)
@@ -417,6 +458,7 @@ private actor TurnActivityTransport: ACPTransport {
     private let reopened: Bool
     private let supportsSteering: Bool
     private var rejectsSteer = false
+    private var confirmsSteerRejection = false
     private(set) var promptCount = 0
     private(set) var cancelCount = 0
     private(set) var steers: [String] = []
@@ -454,14 +496,24 @@ private actor TurnActivityTransport: ACPTransport {
                 steers.append(text)
                 try emit(.reply(id, result: ["status": "steered"]))
             } else {
-                try emit(.reply(id, result: ["status": "idle"]))
+                var result: [String: JSON] = ["status": "idle"]
+                if confirmsSteerRejection { result["delivered"] = .boolean(false) }
+                try emit(.reply(id, result: .object(result)))
             }
         default:
             break
         }
     }
 
-    func expireSteeringTarget() { rejectsSteer = true }
+    func expireSteeringTarget(confirmedUndelivered: Bool = false) {
+        rejectsSteer = true
+        confirmsSteerRejection = confirmedUndelivered
+    }
+
+    func timeout() throws {
+        try update(["sessionUpdate": "session_info_update", "_meta": ["app.riptide.turnFailure": "timeout"]])
+        try reportActivity(false)
+    }
 
     func reportTool() throws {
         try update(["sessionUpdate": "tool_call", "toolCallId": "tool",
