@@ -24,7 +24,7 @@ struct CodexLiveScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TranscriptScrollView {
+            ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(status).font(.headline)

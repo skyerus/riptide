@@ -119,23 +119,6 @@ struct TranscriptViewport {
     }
 }
 
-struct TranscriptScrollView<Content: View>: View {
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                content
-                Color.clear.frame(height: 1)
-                    .accessibilityHidden(true)
-                    .id(TranscriptAnchor.bottom)
-            }
-        }
-    }
-}
-
-private enum TranscriptAnchor: Hashable { case bottom }
-
 private struct TranscriptViewportModifier: ViewModifier {
     @Binding var viewport: TranscriptViewport
     let chat: WorkspaceChatID?
@@ -143,18 +126,13 @@ private struct TranscriptViewportModifier: ViewModifier {
     let shortContentAlignment: UnitPoint
     let showsJumpToLatest: Bool
     @State private var fingerDown = false
+    @State private var position = ScrollPosition()
 
     func body(content: Content) -> some View {
-        ScrollViewReader { proxy in
-            transcript(content) { proxy.scrollTo(TranscriptAnchor.bottom, anchor: .bottom) }
-        }
-    }
-
-    private func transcript(_ content: Content, scrollToLatest: @escaping () -> Void) -> some View {
         content
             .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(viewport.follow.canScrollAutomatically ? .bottom : nil, for: .sizeChanges)
             .defaultScrollAnchor(shortContentAlignment, for: .alignment)
+            .scrollPosition($position)
             .onChange(of: chat, initial: true) {
                 viewport.jumpToLatest()
             }
@@ -188,7 +166,11 @@ private struct TranscriptViewportModifier: ViewModifier {
                 fingerDown = down
                 guard viewport.follow.interaction != .scrolling else { return }
                 viewport.follow.phaseChanged(down ? .touching : .idle, nearBottom: false)
-                if viewport.follow.canScrollAutomatically { scrollToLatest() }
+                if down {
+                    position = ScrollPosition()
+                } else if viewport.follow.canScrollAutomatically {
+                    scrollToLatest()
+                }
             })
             .overlay(alignment: .bottomTrailing) {
                 if showsJumpToLatest && !viewport.follow.following {
@@ -196,6 +178,11 @@ private struct TranscriptViewportModifier: ViewModifier {
                         .padding(.trailing, ChatTheme.gutter).padding(.bottom, 6)
                 }
             }
+    }
+
+    private func scrollToLatest() {
+        // The edge follows the transcript's layout when sending changes both the composer and the content.
+        position.scrollTo(edge: .bottom)
     }
 
     private nonisolated static func isAtLatest(_ geometry: ScrollGeometry) -> Bool {

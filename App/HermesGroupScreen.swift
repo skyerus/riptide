@@ -416,7 +416,7 @@ struct HermesGroupScreen: View {
     }
 
     private var transcript: some View {
-        TranscriptScrollView {
+        ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 if session.snapshot == nil && session.readError == nil {
                     ProgressView("Opening group…").frame(maxWidth: .infinity)
