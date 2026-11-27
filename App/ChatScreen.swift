@@ -227,10 +227,9 @@ struct ChatScreen: View {
                              in chat: WorkspaceChatID, queue: Bool) {
         let message = ComposerDraft(text: draft, files: attachments)
         let selected = model.selected
-        guard model.selectedID == chat.chat, selected.loaded, !selected.loading, !selected.configuring,
-              !selected.stopping, !selected.steering, !selected.sendingAttachmentDraft, message.hasContent else { return }
+        guard canSubmit(in: chat.chat), message.hasContent else { return }
         viewport.jumpToLatest()
-        if queue || (selected.working && !message.attachments.isEmpty) {
+        if !selected.loaded || queue || (selected.working && !message.attachments.isEmpty) {
             if model.enqueue(message.text, attachments: message.attachments, in: chat.chat) { message.clear() }
         } else if selected.working {
             Task {
@@ -242,6 +241,13 @@ struct ChatScreen: View {
             _ = model.submit(message.text, attachments: message.attachments, onWritten: message.clear,
                              onRejected: message.restoreIfEmpty)
         }
+    }
+
+    private func canSubmit(in sessionID: String) -> Bool {
+        let selected = model.selected
+        guard model.selectedID == sessionID, !selected.configuring, !selected.stopping,
+              !selected.steering, !selected.sendingAttachmentDraft else { return false }
+        return (selected.loaded && !selected.loading) || model.canQueueWhileConnecting(in: sessionID)
     }
 
     private var chat: some View {
@@ -272,6 +278,7 @@ struct ChatScreen: View {
             if !resolvingInitialChat {
                 VStack(spacing: 0) {
                     ComposerQueue(messages: selected.queuedMessages, sendingID: selected.sendingQueuedID,
+                                  waitingForConnection: !selected.loaded && !selected.queuePaused,
                                   paused: model.selected.queuePaused, canResume: model.selected.loaded,
                                   remove: { model.removeQueuedMessage($0, in: chatKey.chat) },
                                   resume: { model.resumeQueue(in: chatKey.chat) })
@@ -310,13 +317,13 @@ struct ChatScreen: View {
                         editorFocus: $composerFocused,
                         acceptsImages: selected.acceptsImages,
                         attachmentByteLimit: ChatAttachment.acpByteLimit,
+                        attachmentsAvailable: selected.loaded,
                         privateFileTransfer: workspace.privateFileTransfer(for: chatKey.workspace),
                         settings: settings,
                         context: selected.context,
-                        ready: selected.loaded,
+                        ready: selected.loaded || model.canQueueWhileConnecting(in: chatKey.chat),
                         canDictate: selected.loaded,
-                        canSubmit: selected.loaded && !selected.loading && !selected.configuring
-                            && !selected.stopping && !selected.steering && !selected.sendingAttachmentDraft,
+                        canSubmit: canSubmit(in: chatKey.chat),
                         transcribe: dictationTranscriber,
                         submission: submission, stopping: selected.stopping,
                         stop: selected.canStop ? { Task { await model.stop() } } : nil,

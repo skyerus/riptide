@@ -315,6 +315,7 @@ struct ComposerAction: View {
 struct ComposerQueue: View {
     let messages: [QueuedChatMessage]
     let sendingID: UUID?
+    var waitingForConnection = false
     let paused: Bool
     let canResume: Bool
     let remove: (UUID) -> Void
@@ -361,7 +362,11 @@ struct ComposerQueue: View {
                     .font(.subheadline)
                     .presentationCompactAdaptation(.popover)
                 }
-                if paused {
+                if waitingForConnection {
+                    Spacer(minLength: 8)
+                    Text("Sends when connected").foregroundStyle(.secondary)
+                        .accessibilityIdentifier("queue-waiting-for-connection")
+                } else if paused {
                     Spacer(minLength: 8)
                     Button("Resume queue", action: resume).disabled(!canResume)
                 }
