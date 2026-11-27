@@ -316,6 +316,32 @@ struct ChatTests {
         #expect(model.selected.transcript.latestAssistantEntryID != nil)
     }
 
+    @Test(arguments: [false, true])
+    func restoredProgressIsVisibleOnlyWhileTheTurnIsActive(completesDuringLoad: Bool) async throws {
+        let target = AgentTarget.demos[1]
+        let transport = TurnActivityTransport(sessionID: target.mainSessionID, reopened: true,
+                                              loadProgress: completesDuringLoad ? .completed : .working)
+        let model = AgentChatModel(target: target, client: ACPClient(transport: transport))
+        await model.showMain()
+        let progress = ChatEntry.Content.message(.assistant, "Checking the current changes.")
+        let final = ChatEntry.Content.message(.assistant, "The review is ready.")
+        if completesDuringLoad {
+            #expect(!model.selected.working)
+            let messages = model.selected.transcript.visibleEntries(showCompletedToolCalls: false).map(\.content)
+            #expect(!messages.contains(progress))
+            #expect(messages.contains(final))
+        } else {
+            #expect(model.selected.working)
+            #expect(model.selected.transcript.visibleEntries(showCompletedToolCalls: false).contains { $0.content == progress })
+            try await transport.complete()
+            try await waitUntil { !model.selected.working }
+            let messages = model.selected.transcript.visibleEntries(showCompletedToolCalls: false).map(\.content)
+            #expect(!messages.contains(progress))
+            #expect(messages.contains(final))
+        }
+        #expect(await transport.promptCount == 0)
+    }
+
     @Test(arguments: [false, true], [false, true])
     func reconnectRestoresAnActiveHermesTurnWithoutResubmitting(supportsSteering: Bool, queueFollowUp: Bool) async throws {
         let target = AgentTarget.demos[1]
@@ -586,22 +612,26 @@ private actor GatedHistoryTransport: ACPTransport {
 }
 
 private actor TurnActivityTransport: ACPTransport {
+    enum LoadProgress { case working, completed }
+
     nonisolated let incoming: AsyncThrowingStream<Data, any Error>
     private let output: AsyncThrowingStream<Data, any Error>.Continuation
     private let sessionID: String
     private let reopened: Bool
     private let supportsSteering: Bool
+    private let loadProgress: LoadProgress?
     private var rejectsSteer = false
     private var confirmsSteerRejection = false
     private(set) var promptCount = 0
     private(set) var cancelCount = 0
     private(set) var steers: [String] = []
 
-    init(sessionID: String, reopened: Bool, supportsSteering: Bool = false) {
+    init(sessionID: String, reopened: Bool, supportsSteering: Bool = false, loadProgress: LoadProgress? = nil) {
         (incoming, output) = AsyncThrowingStream.makeStream()
         self.sessionID = sessionID
         self.reopened = reopened
         self.supportsSteering = supportsSteering
+        self.loadProgress = loadProgress
     }
 
     func send(_ data: Data) async throws {
@@ -617,6 +647,12 @@ private actor TurnActivityTransport: ACPTransport {
                 try update(["sessionUpdate": "user_message_chunk", "messageId": "prompt",
                             "content": ["type": "text", "text": "Review the project"]])
                 try reportActivity(true)
+                if let loadProgress {
+                    try update(["sessionUpdate": "agent_message_chunk", "messageId": "progress",
+                                "content": ["type": "text", "text": "Checking the current changes."],
+                                "_meta": ["app.riptide.assistantProgress": .boolean(true)]])
+                    if loadProgress == .completed { try complete() }
+                }
             }
             try emit(.reply(id, result: [:]))
         case "session/prompt":
