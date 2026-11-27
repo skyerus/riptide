@@ -58,6 +58,7 @@ public enum NativeVoiceError: LocalizedError, Equatable {
     case invalidEndpoint, invalidReply, unavailable, authentication, expired
     case openClawPairingRequired(String)
     case gatewayUnavailable
+    case sshTalkUnavailable, timedOut
 
     public var errorDescription: String? {
         switch self {
@@ -68,6 +69,8 @@ public enum NativeVoiceError: LocalizedError, Equatable {
         case .expired: "This voice attempt has already ended. Start a new call."
         case .openClawPairingRequired(let id): "Approve OpenClaw device request \(id) on the Gateway, then tap Pair again."
         case .gatewayUnavailable: "The gateway did not accept this voice session. Check Talk settings and chat permissions."
+        case .sshTalkUnavailable: "Hermes Talk isn’t enabled for this SSH pairing. Check the voice setup on the host."
+        case .timedOut: "The voice host took too long to reply. Try calling again."
         }
     }
 }

@@ -143,7 +143,7 @@ struct ChatScreen: View {
                         .contextMenu {
                             Button("New voice chat", systemImage: "plus.bubble") {
                                 guard let voiceRemote, let remoteStore else { return }
-                                guard remoteStore.voice(for: voiceRemote) != nil else { pairingVoice = true; return }
+                                guard remoteStore.hasVoiceRoute(for: voiceRemote) else { pairingVoice = true; return }
                                 Task {
                                     if await model.createChat(openClaw: voiceRemote.kind == .openClaw) {
                                         startCall()
@@ -350,7 +350,7 @@ struct ChatScreen: View {
 
     private func startCall() {
         guard let voiceRemote, let remoteStore, model.selected.loaded, activeCall == nil else { return }
-        guard remoteStore.voice(for: voiceRemote) != nil else { pairingVoice = true; return }
+        guard remoteStore.hasVoiceRoute(for: voiceRemote) else { pairingVoice = true; return }
         do {
             let link = try remoteStore.voiceLink(for: voiceRemote)
             activeCall = ChatCall(chatID: model.selectedID, kind: voiceRemote.kind, link: link)

@@ -19,7 +19,7 @@ from ssh_pairing_files import Edit, key_command, lock_keys, read_owned, require
 
 HOST = Path(__file__).resolve().parent
 PAYLOAD = ("ssh_acp.py", "hermes_screen.py", "hermes_groups.py", "hermes_browser_mcp.py", "codex_dictation.py",
-           "attention_relay.py", "hermes_attention.py", "hermes_pairing.py", "agent_pairing_mcp.py",
+           "attention_relay.py", "hermes_attention.py", "hermes_pairing.py", "hermes_ssh_talk.py", "agent_pairing_mcp.py",
            "agent_profile.py", "mcp_stdio.py", "ssh_pairing_files.py", "hermes_chrome_profile.py")
 RESOURCES = ("hermes-browser-handoff/SKILL.md",)
 
@@ -73,7 +73,7 @@ def stage(releases, revision):
     return destination / "ssh_acp.py"
 
 
-def verify(argv):
+def verify(argv, verify_talk=False):
     def run(route, request):
         result = subprocess.run(argv, env={**os.environ, "SSH_ORIGINAL_COMMAND": route},
                                 input=request, text=True, capture_output=True,
@@ -84,6 +84,9 @@ def verify(argv):
     if "--codex-dictation-auth" in argv[:argv.index("--")]:
         reply = json.loads(run("riptide-dictation", "{}\n"))
         require(reply == {"error": "invalidAudio"}, "The staged dictation route did not accept the request.")
+    if verify_talk:
+        reply = json.loads(run("riptide-hermes-talk", '{"operation":"status"}\n'))
+        require(reply == {"ok": True}, "The staged SSH call route could not reach subscription-backed Hermes Talk.")
     if "--hermes-screen" in argv:
         require(run("riptide-hermes-screen", "") == "", "The Hermes screen command did not close cleanly.")
     if "--hermes-browser-mcp" in argv:
@@ -140,7 +143,7 @@ def verify(argv):
 
 def update(keys, fingerprint, releases, previous, revision, attention_socket=None, pairing_config=None,
            enable_hermes_groups=False, agent_profile_state=None, browser_mcp=None, previous_releases=None,
-           hermes_screen=None, codex_dictation_auth=None):
+           hermes_screen=None, codex_dictation_auth=None, hermes_talk_config=None):
     directory = releases.lstat()
     require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid() and not directory.st_mode & 0o022,
             "Use an existing release directory controlled by the deployment account.")
@@ -164,6 +167,12 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
                 prefix[prefix.index("--codex-dictation-auth") + 1] = str(codex_dictation_auth)
             else:
                 prefix.extend(["--codex-dictation-auth", str(codex_dictation_auth)])
+        if hermes_talk_config is not None:
+            require(hermes_talk_config.is_absolute(), "Use an absolute Hermes Talk configuration path.")
+            if "--hermes-talk-config" in prefix:
+                prefix[prefix.index("--hermes-talk-config") + 1] = str(hermes_talk_config)
+            else:
+                prefix.extend(["--hermes-talk-config", str(hermes_talk_config)])
         if attention_socket is not None:
             from hermes_attention import exchange
             require(attention_socket.is_absolute(), "Use an absolute notification socket path.")
@@ -210,7 +219,7 @@ def update(keys, fingerprint, releases, previous, revision, attention_socket=Non
             else:
                 prefix.extend(["--hermes-browser-mcp", str(browser_python), str(browser_source)])
         argv = [*prefix, "--", *agent]
-        verify(argv)
+        verify(argv, verify_talk=hermes_talk_config is not None)
         command = shlex.join(argv).replace('"', r'\"')
         after = (source[:start] + f'command="{command}"' + source[end:]).encode()
         if after != original:
@@ -230,6 +239,8 @@ def main():
     parser.add_argument("--pairing-config", type=Path)
     parser.add_argument("--codex-dictation-auth", type=Path,
                         help="Enable dictation for this key with an absolute Codex auth file path.")
+    parser.add_argument("--hermes-talk-config", type=Path,
+                        help="Enable subscription calls for this key with a private Hermes Talk configuration.")
     parser.add_argument("--agent-profile-state", type=Path,
                         help="Absolute per-agent display name file inside a private directory.")
     parser.add_argument("--hermes-screen", type=Path, nargs=2, metavar=("PROFILE_HOME", "HERMES"),
@@ -247,7 +258,7 @@ def main():
         update(args.authorized_keys, args.fingerprint, args.releases_dir, args.previous, args.revision,
                args.attention_socket, args.pairing_config, args.enable_hermes_groups, args.agent_profile_state,
                args.hermes_browser_mcp, args.previous_releases_dir, args.hermes_screen,
-               codex_dictation_auth=args.codex_dictation_auth)
+               codex_dictation_auth=args.codex_dictation_auth, hermes_talk_config=args.hermes_talk_config)
     except subprocess.TimeoutExpired:
         parser.exit(1, "The staged SSH command timed out during verification.\n")
     except (OSError, ValueError) as error:

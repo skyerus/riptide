@@ -2,6 +2,41 @@ import XCTest
 
 final class HermesSSHUITests: XCTestCase {
     @MainActor
+    func testCallsUsingAnExistingSSHPairing() throws {
+        guard let label = ProcessInfo.processInfo.environment["RIPTIDE_SSH_TALK_TEST_AGENT"] else {
+            throw XCTSkip("Provide an existing SSH pairing to a Hermes Talk test backend.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_NATIVE_VOICE_CHECK"] = "1"
+        app.launch()
+
+        let hermes = app.showAgentGrid().buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
+        XCTAssertTrue(hermes.waitForExistence(timeout: 12))
+        hermes.tap()
+        let main = app.buttons["sidebar-main-chat"]
+        XCTAssertTrue(main.waitForExistence(timeout: 12))
+        main.tap()
+        let call = app.buttons["native-call-in-chat"]
+        let ready = NSPredicate(format: "exists == true AND enabled == true")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: call)], timeout: 25), .completed)
+        call.tap()
+
+        XCTAssertTrue(app.staticTexts["Hermes Talk"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.navigationBars["Pair Hermes voice"].exists)
+        let status = app.staticTexts["native-voice-status"]
+        let connected = NSPredicate(format: "label == %@", "Connected · Microphone off")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: connected, object: status)], timeout: 50),
+                       .completed, status.label)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Hermes Talk call using an existing SSH pairing"
+        capture.lifetime = .keepAlways
+        add(capture)
+        app.buttons["End call"].tap()
+        XCTAssertTrue(status.waitForNonExistence(timeout: 12))
+    }
+
+    @MainActor
     func testNativeBrowserRequestResumesTheSameTurn() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let label = environment["RIPTIDE_HERMES_SCREEN_AGENT"],

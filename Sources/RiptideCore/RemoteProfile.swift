@@ -113,6 +113,15 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
         return .webSocket(at: url, bearer: credential)
     }
 
+    public var canUseSSHTalk: Bool { kind == .hermes && sshHostFingerprint != nil }
+
+    public func makeHermesSSHTalk(credential: String) -> (any HermesTalkCalling)? {
+        guard canUseSSHTalk, SSHDeviceIdentity(privateCredential: credential) != nil else { return nil }
+        return HermesSSHTalk {
+            sshTransport(credential: credential, command: "riptide-hermes-talk")
+        }
+    }
+
     public var canOpenHermesGroups: Bool { kind == .hermes && sshHostFingerprint != nil }
 
     public func makeHermesGroups(credential: String) -> HermesGroupsClient? {

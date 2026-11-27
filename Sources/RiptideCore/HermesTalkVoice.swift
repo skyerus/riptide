@@ -15,7 +15,13 @@ public enum HermesTalkVoiceError: LocalizedError, Equatable {
     }
 }
 
-public actor HermesTalkVoice {
+public protocol HermesTalkCalling: Sendable {
+    func answer(offer: String, sessionID: String) async throws -> String
+    func poll() async throws -> HermesTalkVoice.Activity?
+    func end() async
+}
+
+public actor HermesTalkVoice: HermesTalkCalling {
     public enum Activity: Equatable, Sendable { case listening, working, result }
 
     private let profile: NativeVoiceProfile
@@ -25,7 +31,7 @@ public actor HermesTalkVoice {
     private let tab = UUID().uuidString.lowercased()
     private var context: [String: JSON]?
     private var bindingID: String?
-    private var cursor = 0
+    private var events = HermesTalkEvents()
     private var opening = false
     private var polling = false
     private var closed = false
@@ -111,29 +117,10 @@ public actor HermesTalkVoice {
         defer { polling = false }
         var params = context
         params["binding_id"] = .string(bindingID)
-        params["after"] = .integer(cursor)
+        params["after"] = .integer(events.cursor)
         let response = try await send("/live/events", body: params)
         try checkCurrent()
-        guard response["ok"] == .boolean(true), let last = response["cursor"]?.integer, last >= cursor,
-              let events = response["events"]?.array else { throw NativeVoiceError.invalidReply }
-        var activity: Activity?
-        for event in events {
-            guard let sequence = event["sequence"]?.integer, sequence > cursor, sequence - cursor == 1,
-                  sequence <= last, let type = event["type"]?.string else { throw HermesTalkVoiceError.lostBinding }
-            cursor = sequence
-            switch type {
-            case "operation":
-                if case .boolean(let pending)? = event["pending"] { activity = pending ? .working : .listening }
-            case "result":
-                activity = .result
-            case "error":
-                throw HermesTalkVoiceError.lostBinding
-            default:
-                break
-            }
-        }
-        guard cursor == last else { throw HermesTalkVoiceError.lostBinding }
-        return activity
+        return try events.accept(response)
     }
 
     public func end() async {
@@ -199,5 +186,32 @@ public actor HermesTalkVoice {
         guard let first = value.first, first.isASCII && (first.isLetter || first.isNumber),
               value.utf8.count <= limit else { return false }
         return value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) }
+    }
+}
+
+struct HermesTalkEvents {
+    private(set) var cursor = 0
+
+    mutating func accept(_ response: JSON) throws -> HermesTalkVoice.Activity? {
+        guard response["ok"] == .boolean(true), let last = response["cursor"]?.integer, last >= cursor,
+              let events = response["events"]?.array else { throw NativeVoiceError.invalidReply }
+        var activity: HermesTalkVoice.Activity?
+        for event in events {
+            guard let sequence = event["sequence"]?.integer, sequence > cursor, sequence - cursor == 1,
+                  sequence <= last, let type = event["type"]?.string else { throw HermesTalkVoiceError.lostBinding }
+            cursor = sequence
+            switch type {
+            case "operation":
+                if case .boolean(let pending)? = event["pending"] { activity = pending ? .working : .listening }
+            case "result":
+                activity = .result
+            case "error":
+                throw HermesTalkVoiceError.lostBinding
+            default:
+                break
+            }
+        }
+        guard cursor == last else { throw HermesTalkVoiceError.lostBinding }
+        return activity
     }
 }
