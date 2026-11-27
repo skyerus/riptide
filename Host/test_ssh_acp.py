@@ -54,6 +54,9 @@ class SSHACPPolicyTests(unittest.TestCase):
             ("session/list", {}),
             ("session/new", {"cwd": workspace, "mcpServers": []}),
             ("session/load", {"cwd": workspace, "sessionId": "main", "mcpServers": []}),
+            ("_riptide/session/recent", {"cwd": workspace, "sessionId": "main"}),
+            ("_riptide/session/resume", {"cwd": workspace, "sessionId": "main", "mcpServers": [],
+                                         "checkpoint": {"rows": 4, "digest": "a" * 64}}),
             ("session/prompt", {"sessionId": "main", "prompt": [{"type": "text", "text": "Hello"}]}),
             ("_riptide/session/steer", {"sessionId": "main", "text": "Focus on the draft"}),
             ("_riptide/session/steer", {"sessionId": "main", "text": "Focus on the draft", "admissionId": "active-admission"}),
@@ -67,6 +70,20 @@ class SSHACPPolicyTests(unittest.TestCase):
         response = {"jsonrpc": "2.0", "id": 2, "result": {"outcome": {"outcome": "cancelled"}}}
         self.assertTrue(admitted(response, workspace, pending))
         self.assertFalse(admitted(response, workspace, pending))
+
+    def test_fast_history_stays_within_the_paired_workspace(self):
+        workspace = "/agent/workspace"
+        resume = {"cwd": workspace, "sessionId": "main", "mcpServers": []}
+        for method, params in (
+            ("_riptide/session/recent", {"cwd": "/other", "sessionId": "main"}),
+            ("_riptide/session/recent", {"cwd": workspace, "sessionId": "../other"}),
+            ("_riptide/session/resume", {**resume, "cwd": "/other"}),
+            ("_riptide/session/resume", {**resume, "mcpServers": [{"command": "untrusted"}]}),
+            ("_riptide/session/resume", {**resume, "checkpoint": {"rows": True, "digest": "a" * 64}}),
+            ("_riptide/session/resume", {**resume, "checkpoint": {"rows": 4, "digest": "bad"}}),
+        ):
+            with self.subTest(method=method, params=params):
+                self.assertFalse(admitted({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, workspace, set()))
 
     def test_steering_requires_a_valid_admission_when_supplied(self):
         for admission in (None, 1, "", "x" * 257):

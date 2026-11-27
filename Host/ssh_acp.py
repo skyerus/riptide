@@ -17,11 +17,16 @@ PRIVATE_FILE_LIMIT = 100 * 1024 * 1024
 PRIVATE_FILE_CHUNK = 512 * 1024
 PRIVATE_FILE_GREETING = {"version": 1, "streaming": {"chunkBytes": PRIVATE_FILE_CHUNK, "byteLimit": PRIVATE_FILE_LIMIT}}
 STAGE_ATTACHMENTS = "riptide/stageAttachments"
+FAST_RESUME = "_riptide/session/resume"
+RECENT_HISTORY = "_riptide/session/recent"
+SESSION_OPENINGS = ("session/new", "session/load", FAST_RESUME)
 REQUESTS = {
     "initialize": {"protocolVersion", "clientCapabilities", "clientInfo"},
     "session/list": {"cursor", "cwd"},
     "session/new": {"cwd", "mcpServers"},
     "session/load": {"sessionId", "cwd", "mcpServers"},
+    FAST_RESUME: {"sessionId", "cwd", "mcpServers", "checkpoint"},
+    RECENT_HISTORY: {"sessionId", "cwd"},
     "session/prompt": {"sessionId", "prompt"},
     "_riptide/session/steer": {"sessionId", "text", "admissionId"},
     "session/cancel": {"sessionId"},
@@ -220,9 +225,21 @@ def admitted(packet, workspace, pending):
                 and metadata["app.riptide.assistantProgress"] is True)
     if method == "session/list":
         return params.get("cwd", workspace) == workspace
-    if method in ("session/new", "session/load"):
+    if method in SESSION_OPENINGS:
         if params.get("cwd") != workspace or params.get("mcpServers") != []:
             return False
+    if method in (FAST_RESUME, RECENT_HISTORY):
+        sid = params.get("sessionId")
+        if (params.get("cwd") != workspace or not isinstance(sid, str)
+                or not re.fullmatch(r"[A-Za-z0-9._:-]{1,240}", sid)):
+            return False
+        if "checkpoint" in params:
+            checkpoint = params["checkpoint"]
+            if (not isinstance(checkpoint, dict) or set(checkpoint) != {"rows", "digest"}
+                    or type(checkpoint["rows"]) is not int or not 0 <= checkpoint["rows"] <= 1_000_000
+                    or not isinstance(checkpoint["digest"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", checkpoint["digest"])):
+                return False
     if method != "session/new" and not isinstance(params.get("sessionId"), str):
         return False
     if method == "session/set_config_option":
@@ -289,7 +306,7 @@ async def serve(workspace, command, browser_mcp=None, attention_socket=None, pai
                 if method == "initialize":
                     initialize_id = packet["id"]
                 if attention_socket:
-                    if method in ("session/new", "session/load") and len(openings) < 128:
+                    if method in SESSION_OPENINGS and len(openings) < 128:
                         openings[packet["id"]] = packet["params"].get("sessionId")
                     if method == "session/prompt" and packet["params"]["sessionId"] in opened:
                         from hermes_attention import exchange
@@ -300,7 +317,7 @@ async def serve(workspace, command, browser_mcp=None, attention_socket=None, pai
                             await exchange(attention_socket, request)
                         except (OSError, ValueError, TimeoutError):
                             pass  # Alert availability must never interrupt a chat.
-                if connectors and method in ("session/new", "session/load"):
+                if connectors and method in SESSION_OPENINGS:
                     # Only the host can attach connectors to a validated ACP request.
                     packet["params"]["mcpServers"] = connectors
                 agent.stdin.write(json.dumps(packet, allow_nan=False).encode() + b"\n")

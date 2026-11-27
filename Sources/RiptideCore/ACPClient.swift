@@ -111,6 +111,7 @@ public actor ACPClient {
     private var nextID = 0
     private var pending: [JSON: CheckedContinuation<JSON, any Error>] = [:]
     private var replaying: [String: [ACPEvent]] = [:]
+    private var resumingHistory: [String: [JSON]] = [:]
     private var permissions: [UUID: (wireID: JSON, request: PermissionRequest)] = [:]
     private var activePrompts = Set<String>()
     private var voiceReplies: [String: String] = [:]
@@ -193,7 +194,20 @@ public actor ACPClient {
     }
 
     public func load(sessionID: String, cwd: String) async throws -> OpenedSession {
+        try await load(sessionID: sessionID, cwd: cwd, cachedHistory: nil, fastResume: false)
+    }
+
+    func load(sessionID: String, cwd: String, cachedHistory: ChatHistorySnapshot?, fastResume: Bool) async throws -> OpenedSession {
         let capabilities = try await initialize()
+        if fastResume, capabilities["_meta"]?["app.riptide.fastResume"] == .integer(1) {
+            do {
+                return try await resume(sessionID: sessionID, cwd: cwd, cache: cachedHistory, capabilities: capabilities)
+            } catch ACPError.methodUnavailable {
+                // The installed SSH wrapper may predate the negotiated adapter.
+            } catch ACPError.invalidParameters {
+                // Some saved sessions still require the connector's legacy load path.
+            }
+        }
         guard capabilities["loadSession"] == .boolean(true) else { throw ACPError.historyUnavailable }
         replaying[sessionID] = []
         defer { replaying.removeValue(forKey: sessionID) }
@@ -205,6 +219,36 @@ public actor ACPClient {
                              events: replaying[sessionID] ?? [],
                              reportedModelName: SessionConfigOption.reportedModelName(in: response),
                              acceptsImages: acceptsImages(capabilities))
+    }
+
+    func recentHistory(sessionID: String, cwd: String) async throws -> [ACPEvent] {
+        let capabilities = try await initialize()
+        guard capabilities["_meta"]?["app.riptide.fastResume"] == .integer(1) else { return [] }
+        let response = try await call("_riptide/session/recent", ["sessionId": .string(sessionID), "cwd": .string(cwd)])
+        return Self.historyEvents(response["updates"]?.array ?? [], sessionID: sessionID)
+    }
+
+    private func resume(sessionID: String, cwd: String, cache: ChatHistorySnapshot?, capabilities: JSON) async throws -> OpenedSession {
+        resumingHistory[sessionID] = []
+        defer { resumingHistory.removeValue(forKey: sessionID) }
+        var params: [String: JSON] = ["sessionId": .string(sessionID), "cwd": .string(cwd), "mcpServers": .array([])]
+        params["checkpoint"] = cache?.checkpoint.wire
+        let response = try await call("_riptide/session/resume", .object(params))
+        guard let checkpoint = ChatHistoryCheckpoint(wire: response["checkpoint"]),
+              case .boolean(let useCache)? = response["reuseHistory"], !useCache || cache != nil else {
+            throw ACPError.malformedResponse
+        }
+        let updates = (useCache ? cache?.updates ?? [] : []) + (resumingHistory[sessionID] ?? [])
+        loadedSessions.insert(sessionID)
+        return OpenedSession(id: sessionID, configOptions: response["configOptions"]?.array.map(SessionConfigOption.parse),
+                             events: Self.historyEvents(updates, sessionID: sessionID),
+                             reportedModelName: SessionConfigOption.reportedModelName(in: response),
+                             acceptsImages: acceptsImages(capabilities),
+                             historySnapshot: ChatHistorySnapshot(checkpoint: checkpoint, updates: updates))
+    }
+
+    static func historyEvents(_ updates: [JSON], sessionID: String) -> [ACPEvent] {
+        updates.compactMap { event($0, sessionID: sessionID, replaying: true) }
     }
 
     public func setConfigOption(sessionID: String, configID: String, value: String) async throws -> [SessionConfigOption] {
@@ -439,7 +483,8 @@ public actor ACPClient {
             if let id = message["id"], id.rpcID {
                 if method == "session/request_permission", let sessionID = params["sessionId"]?.string,
                    let tool = params["toolCall"], let options = params["options"]?.array {
-                    guard activePrompts.contains(sessionID) || loadedSessions.contains(sessionID) || replaying[sessionID] != nil,
+                    guard activePrompts.contains(sessionID) || loadedSessions.contains(sessionID)
+                            || replaying[sessionID] != nil || resumingHistory[sessionID] != nil,
                           !cancelledPrompts.contains(sessionID) else {
                         try? await send(.reply(id, result: ["outcome": ["outcome": "cancelled"]]))
                         return
@@ -457,6 +502,9 @@ public actor ACPClient {
                 } else {
                     try? await send(.failure(id, code: -32601, message: "Unsupported client request"))
                 }
+            } else if method == "_riptide/session/history", let sessionID = params["sessionId"]?.string,
+                      let update = params["update"] {
+                resumingHistory[sessionID]?.append(update)
             } else if method == "_riptide/agent/profile", initialization != nil,
                       let proposed = params["name"]?.string, let name = RemoteProfile.validDisplayName(proposed) {
                 await onDisplayName?(name)

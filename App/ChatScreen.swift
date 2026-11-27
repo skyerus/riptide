@@ -64,7 +64,7 @@ struct ChatScreen: View {
 
     private var awaitingHistory: Bool {
         resolvingInitialChat || (!model.selected.loaded && !model.selected.connectionLost && model.selected.error == nil &&
-                                 model.selected.transcript.entries.isEmpty && model.selected.permissions.isEmpty)
+                                 model.selected.displayTranscript.entries.isEmpty && model.selected.permissions.isEmpty)
     }
 
     private var disconnectedChat: WorkspaceChatID? {
@@ -373,9 +373,10 @@ struct ChatScreen: View {
 
     private var transcript: some View {
         let chat = model.selected
-        let latestUserMessageID = chat.transcript.latestUserMessageID
-        let firstActiveOutputID = chat.transcript.firstActiveOutputID
-        let entries = chat.transcript.visibleEntries(showCompletedToolCalls: showsCompletedToolCalls)
+        let history = chat.displayTranscript
+        let latestUserMessageID = history.latestUserMessageID
+        let firstActiveOutputID = history.firstActiveOutputID
+        let entries = history.visibleEntries(showCompletedToolCalls: showsCompletedToolCalls)
         let calls = workspace.calls.records(in: chatKey)
         var messageCount = 0
         let positions = entries.map { entry in
@@ -432,8 +433,9 @@ struct ChatScreen: View {
                 ForEach(model.selected.permissions) { request in
                     permissionCard(request)
                 }
-                if model.selected.connectionLost && model.selected.loading {
-                    Text("Reconnecting…").font(.footnote).foregroundStyle(.secondary)
+                if chat.loading && (chat.connectionLost || !history.entries.isEmpty) {
+                    Text(chat.connectionLost ? "Reconnecting…" : "Connecting…")
+                        .font(.footnote).foregroundStyle(.secondary)
                 } else if let error = model.selected.error {
                     Text(error).font(.footnote)
                     if !model.selected.loaded {
@@ -468,7 +470,7 @@ struct ChatScreen: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .accessibilityIdentifier("chat-transcript")
-        .transcriptViewport($viewport, chat: model.selected.loaded ? chatKey : nil,
+        .transcriptViewport($viewport, chat: chat.loaded || !history.entries.isEmpty ? chatKey : nil,
                             composerFocused: composerFocused, showsJumpToLatest: !pickerIsOpen)
     }
 
