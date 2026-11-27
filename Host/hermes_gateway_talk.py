@@ -28,8 +28,8 @@ class Call:
         self.recent = deque(maxlen=12)
         self.user_delta = ""
         self.user_end = None
-        self.user_output = False
         self.last_submitted = None
+        self.submitted_through = None
         self.work = None
         self.reader = self.drain = None
 
@@ -116,19 +116,21 @@ class Call:
         if event.final:
             self.recent.append((str(event.role), event.text[-1500:]))
         if event.role is rt.TranscriptRole.ASSISTANT:
-            self.user_output = True
             return
-        if self.user_output or (event.start_ms is not None and self.user_end is not None
-                                and event.start_ms > self.user_end + 1800):
+        if (event.end_ms is not None and self.submitted_through is not None
+                and event.end_ms <= self.submitted_through):
+            return
+        if event.start_ms is not None and self.user_end is not None and event.start_ms > self.user_end + 1800:
             self.user_delta = ""
-            self.last_submitted = None
-        self.user_output = False
         self.user_end = event.end_ms if event.end_ms is not None else self.user_end
-        # Provider item and turn transcripts replace their partial copy.
-        if event.final or event.finality == "item":
-            self.user_delta = event.text[-4000:]
-        else:
+        if not event.final:
+            # The subscription wire emits input transcript items as successive text chunks.
+            # An assistant backchannel can arrive between chunks of the same user utterance.
             self.user_delta = (self.user_delta + event.text)[-4000:]
+        elif not self.user_delta and event.text.strip() != self.last_submitted:
+            self.user_delta = event.text[-4000:]
+        elif self.user_delta and event.text.strip().startswith(self.user_delta.strip()):
+            self.user_delta = event.text[-4000:]
 
     async def listen(self):
         rt = self.transport.events
@@ -154,15 +156,17 @@ class Call:
     async def delegate(self, event):
         rt = self.transport.events
         try:
-            if not self.user_delta.strip():
+            spoken = (event.prompt or "").strip()
+            if not spoken and not self.user_delta.strip():
                 await asyncio.sleep(0.35)  # The provider can announce delegation before the transcript item.
-            text = self.user_delta.strip()
+            # Frameless subscription delegation can carry the provider's full user transcript.
+            text = (spoken or self.user_delta.strip())[:4000]
             self.user_delta = ""
-            identity = (text, self.user_end)
-            if not text or identity == self.last_submitted:
+            if not text:
                 await self.speak(event.delegation_id, "I missed the request. Could you say it again?")
                 return
-            self.last_submitted = identity
+            self.last_submitted = text
+            self.submitted_through = event.offset_ms if event.offset_ms is not None else self.user_end
             context = "\n".join(f"{role}: {value}" for role, value in self.recent)[-5500:]
             key = sha256(f"{self.session.session_id}\0{event.delegation_id}".encode()).hexdigest()
             receipt = await self.client.rpc("prompt.submit", session_id=self.target, input_id=f"riptide-voice-{key}",

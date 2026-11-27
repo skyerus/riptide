@@ -1,3 +1,4 @@
+from enum import StrEnum
 from pathlib import Path
 from types import SimpleNamespace as Object
 import unittest
@@ -7,11 +8,17 @@ from hermes_gateway_talk import Call
 from hermes_ssh_talk import TalkError
 
 
+class Role(StrEnum):
+    USER = 'user'
+    ASSISTANT = 'assistant'
+
+
 class HermesGatewayTalkTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.gateway = Mock()
         self.transport = Mock()
         self.transport.events.RealtimeSessionError = RuntimeError
+        self.transport.events.TranscriptRole = Role
         self.call = Call(Path('/profile'), Path('/workspace'), Path('/auth'), self.gateway, self.transport)
 
     async def test_refuses_an_unknown_chat_before_calling_the_provider(self):
@@ -30,7 +37,9 @@ class HermesGatewayTalkTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_delegation_uses_the_exact_chat_and_returns_the_durable_result(self):
         self.call.target = 'paired-chat'
-        self.call.user_delta = 'What did we decide?'
+        self.call.transcript(Object(role=Role.USER, text='What did', start_ms=4, end_ms=500, final=False))
+        self.call.transcript(Object(role=Role.ASSISTANT, text='Mm-hmm.', final=False))
+        self.call.transcript(Object(role=Role.USER, text=' we decide?', start_ms=550, end_ms=900, final=False))
         self.call.session = Object(session_id='audio-id')
         self.call.speak = AsyncMock()
         self.call.client = Object(rpc=AsyncMock(side_effect=[
@@ -38,7 +47,7 @@ class HermesGatewayTalkTests(unittest.IsolatedAsyncioTestCase):
             {'ref': {'session_id': 'paired-chat'}, 'admission_id': 'work-id', 'status': 'terminal',
              'result': {'final_response': 'We chose Friday.'}},
         ]))
-        await self.call.delegate(Object(delegation_id='delegation-id'))
+        await self.call.delegate(Object(delegation_id='delegation-id', prompt=None, offset_ms=1000))
         submit, receipt = self.call.client.rpc.await_args_list
         self.assertEqual(submit.args, ('prompt.submit',))
         self.assertEqual(submit.kwargs['session_id'], 'paired-chat')
@@ -53,6 +62,20 @@ class HermesGatewayTalkTests(unittest.IsolatedAsyncioTestCase):
             {'type': 'operation', 'sequence': 2, 'pending': False},
             {'type': 'result', 'sequence': 3},
         ])
+        self.call.transcript(Object(role=Role.USER, text='What did we decide?', start_ms=4, end_ms=900, final=True))
+        self.assertEqual(self.call.user_delta, '')
+
+    async def test_accepts_the_transcript_on_a_frameless_delegation(self):
+        self.call.target = 'paired-chat'
+        self.call.user_delta = 'The last fragment'
+        self.call.session = Object(session_id='audio-id')
+        self.call.speak = AsyncMock()
+        self.call.result = AsyncMock(return_value='We chose Friday.')
+        self.call.client = Object(rpc=AsyncMock(return_value={
+            'ref': {'session_id': 'paired-chat'}, 'admission_id': 'work-id',
+        }))
+        await self.call.delegate(Object(delegation_id='delegation-id', prompt='What day did we choose?', offset_ms=None))
+        self.assertEqual(self.call.client.rpc.await_args.kwargs['text'], 'What day did we choose?')
 
     async def test_refuses_to_speak_any_result_from_another_chat(self):
         self.call.target = 'paired-chat'
