@@ -28,10 +28,9 @@ final class AgentGridUITests: XCTestCase {
         XCTAssertTrue(app.chatHeading.waitForExistence(timeout: 8))
         XCTAssertEqual(app.chatHeading.label, "Main Chat")
         XCTAssertEqual(app.chatHeading.value as? String, "Hermes VPS")
-        XCTAssertTrue(app.buttons["main-chat-agent-hermes-studio"].isHittable)
-        XCTAssertFalse(app.buttons["main-chat-agent-hermes"].exists)
+        XCTAssertFalse(app.scrollViews["main-chat-agents"].exists)
+        XCTAssertFalse(app.buttons["open-side-chats"].exists)
         XCTAssertFalse(agentsTab.exists)
-        capture(app, "riptide-main-chat-avatars")
         app.buttons["BackButton"].tap()
         XCTAssertTrue(vps.waitForExistence(timeout: 8))
 
@@ -109,7 +108,14 @@ extension XCUIApplication {
         agent.tap()
     }
 
-    func openSideChats() {
+    var chatActions: XCUIElement {
+        buttons.matching(NSPredicate(format: "identifier IN %@", ["chat-actions", "codex-chat-actions"])).firstMatch
+    }
+
+    func openSideChats(timeout: TimeInterval = 8) {
+        let menu = chatActions
+        XCTAssertTrue(menu.waitForExistence(timeout: timeout))
+        menu.tap()
         let button = buttons["open-side-chats"]
         XCTAssertTrue(button.waitForExistence(timeout: 8))
         button.tap()
@@ -120,6 +126,6 @@ extension XCUIApplication {
         let button = buttons["return-to-main-chat"]
         XCTAssertTrue(button.waitForExistence(timeout: 8))
         button.tap()
-        XCTAssertTrue(buttons["open-side-chats"].waitForExistence(timeout: 8))
+        XCTAssertTrue(chatActions.waitForExistence(timeout: 8))
     }
 }

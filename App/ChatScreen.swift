@@ -6,6 +6,7 @@ struct ChatScreen: View {
     var voiceRemote: RemoteProfile? = nil
     var remoteStore: RemoteStore? = nil
     var initialChatID: String? = nil
+    var showSideChats: (() -> Void)? = nil
     @State private var showModelPicker = false
     @State private var composerHeight: CGFloat = 0
     @State private var landing = true
@@ -30,6 +31,7 @@ struct ChatScreen: View {
 
     private var agentName: String { workspace.agent(model.target.id)?.name ?? model.target.name }
     private var title: String { model.title(for: initialChatID ?? model.target.mainSessionID) }
+    private var chatActionsAvailable: Bool { !landing && !couldNotOpen && model.selected.loaded }
 
     private var chatKey: WorkspaceChatID { .init(workspace: model.target.id, chat: model.selectedID) }
     private var dictationTranscriber: DictationTranscriber? {
@@ -102,26 +104,31 @@ struct ChatScreen: View {
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
-                    if model.selected.transcript.hasCompletedToolCalls {
-                        ToolCallsMenuButton(showsCompletedCalls: $showsCompletedToolCalls)
+                    if let showSideChats {
+                        SideChatsButton(action: showSideChats)
                     }
-                    FollowUpButton(chat: chatKey, title: model.title)
-                    if let remote = voiceRemote, remote.canOpenHermesScreen,
-                       let credential = remoteStore?.bearer(for: remote) {
-                        Button("Open Hermes browser", systemImage: "macwindow") {
-                            openBrowser(remote, credential: credential)
+                    if chatActionsAvailable {
+                        if model.selected.transcript.hasCompletedToolCalls {
+                            ToolCallsMenuButton(showsCompletedCalls: $showsCompletedToolCalls)
                         }
-                        .accessibilityIdentifier("open-hermes-browser")
+                        FollowUpButton(chat: chatKey, title: model.title)
+                        if let remote = voiceRemote, remote.canOpenHermesScreen,
+                           let credential = remoteStore?.bearer(for: remote) {
+                            Button("Open Hermes browser", systemImage: "macwindow") {
+                                openBrowser(remote, credential: credential)
+                            }
+                            .accessibilityIdentifier("open-hermes-browser")
+                        }
+                        if workspace.supportsHermesGroups(model.target.id) {
+                            Button("Group chats", systemImage: "person.2") { workspace.showSidebar(.groups) }
+                        }
+                        WorkspaceSearchButton()
+                        Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                     }
-                    if workspace.supportsHermesGroups(model.target.id) {
-                        Button("Group chats", systemImage: "person.2") { workspace.showSidebar(.groups) }
-                    }
-                    WorkspaceSearchButton()
-                    Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                 } label: {
                     Label("Chat actions", systemImage: "ellipsis.circle")
                 }
-                .disabled(landing || couldNotOpen || !model.selected.loaded)
+                .disabled(!chatActionsAvailable && showSideChats == nil)
                 .accessibilityIdentifier("chat-actions")
                 if voiceRemote != nil {
                     Button("Call in this chat", systemImage: "phone") { startCall() }
