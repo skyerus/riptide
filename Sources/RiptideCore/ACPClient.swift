@@ -80,6 +80,7 @@ public enum ACPEvent: Sendable, Equatable {
 
 public enum ACPError: LocalizedError, Equatable {
     case disconnected, malformedResponse, protocolVersion, historyUnavailable, sessionListUnavailable
+    case fastResumeDisconnected
     case permissionExpired
     case methodUnavailable(String)
     case invalidParameters(String)
@@ -87,7 +88,7 @@ public enum ACPError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .disconnected: "The agent connection closed."
+        case .disconnected, .fastResumeDisconnected: "The agent connection closed."
         case .malformedResponse: "The agent returned an incomplete response."
         case .protocolVersion: "This agent did not negotiate ACP v1."
         case .historyUnavailable: "This agent cannot reopen saved conversations over ACP."
@@ -206,6 +207,8 @@ public actor ACPClient {
                 // The installed SSH wrapper may predate the negotiated adapter.
             } catch ACPError.invalidParameters {
                 // Some saved sessions still require the connector's legacy load path.
+            } catch ACPError.disconnected {
+                throw ACPError.fastResumeDisconnected
             }
         }
         guard capabilities["loadSession"] == .boolean(true) else { throw ACPError.historyUnavailable }

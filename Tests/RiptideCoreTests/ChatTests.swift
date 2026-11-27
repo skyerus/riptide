@@ -44,6 +44,38 @@ struct ChatTests {
         #expect(cache.read(chat) == nil)
     }
 
+    @Test func aFastResumeDisconnectRetriesWithRegularHistoryOnAFreshConnection() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = ChatHistoryCache(workspace: target.id, root: directory)
+        let chat = target.mainSessionID
+        let old = FastHistoryTransport.update("user_message_chunk", text: "Saved question")
+        let checkpoint = try #require(ChatHistoryCheckpoint(wire: FastHistoryTransport.checkpoint(rows: 1, digit: "a")))
+        cache.write(ChatHistorySnapshot(checkpoint: checkpoint, updates: [old]), chat: chat)
+        let fast = FastHistoryTransport(chat: chat)
+        let regular = GatedHistoryTransport(fixture: try FixtureTransport(target: target), mainID: chat)
+        let clients = Mutex([ACPClient(transport: fast), ACPClient(transport: regular)])
+        let model = AgentChatModel(target: target, historyCache: cache) {
+            clients.withLock { $0.removeFirst() }
+        }
+        let open = Task { await model.showMain() }
+
+        try await waitUntil { await fast.awaitingBothRequests }
+        try await fast.sendPreview()
+        try await waitUntil { model.selected.displayTranscript.entries.last?.content == .message(.assistant, "Newest reply") }
+        await fast.disconnect()
+
+        try await waitUntil { await regular.mainLoads == 1 }
+        #expect(model.selected.loading)
+        #expect(model.selected.error == nil)
+        #expect(model.selected.displayTranscript.entries.last?.content == .message(.assistant, "Newest reply"))
+        await regular.releaseHistory()
+        await open.value
+        #expect(model.selected.loaded)
+        #expect(model.selected.error == nil)
+        #expect(clients.withLock { $0.isEmpty })
+    }
+
     @Test func steeringAndQueuedFollowUpsStayWithTheirOriginalChat() async throws {
         let model = try makeModel()
         await model.showMain()
@@ -496,6 +528,8 @@ private actor FastHistoryTransport: ACPTransport {
             "updates": .array([Self.update("agent_message_chunk", text: "Newest reply")])
         ]))
     }
+
+    func disconnect() { output.finish() }
 
     func finishResume() throws {
         for update in [Self.update("user_message_chunk", text: "New question"),
