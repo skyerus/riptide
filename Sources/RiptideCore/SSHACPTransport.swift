@@ -62,9 +62,12 @@ struct SSHHostPin: Sendable {
 final class SSHACPTransport: ACPTransport {
     let incoming: AsyncThrowingStream<Data, any Error>
     private let startup: Task<(parent: any Channel, session: any Channel), any Error>
+    private let outboundFrameBytes: Int
 
     init(host: String, port: Int, username: String, identity: SSHDeviceIdentity, pin: SSHHostPin,
          command: String = "riptide-acp") {
+        outboundFrameBytes = command == "riptide-dictation"
+            ? CodexDictation.maximumRequestBytes : ACPExecChannel.maximumFrameBytes
         let (stream, output) = AsyncThrowingStream<Data, any Error>.makeStream(bufferingPolicy: .bufferingOldest(256))
         incoming = stream
         startup = Task {
@@ -137,7 +140,7 @@ final class SSHACPTransport: ACPTransport {
     }
 
     func send(_ message: Data) async throws {
-        guard !message.contains(10), message.count <= ACPExecChannel.maximumFrameBytes else {
+        guard !message.contains(10), message.count <= outboundFrameBytes else {
             throw SSHACPError.invalidFrame
         }
         let (_, session) = try await startup.value

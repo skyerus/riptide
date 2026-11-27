@@ -772,9 +772,9 @@ final class RemoteWebSocketTransport: JSONMessageTransport {
     private let socket: URLSessionWebSocketTask
     private let reader: Task<Void, Never>
 
-    init(url: URL, bearer: String? = nil) {
+    init(url: URL, bearer: String? = nil, requestTimeout: TimeInterval = 12) {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 12
+        config.timeoutIntervalForRequest = requestTimeout
         let session = URLSession(configuration: config, delegate: NoRemoteRedirects(), delegateQueue: nil)
         var request = URLRequest(url: url)
         if let bearer { request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization") }

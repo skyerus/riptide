@@ -301,7 +301,7 @@ final class WorkspaceUXUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
         app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE"] = "1"
-        app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE_LIMIT"] = "1"
+        app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE_ELAPSED"] = "588"
         continueAfterFailure = false
         app.launch()
         openMainChat(in: app, agent: "hermes")
@@ -309,11 +309,15 @@ final class WorkspaceUXUITests: XCTestCase {
         XCTAssertTrue(dictate.waitForExistence(timeout: 8))
         dictate.tap()
         let status = app.descendants(matching: .any).matching(identifier: "dictation-status").firstMatch
+        let recording = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Recording dictation"),
+                                                  object: status)
+        XCTAssertEqual(XCTWaiter.wait(for: [recording], timeout: 5), .completed)
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Recording ready"),
                                               object: status)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 8), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 12), .completed)
         let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
         XCTAssertFalse(editor.exists)
+        capture(app, as: "Dictation ready at the 9m55s cap")
         app.buttons["dictation-stop"].tap()
         XCTAssertTrue(editor.waitForExistence(timeout: 8))
         XCTAssertEqual(editor.value as? String, "Add a quick summary of the open items.")
