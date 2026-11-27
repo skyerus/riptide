@@ -95,6 +95,46 @@ class ChromeComputerUseTests(unittest.TestCase):
             with other.shared.turn():
                 self.assertIn("Another agent", self.chrome.call("computer_use", capture, None)["error"])
 
+    def test_route_status_distinguishes_isolated_and_shared_without_opening_chrome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paired, owner = (root / "profiles" / name for name in ("rack", "owner"))
+            paired.mkdir(parents=True)
+            owner.mkdir()
+            policy = root / SHARED_BROWSER
+            policy.write_text('{"owner":"owner","members":["owner"]}')
+            self.chrome.paired_home = self.chrome.home = paired
+            status = {"action": "status"}
+            self.assertEqual(self.chrome.call("computer_use", status, None), {
+                "status": "ready", "scope": "isolated", "paired_profile": "rack", "desktop_profile": "rack",
+            })
+            policy.write_text('{"owner":"owner","members":["owner","rack"]}')
+            self.assertEqual(self.chrome.call("computer_use", status, None)["status"], "reconnect_required")
+            self.chrome.home = owner
+            self.chrome.shared = shared_browser(paired)
+            self.assertEqual(self.chrome.call("computer_use", status, None), {
+                "status": "ready", "scope": "shared", "paired_profile": "rack", "desktop_profile": "owner",
+            })
+            self.chrome.window.assert_not_called()
+            self.native.handle_computer_use.assert_not_called()
+
+    def test_revoked_shared_policy_blocks_old_connector_before_browser_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paired, owner = (root / "profiles" / name for name in ("rack", "owner"))
+            paired.mkdir(parents=True)
+            owner.mkdir()
+            policy = root / SHARED_BROWSER
+            policy.write_text('{"owner":"owner","members":["owner","rack"]}')
+            self.chrome.paired_home, self.chrome.home = paired, owner
+            self.chrome.shared = shared_browser(paired)
+            self.chrome.captured = "old capture"
+            policy.write_text('{"owner":"owner","members":["owner"]}')
+            self.assertEqual(self.chrome.call("computer_use", {"action": "capture"}, None)["code"],
+                             "browser_route_changed")
+            self.assertIsNone(self.chrome.captured)
+            self.chrome.window.assert_not_called()
+
     def test_handoff_requires_a_new_lease_epoch(self):
         reply = {"action": "accept", "content": {"browser": HANDOFF}}
         args = {"reason": "Sign in to the site."}

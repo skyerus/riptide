@@ -222,6 +222,11 @@ capture, reviewed input, and the phone's **Open Hermes browser** handoff. The
 desktop's human control lease applies to all members, and input must follow
 the latest capture across agents. Unlisted pairings, non-Riptide tools, and
 the agents' own chats, workspaces, and account integrations are unchanged.
+Before opening a sign-in page, agents call `computer_use(action="status")` to
+distinguish an isolated route from a shared one without opening Chrome. If the
+owner policy changes, the old connector reports that a reconnect is required
+and does not open or operate the browser. The status is about desktop routing;
+the agent must still verify the requested Chrome profile on that desktop.
 Check **Open Hermes browser** from two listed pairings and confirm you see the
 same tab; take control from one and confirm agent capture is blocked until
 handback. To revert, remove the member or the policy file and reconnect the
