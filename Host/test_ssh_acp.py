@@ -14,6 +14,29 @@ from ssh_acp import PRIVATE_FILE_CHUNK, PRIVATE_FILE_GREETING, PRIVATE_FILE_LIMI
 
 
 class SSHACPPolicyTests(unittest.TestCase):
+    def test_browser_handoff_uses_the_shared_owner_for_enabled_members(self):
+        wrapper = Path(__file__).with_name("ssh_acp.py").resolve()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            owner = root / "profiles" / "owner"
+            member = root / "profiles" / "member"
+            owner.mkdir(parents=True)
+            member.mkdir()
+            (root / "riptide-shared-browser.json").write_text(
+                '{"owner":"owner","members":["owner","member"]}')
+            probe = root / "profile-used"
+            hermes = root / "hermes"
+            hermes.write_text(f"#!{sys.executable}\nimport os\nfrom pathlib import Path\n"
+                              f"Path({str(probe)!r}).write_text(os.environ['HERMES_HOME'])\n")
+            hermes.chmod(0o700)
+            env = {**os.environ, "SSH_ORIGINAL_COMMAND": "riptide-hermes-screen"}
+            for opts, expected in (([], member), (["--hermes-browser-mcp", sys.executable, tmp], owner)):
+                argv = [sys.executable, str(wrapper), "--workspace", tmp,
+                        "--hermes-screen", str(member), str(hermes), *opts, "--", "/missing-agent"]
+                subprocess.run(argv, env=env, input='{"command":"open"}\n',
+                               capture_output=True, text=True, timeout=5)
+                self.assertEqual(probe.read_text(), str(expected))
+
     def test_known_session_methods_and_permission_answers(self):
         workspace = "/agent/workspace"
         for method, params in (
