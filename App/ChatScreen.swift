@@ -356,7 +356,7 @@ struct ChatScreen: View {
 
     private var transcript: some View {
         let latestUserMessageID = model.selected.transcript.latestUserMessageID
-        return TranscriptScrollView {
+        return ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 if model.selected.loaded && model.selected.transcript.entries.isEmpty {
                     Text("Start a conversation")
