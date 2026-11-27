@@ -2,6 +2,61 @@ import XCTest
 
 final class HermesSSHUITests: XCTestCase {
     @MainActor
+    func testCallsUsingAnExistingSSHPairing() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let label = environment["RIPTIDE_SSH_TALK_TEST_AGENT"] else {
+            throw XCTSkip("Provide an existing SSH pairing to a Hermes Talk test backend.")
+        }
+        let useSystemCall = environment["RIPTIDE_SYSTEM_CALL_TEST"] == "1"
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        if !useSystemCall { app.launchEnvironment["RIPTIDE_NATIVE_VOICE_CHECK"] = "1" }
+        app.launch()
+
+        let hermes = app.showAgentGrid().buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
+        XCTAssertTrue(hermes.waitForExistence(timeout: 12))
+        hermes.tap()
+        let main = app.buttons["sidebar-main-chat"]
+        XCTAssertTrue(main.waitForExistence(timeout: 12))
+        main.tap()
+        let call = app.buttons["native-call-in-chat"]
+        let ready = NSPredicate(format: "exists == true AND enabled == true")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: call)], timeout: 25), .completed)
+        call.tap()
+
+        XCTAssertTrue(app.staticTexts[label].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.navigationBars["Pair Hermes voice"].exists)
+        let status = app.staticTexts["native-voice-status"]
+        let connectedLabel = useSystemCall ? "Connected" : "Connected · Microphone off"
+        let started = NSPredicate(format: "exists == true AND NOT (label IN %@)", ["Calling…", "Connecting…", "Audio paused"])
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: started, object: status)], timeout: 50),
+                       .completed, status.label)
+        XCTAssertEqual(status.label, connectedLabel)
+        XCTAssertTrue(app.staticTexts["native-voice-duration"].exists)
+        let mute = app.buttons["native-voice-mute"]
+        XCTAssertTrue(mute.exists)
+        XCTAssertTrue(app.buttons["native-voice-audio"].exists)
+        if useSystemCall {
+            mute.tap()
+            let muted = NSPredicate(format: "label == %@", "Unmute")
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: muted, object: mute)], timeout: 5),
+                           .completed)
+            mute.tap()
+        }
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        let connected = NSPredicate(format: "label == %@", connectedLabel)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: connected, object: status)], timeout: 10),
+                       .completed, status.label)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Hermes Talk call using an existing SSH pairing"
+        capture.lifetime = .keepAlways
+        add(capture)
+        app.buttons["native-voice-end"].tap()
+        XCTAssertTrue(status.waitForNonExistence(timeout: 12))
+    }
+
+    @MainActor
     func testNativeBrowserRequestResumesTheSameTurn() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let label = environment["RIPTIDE_HERMES_SCREEN_AGENT"],

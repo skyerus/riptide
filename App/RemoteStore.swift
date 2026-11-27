@@ -67,6 +67,10 @@ final class RemoteStore {
 
     func voice(for profile: RemoteProfile) -> NativeVoiceProfile? { voices[profile.id] }
 
+    func hasVoiceRoute(for profile: RemoteProfile) -> Bool {
+        profile.canUseSSHTalk || voice(for: profile) != nil
+    }
+
     func pairVoice(_ voice: NativeVoiceProfile, token: String, talkToken: String? = nil, for profile: RemoteProfile) async throws {
         guard profile.kind == voice.kind, profiles.contains(where: { $0.id == profile.id }), RemoteProfile.validBearer(token),
               let chatHost = URL(string: profile.address)?.host?.lowercased(),
@@ -112,6 +116,11 @@ final class RemoteStore {
     }
 
     func voiceLink(for profile: RemoteProfile) throws -> NativeVoiceLink {
+        if profile.canUseSSHTalk, voice(for: profile) == nil {
+            guard let credential = bearer(for: profile),
+                  let talk = profile.makeHermesSSHTalk(credential: credential) else { throw PairingFailure.keychain }
+            return .hermesTalk(talk)
+        }
         guard let voice = voices[profile.id], voice.kind == profile.kind,
               let token = KeychainToken.read(profile.id, purpose: "voice") else { throw PairingFailure.keychain }
         if voice.kind == .hermes, voice.selectedHermesRoute == .talkSubscription {
@@ -154,7 +163,7 @@ final class RemoteStore {
 
 enum NativeVoiceLink {
     case hermes(HermesLiveVoice)
-    case hermesTalk(HermesTalkVoice)
+    case hermesTalk(any HermesTalkCalling)
     case openClaw(OpenClawTalk)
 }
 

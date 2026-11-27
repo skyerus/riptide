@@ -3,6 +3,26 @@ import Testing
 @testable import RiptideCore
 
 struct ACPCapabilityTests {
+    @Test func restrictedSSHCanInitializeWithAnOlderWrapper() async throws {
+        let transport = ScriptedTransport { request in
+            let id = try #require(request["id"])
+            #expect(request["method"] == "initialize")
+            let capabilities = request["params"]?["clientCapabilities"]
+            if id == .integer(1) {
+                #expect(capabilities?["_meta"]?["app.riptide.assistantProgress"] == .boolean(true))
+                return [.failure(id, code: -32602, message: "Unsupported capability")]
+            }
+            #expect(id == .integer(2))
+            #expect(capabilities == [:])
+            return [.reply(id, result: ["protocolVersion": .integer(1), "agentCapabilities": [
+                "loadSession": .boolean(true),
+            ]])]
+        }
+        let client = ACPClient(transport: transport, restrictedSSH: true)
+        #expect(try await client.canLoadSessions())
+        await client.close()
+    }
+
     @Test func codexStagesFilesAndSendsPhotosAsVisionInput() async throws {
         let thread: JSON = ["id": "selected", "cwd": "/disposable"]
         let photo = ChatAttachment(name: "Photo.png", data: Data([1, 2, 3]), imageMIMEType: "image/png")

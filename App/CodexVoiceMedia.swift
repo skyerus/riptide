@@ -20,12 +20,52 @@ final class CodexVoiceMedia: NSObject {
     private var microphone: RTCAudioTrack?
     private var channel: RTCDataChannel?
     private var audioDisabled = false
+    private var previousAudioConfiguration: RTCAudioSessionConfiguration?
     private let onState: @MainActor (State) -> Void
     private let onData: (@MainActor (Data) -> Void)?
 
     init(onState: @escaping @MainActor (State) -> Void, onData: (@MainActor (Data) -> Void)? = nil) {
         self.onState = onState
         self.onData = onData
+    }
+
+    func prepareSystemAudio() throws {
+        _ = Self.factory
+        let session = RTCAudioSession.sharedInstance()
+        let configuration = RTCAudioSessionConfiguration()
+        configuration.categoryOptions = [.allowBluetoothHFP]
+        configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
+
+        session.lockForConfiguration()
+        defer { session.unlockForConfiguration() }
+        try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: configuration.categoryOptions)
+        previousAudioConfiguration = RTCAudioSessionConfiguration.webRTC()
+        RTCAudioSessionConfiguration.setWebRTC(configuration)
+        session.useManualAudio = true
+        session.isAudioEnabled = false
+    }
+
+    static func systemAudioActivated(_ audioSession: AVAudioSession) {
+        RTCAudioSession.sharedInstance().audioSessionDidActivate(audioSession)
+    }
+
+    static func systemAudioDeactivated(_ audioSession: AVAudioSession) {
+        RTCAudioSession.sharedInstance().audioSessionDidDeactivate(audioSession)
+    }
+
+    func setSystemAudioEnabled(_ enabled: Bool) {
+        guard previousAudioConfiguration != nil else { return }
+        RTCAudioSession.sharedInstance().isAudioEnabled = enabled
+    }
+
+    func selectSystemAudioOutput(speaker: Bool, input: AVAudioSessionPortDescription?) throws {
+        let session = RTCAudioSession.sharedInstance()
+        session.lockForConfiguration()
+        defer { session.unlockForConfiguration() }
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.overrideOutputAudioPort(.none)
+        try audioSession.setPreferredInput(input)
+        if speaker { try audioSession.overrideOutputAudioPort(.speaker) }
     }
 
     func offer(listenOnly: Bool, dataChannel: Bool = true) async throws -> String {
@@ -91,6 +131,13 @@ final class CodexVoiceMedia: NSObject {
             RTCAudioSession.sharedInstance().useManualAudio = false
             audioDisabled = false
         }
+        if let previousAudioConfiguration {
+            let session = RTCAudioSession.sharedInstance()
+            session.isAudioEnabled = false
+            session.useManualAudio = false
+            RTCAudioSessionConfiguration.setWebRTC(previousAudioConfiguration)
+            self.previousAudioConfiguration = nil
+        }
     }
 
 }
@@ -132,13 +179,14 @@ extension CodexVoiceMedia: RTCPeerConnectionDelegate {
 }
 
 enum VoiceMediaError: LocalizedError {
-    case setup, network, microphoneDenied
+    case setup, network, microphoneDenied, callInProgress
 
     var errorDescription: String? {
         switch self {
         case .setup: "The phone couldn’t start voice audio."
         case .network: "The voice connection couldn’t reach Codex."
         case .microphoneDenied: "Allow microphone access in Settings to make a voice call."
+        case .callInProgress: "End the current Riptide call before starting another."
         }
     }
 }

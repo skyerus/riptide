@@ -15,7 +15,7 @@ struct ChatScreen: View {
     @State private var viewport = TranscriptViewport()
     @State private var showsCompletedToolCalls = false
     @State private var pairingVoice = false
-    @State private var activeCall: ChatCall?
+    @State private var activeCall: NativeAgentCall?
     @State private var voiceError: String?
     @State private var browserHandoff: BrowserHandoff?
     @State private var focusAfterHandback: String?
@@ -143,7 +143,7 @@ struct ChatScreen: View {
                         .contextMenu {
                             Button("New voice chat", systemImage: "plus.bubble") {
                                 guard let voiceRemote, let remoteStore else { return }
-                                guard remoteStore.voice(for: voiceRemote) != nil else { pairingVoice = true; return }
+                                guard remoteStore.hasVoiceRoute(for: voiceRemote) else { pairingVoice = true; return }
                                 Task {
                                     if await model.createChat(openClaw: voiceRemote.kind == .openClaw) {
                                         startCall()
@@ -177,8 +177,8 @@ struct ChatScreen: View {
                 }
             }
         }
-        .sheet(item: $activeCall) { call in
-            NativeAgentCallScreen(model: model, chatID: call.chatID, kind: call.kind, link: call.link) {
+        .fullScreenCover(item: $activeCall) { call in
+            NativeAgentCallScreen(call: call, agent: workspace.agent(model.target.id)) {
                 if model.selectedID == call.chatID {
                     ForEach(model.selected.permissions) { permissionCard($0) }
                 }
@@ -341,19 +341,16 @@ struct ChatScreen: View {
         return request.options.first { $0.id == "choice-0" && $0.kind == "allow_once" && $0.name == "Browser handoff complete" }
     }
 
-    private struct ChatCall: Identifiable {
-        let id = UUID()
-        let chatID: String
-        let kind: RemoteKind
-        let link: NativeVoiceLink
-    }
-
     private func startCall() {
         guard let voiceRemote, let remoteStore, model.selected.loaded, activeCall == nil else { return }
-        guard remoteStore.voice(for: voiceRemote) != nil else { pairingVoice = true; return }
+        if let call = NativeCallSystem.shared.call(for: model, chatID: model.selectedID) {
+            activeCall = call
+            return
+        }
+        guard remoteStore.hasVoiceRoute(for: voiceRemote) else { pairingVoice = true; return }
         do {
             let link = try remoteStore.voiceLink(for: voiceRemote)
-            activeCall = ChatCall(chatID: model.selectedID, kind: voiceRemote.kind, link: link)
+            activeCall = NativeAgentCall(name: agentName, model: model, chatID: model.selectedID, link: link)
         } catch {
             voiceError = error.localizedDescription
         }

@@ -74,6 +74,7 @@ public enum ACPError: LocalizedError, Equatable {
     case disconnected, malformedResponse, protocolVersion, historyUnavailable, sessionListUnavailable
     case permissionExpired
     case methodUnavailable(String)
+    case invalidParameters(String)
     case rejected(String)
 
     public var errorDescription: String? {
@@ -85,6 +86,7 @@ public enum ACPError: LocalizedError, Equatable {
         case .sessionListUnavailable: "This agent cannot list saved conversations over ACP."
         case .permissionExpired: "This approval is no longer active."
         case .methodUnavailable(let message): message
+        case .invalidParameters(let message): message
         case .rejected(let message): message
         }
     }
@@ -345,11 +347,19 @@ public actor ACPClient {
             await self?.disconnect()
         }
         let handshake = Task {
-            let reply = try await call("initialize", [
+            var params: [String: JSON] = [
                 "protocolVersion": .integer(1),
                 "clientCapabilities": ["_meta": ["app.riptide.assistantProgress": .boolean(true)]],
                 "clientInfo": ["name": "riptide", "version": "0.1.0"]
-            ])
+            ]
+            let reply: JSON
+            do {
+                reply = try await call("initialize", .object(params))
+            } catch ACPError.invalidParameters where restrictedSSH {
+                // Older forced commands only admit an empty capabilities object.
+                params["clientCapabilities"] = [:]
+                reply = try await call("initialize", .object(params))
+            }
             guard reply["protocolVersion"] == .integer(1) else { throw ACPError.protocolVersion }
             return reply["agentCapabilities"] ?? [:]
         }
@@ -428,8 +438,11 @@ public actor ACPClient {
             }
         } else if let id = message["id"], let request = pending.removeValue(forKey: id) {
             if let error = message["error"]?["message"]?.string {
-                let unavailable = message["error"]?["code"] == .integer(-32601)
-                request.resume(throwing: unavailable ? ACPError.methodUnavailable(error) : ACPError.rejected(error))
+                switch message["error"]?["code"]?.integer {
+                case -32601: request.resume(throwing: ACPError.methodUnavailable(error))
+                case -32602: request.resume(throwing: ACPError.invalidParameters(error))
+                default: request.resume(throwing: ACPError.rejected(error))
+                }
             }
             else if let result = message["result"] { request.resume(returning: result) }
             else { request.resume(throwing: ACPError.malformedResponse) }

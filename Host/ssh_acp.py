@@ -363,6 +363,7 @@ if __name__ == "__main__":
     parser.add_argument("--hermes-groups", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
     parser.add_argument("--hermes-screen", nargs=2, metavar=("PROFILE_HOME", "HERMES"))
     parser.add_argument("--codex-dictation-auth", metavar="CODEX_AUTH_FILE")
+    parser.add_argument("--hermes-talk-config", type=Path)
     parser.add_argument("--hermes-browser-mcp", nargs=2, metavar=("PYTHON", "HERMES_SOURCE"))
     parser.add_argument("--attention-socket", type=Path)
     parser.add_argument("--attention-profile")
@@ -406,6 +407,10 @@ if __name__ == "__main__":
             parser.error("An absolute Codex auth file path is required.")
         from codex_dictation import serve_ssh
         asyncio.run(serve_ssh(args.codex_dictation_auth))
+        sys.exit(0)
+    if requested == "riptide-hermes-talk":
+        from hermes_ssh_talk import serve as serve_talk
+        serve_talk(args.hermes_talk_config)
         sys.exit(0)
     if requested == "riptide-hermes-groups":
         if args.hermes_groups is None:
