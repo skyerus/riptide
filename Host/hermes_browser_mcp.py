@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from hermes_chrome_profile import shared_browser
+from hermes_chrome_profile import BrowserRoute, browser_route, profile_slug
 from hermes_screen import BrowserWindow, ScreenError
 from mcp_stdio import MCPServer, ToolContent
 
@@ -31,9 +31,9 @@ def tool_definitions(schema):
     input_properties["action"] = {**properties["action"], "enum": sorted(INPUT_ACTIONS)}
     return [
         {"name": "computer_use",
-         "description": "Use action=status before sign-in or when the user names a Chrome profile. "
-         "It reports whether this chat is routed to its own Hermes desktop or to an explicitly shared "
-         "desktop, without opening Chrome. Confirm the Chrome profile independently before navigating. "
+         "description": "Use action=status before sign-in or when the user asks for an existing Chrome profile or login. "
+         "It reports this chat's desktop route and whether shared Chrome is configured, without opening Chrome. "
+         "Confirm the Chrome profile independently before navigating. "
          "Use action=capture for a fresh view before chrome_input and chrome_handoff for manual steps.",
          "inputSchema": {"type": "object", "properties": {
              "action": {**properties["action"], "enum": ["status", "capture"]}, "mode": properties["mode"],
@@ -96,14 +96,16 @@ class Chrome:
         self.captured = None
 
     def route_status(self):
-        requested = shared_browser(self.paired_home) if self.paired_home is not None else self.shared
-        if requested != self.shared:
+        route = (browser_route(self.paired_home) if self.paired_home is not None
+                 else BrowserRoute(self.shared, self.shared is not None))
+        if route.shared != self.shared:
             return {"status": "reconnect_required",
-                    "scope": "shared" if requested else "isolated",
+                    "scope": "shared" if route.shared else "isolated",
                     "message": "The sharing policy changed. Reconnect this chat before using Chrome."}
         return {"status": "ready", "scope": "shared" if self.shared else "isolated",
                 "paired_profile": profile_slug(self.paired_home or self.home),
-                "desktop_profile": profile_slug(self.home)}
+                "desktop_profile": profile_slug(self.home),
+                "shared_desktop_configured": route.sharing_configured}
 
     def epoch(self):
         current = self.lease.get(str(self.home))
@@ -222,11 +224,6 @@ class Chrome:
         return result
 
 
-def profile_slug(home):
-    home = Path(home)
-    return home.name if home.parent.name == "profiles" else "default"
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hermes-source", type=Path, required=True)
@@ -235,7 +232,7 @@ def main():
     args = parser.parse_args()
     if not all(path.is_absolute() and path.is_dir() for path in (args.hermes_source, args.profile)):
         parser.error("Use the installed Hermes source and the paired profile’s absolute paths.")
-    shared = shared_browser(args.profile)
+    shared = browser_route(args.profile).shared
     home = shared.home if shared else args.profile
     os.environ.update(HERMES_HOME=str(home), HERMES_INTERACTIVE="1", RIPTIDE_CODEX_COMPUTER_USE="1")
     sys.path.insert(0, str(args.hermes_source))

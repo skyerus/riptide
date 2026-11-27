@@ -17,20 +17,27 @@ class SSHACPPolicyTests(unittest.TestCase):
     def test_browser_handoff_uses_the_shared_owner_for_enabled_members(self):
         wrapper = Path(__file__).with_name("ssh_acp.py").resolve()
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             owner = root / "profiles" / "owner"
             member = root / "profiles" / "member"
             owner.mkdir(parents=True)
             member.mkdir()
-            (root / "riptide-shared-browser.json").write_text(
-                '{"owner":"owner","members":["owner","member"]}')
+            manifest = root / "pairing.json"
+            manifest.write_text(json.dumps({"chrome": {"home": str(root)}, "targets": {"member": {}}}))
             probe = root / "profile-used"
             hermes = root / "hermes"
             hermes.write_text(f"#!{sys.executable}\nimport os\nfrom pathlib import Path\n"
                               f"Path({str(probe)!r}).write_text(os.environ['HERMES_HOME'])\n")
             hermes.chmod(0o700)
             env = {**os.environ, "SSH_ORIGINAL_COMMAND": "riptide-hermes-screen"}
-            for opts, expected in (([], member), (["--hermes-browser-mcp", sys.executable, tmp], owner)):
+            browser = ["--hermes-browser-mcp", sys.executable, tmp]
+            for membership, opts, expected in (
+                ({"members": ["owner", "member"]}, [], member),
+                ({"members": ["owner", "member"]}, browser, owner),
+                ({"members": ["owner"]}, browser, member),
+                ({"members": ["owner"], "pairing_manifest": str(manifest)}, browser, owner),
+            ):
+                (root / "riptide-shared-browser.json").write_text(json.dumps({"owner": "owner", **membership}))
                 argv = [sys.executable, str(wrapper), "--workspace", tmp,
                         "--hermes-screen", str(member), str(hermes), *opts, "--", "/missing-agent"]
                 subprocess.run(argv, env=env, input='{"command":"open"}\n',

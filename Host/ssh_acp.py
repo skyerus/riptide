@@ -430,10 +430,10 @@ if __name__ == "__main__":
         home, hermes = args.hermes_screen
         if not os.path.isabs(home) or not os.path.isdir(home) or not os.path.isabs(hermes):
             parser.error("An absolute Hermes profile and launcher are required.")
-        from hermes_chrome_profile import shared_browser
+        from hermes_chrome_profile import browser_route
         paired_home = Path(home).resolve()
         try:
-            shared = shared_browser(paired_home) if args.hermes_browser_mcp else None
+            shared = browser_route(paired_home).shared if args.hermes_browser_mcp else None
         except (OSError, ValueError):
             print(json.dumps({"event": "error", "message": "The shared Chrome policy is invalid."}))
             sys.exit(1)

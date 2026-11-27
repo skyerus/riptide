@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -5,7 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from hermes_browser_mcp import HANDOFF, Chrome, tool_result
-from hermes_chrome_profile import SHARED_BROWSER, shared_browser
+from hermes_chrome_profile import SHARED_BROWSER, browser_route
 
 
 class ChromeComputerUseTests(unittest.TestCase):
@@ -80,10 +81,10 @@ class ChromeComputerUseTests(unittest.TestCase):
             home = root / "profiles" / "owner"
             home.mkdir(parents=True)
             (root / SHARED_BROWSER).write_text('{"owner":"owner","members":["owner","default"]}')
-            self.chrome.shared = shared_browser(root)
+            self.chrome.shared = browser_route(root).shared
             self.assertEqual(self.chrome.shared.home, home)
-            self.assertIsNone(shared_browser(root / "profiles" / "excluded"))
-            other = Chrome(home, self.lease, None, None, self.native, shared=shared_browser(home))
+            self.assertIsNone(browser_route(root / "profiles" / "excluded").shared)
+            other = Chrome(home, self.lease, None, None, self.native, shared=browser_route(home).shared)
             other.window = self.chrome.window
             capture = {"action": "capture"}
             self.assertTrue(self.chrome.call("computer_use", capture, None)["ok"])
@@ -107,13 +108,15 @@ class ChromeComputerUseTests(unittest.TestCase):
             status = {"action": "status"}
             self.assertEqual(self.chrome.call("computer_use", status, None), {
                 "status": "ready", "scope": "isolated", "paired_profile": "rack", "desktop_profile": "rack",
+                "shared_desktop_configured": True,
             })
             policy.write_text('{"owner":"owner","members":["owner","rack"]}')
             self.assertEqual(self.chrome.call("computer_use", status, None)["status"], "reconnect_required")
             self.chrome.home = owner
-            self.chrome.shared = shared_browser(paired)
+            self.chrome.shared = browser_route(paired).shared
             self.assertEqual(self.chrome.call("computer_use", status, None), {
                 "status": "ready", "scope": "shared", "paired_profile": "rack", "desktop_profile": "owner",
+                "shared_desktop_configured": True,
             })
             self.chrome.window.assert_not_called()
             self.native.handle_computer_use.assert_not_called()
@@ -127,13 +130,59 @@ class ChromeComputerUseTests(unittest.TestCase):
             policy = root / SHARED_BROWSER
             policy.write_text('{"owner":"owner","members":["owner","rack"]}')
             self.chrome.paired_home, self.chrome.home = paired, owner
-            self.chrome.shared = shared_browser(paired)
+            self.chrome.shared = browser_route(paired).shared
             self.chrome.captured = "old capture"
             policy.write_text('{"owner":"owner","members":["owner"]}')
             self.assertEqual(self.chrome.call("computer_use", {"action": "capture"}, None)["code"],
                              "browser_route_changed")
             self.assertIsNone(self.chrome.captured)
             self.chrome.window.assert_not_called()
+
+    def test_future_pairing_manifest_targets_discover_shared_chrome_and_can_be_revoked(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        paired, owner, excluded = (root / "profiles" / name for name in ("new-agent", "owner", "excluded"))
+        for home in (paired, owner, excluded):
+            home.mkdir(parents=True)
+        manifest = root / "pairing.json"
+        config = {"chrome": {"home": str(root)}, "targets": {}}
+        manifest.write_text(json.dumps(config))
+        (root / SHARED_BROWSER).write_text(json.dumps({
+            "owner": "owner", "members": ["owner"], "pairing_manifest": str(manifest),
+        }))
+        self.chrome.paired_home = self.chrome.home = paired
+        status = {"action": "status"}
+        self.assertEqual(self.chrome.call("computer_use", status, None)["scope"], "isolated")
+
+        config["targets"]["new-agent"] = {"name": "New Agent"}
+        manifest.write_text(json.dumps(config))
+        self.assertEqual(self.chrome.call("computer_use", status, None)["status"], "reconnect_required")
+        self.chrome.shared, self.chrome.home = browser_route(paired).shared, owner
+        self.assertEqual(self.chrome.call("computer_use", status, None), {
+            "status": "ready", "scope": "shared", "paired_profile": "new-agent", "desktop_profile": "owner",
+            "shared_desktop_configured": True,
+        })
+        self.assertIsNone(browser_route(excluded).shared)
+
+        config["targets"].clear()
+        manifest.write_text(json.dumps(config))
+        self.assertEqual(self.chrome.call("computer_use", {"action": "capture"}, None)["code"], "browser_route_changed")
+        self.assertEqual(browser_route(owner).shared.home, owner)
+        self.chrome.window.assert_not_called()
+        self.native.handle_computer_use.assert_not_called()
+
+    def test_manifest_must_be_owner_controlled_and_belong_to_the_same_hermes_home(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        manifest = root / "pairing.json"
+        manifest.write_text(json.dumps({"chrome": {"home": str(root / "elsewhere")}, "targets": {"default": {}}}))
+        (root / "profiles" / "owner").mkdir(parents=True)
+        (root / SHARED_BROWSER).write_text(json.dumps({
+            "owner": "owner", "members": ["owner"], "pairing_manifest": str(manifest),
+        }))
+        with self.assertRaisesRegex(ValueError, "Chrome-enabled pairing manifest"):
+            browser_route(root)
+        manifest.chmod(0o666)
+        with self.assertRaisesRegex(ValueError, "owner-controlled file"):
+            browser_route(root)
 
     def test_handoff_requires_a_new_lease_epoch(self):
         reply = {"action": "accept", "content": {"browser": HANDOFF}}

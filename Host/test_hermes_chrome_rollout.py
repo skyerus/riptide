@@ -1,12 +1,15 @@
 """Check batch SSH migration boundaries before deploying to the shared host."""
 from importlib.util import module_from_spec, spec_from_file_location
+import json
 from pathlib import Path
 import shlex
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from hermes_chrome_profile import ChromePolicy
+from hermes_chrome_profile import SHARED_BROWSER, ChromePolicy, browser_route
 from ssh_pairing_files import key_command
 
 spec = spec_from_file_location("chrome_rollout", Path(__file__).parent / "deploy" / "enable-hermes-chrome.py")
@@ -15,6 +18,37 @@ spec.loader.exec_module(rollout)
 
 
 class ChromeRolloutTests(unittest.TestCase):
+    def test_pairing_manifest_sharing_requires_opt_in_and_preserves_explicit_members(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        home, releases, profile = root / "hermes", root / "releases", root / "hermes/profiles/new-agent"
+        profile.mkdir(parents=True)
+        releases.mkdir()
+        keys = root / "authorized_keys"
+        keys.touch()
+        manifest = home / "pairing.json"
+        manifest.write_text(json.dumps({"hermes": sys.executable, "authorizedKeys": str(keys),
+                                        "targets": {"new-agent": {}}}))
+        sharing = home / SHARED_BROWSER
+        config = {"owner": "default", "members": ["default", "explicit-member"]}
+        sharing.write_text(json.dumps(config))
+        args = SimpleNamespace(home=home, source=home, python=sys.executable, releases=releases,
+                               manifest=manifest, revision="a" * 40, previous_releases=[], legacy_wrapper=None,
+                               reload_gateway=False, share_with_pairable_agents=False)
+        with (patch.object(rollout, "CHROME", sys.executable),
+              patch.object(rollout, "stage", return_value=releases / "Host" / "ssh_acp.py"),
+              patch.object(rollout, "key_edits", return_value=("", 1, {"default"})),
+              patch.object(rollout, "profile_edits", return_value=[]),
+              patch("builtins.print")):
+            rollout.activate(args)
+            self.assertEqual(json.loads(sharing.read_text()), config)
+            self.assertIsNone(browser_route(profile).shared)
+            args.share_with_pairable_agents = True
+            rollout.activate(args)
+            rollout.activate(args)
+        self.assertEqual(json.loads(sharing.read_text()), {**config, "pairing_manifest": str(manifest)})
+        self.assertEqual(browser_route(profile).shared.home, home)
+        self.assertEqual(browser_route(home / "profiles/explicit-member").shared.home, home)
+
     def test_updates_legacy_and_versioned_hermes_keys_and_preserves_other_entries(self):
         home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (home / "profiles" / "agent").mkdir(parents=True)

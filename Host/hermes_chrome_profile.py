@@ -54,28 +54,54 @@ class SharedBrowser:
             yield generation
 
 
-def shared_browser(profile_home):
-    """Resolve a host-owner opt-in without taking a desktop from chat/tool input."""
+@dataclass(frozen=True)
+class BrowserRoute:
+    shared: SharedBrowser | None = None
+    sharing_configured: bool = False
+
+
+def profile_slug(home):
+    home = Path(home)
+    return home.name if home.parent.name == "profiles" else "default"
+
+
+def paired_targets(manifest_path, root):
+    source, _ = read_owned(absolute_path(manifest_path))
+    require(source is not None, "The shared Chrome pairing manifest is missing.")
+    manifest = json.loads(source)
+    require(isinstance(manifest, dict) and isinstance(manifest.get("targets"), dict)
+            and isinstance(manifest.get("chrome"), dict)
+            and absolute_path(manifest["chrome"].get("home")).resolve() == root.resolve(),
+            "Use a Chrome-enabled pairing manifest for this Hermes home.")
+    return manifest["targets"]
+
+
+def browser_route(profile_home):
+    """Resolve the desktop from host policy and the fixed Riptide pairing."""
     home = Path(profile_home)
     named = home.parent.name == "profiles"
     root = home.parent.parent if named else home
     source, _ = read_owned(root / SHARED_BROWSER)
     if source is None:
-        return None
+        return BrowserRoute()
     owned_directory(root)
     config = json.loads(source)
-    require(isinstance(config, dict) and set(config) == {"owner", "members"},
+    require(isinstance(config, dict) and {"owner", "members"} <= config.keys()
+            and config.keys() <= {"owner", "members", "pairing_manifest"},
             "Invalid shared Chrome policy.")
     owner, members = config["owner"], config["members"]
     require(isinstance(members, list) and all(isinstance(slug, str) and PROFILE.fullmatch(slug) for slug in members)
             and isinstance(owner, str) and owner in members, "Invalid shared Chrome owner or members.")
-    if (home.name if named else "default") not in members:
-        return None
+    profile = profile_slug(home)
+    if profile not in members:
+        if "pairing_manifest" not in config or not isinstance(
+                paired_targets(config["pairing_manifest"], root).get(profile), dict):
+            return BrowserRoute(sharing_configured=True)
     if owner != "default":
         owned_directory(root / "profiles")
     owner_home = root if owner == "default" else root / "profiles" / owner
     owned_directory(owner_home)
-    return SharedBrowser(owner_home, root / ".riptide-shared-browser.lock")
+    return BrowserRoute(SharedBrowser(owner_home, root / ".riptide-shared-browser.lock"), True)
 
 
 @dataclass(frozen=True)

@@ -183,7 +183,7 @@ For a host where Chrome should be the default for all current and future Hermes 
   --releases /absolute/riptide/releases --revision "$release_sha" --reload-gateway
 ```
 
-Pass `--previous-releases` for any superseded versioned host roots and `--legacy-wrapper` for an approved non-versioned SSH wrapper. Add future profiles to the existing target list using their ACP main chat and workspace. The browser setup uses that profile’s own desktop and persistent Chrome data.
+Pass `--previous-releases` for any superseded versioned host roots and `--legacy-wrapper` for an approved non-versioned SSH wrapper. Add future profiles to the existing target list using their ACP main chat and workspace. The browser uses each profile's own desktop and persistent Chrome data by default.
 
 For an existing versioned SSH deployment, stage the matching release and enable the Chrome connector for the paired device:
 
@@ -217,21 +217,27 @@ agents and their paired devices that you trust to see and interact with every
 open Chrome window and signed-in browser session on that desktop. This does
 not migrate, copy, or merge browser data or share any other agent capability.
 
+If the pairing manifest is dedicated to agents you trust with the shared
+desktop, pass `--share-with-pairable-agents` to the Chrome rollout above.
+This adds the owner-controlled manifest as `pairing_manifest` in the existing
+shared browser policy. A Chrome-enabled Riptide pairing for any current or
+future target in that manifest then uses the shared desktop automatically.
+Adding a target to that manifest carries the same desktop access as adding
+it to `members`. Use explicit members for sharing with selected profiles.
+
 On reconnect, listed Riptide pairings use that same desktop for browser
 capture, reviewed input, and the phone's **Open Hermes browser** handoff. The
 desktop's human control lease applies to all members, and input must follow
-the latest capture across agents. Unlisted pairings, non-Riptide tools, and
-the agents' own chats, workspaces, and account integrations are unchanged.
+the latest capture across agents.
 Before opening a sign-in page, agents call `computer_use(action="status")` to
-distinguish an isolated route from a shared one without opening Chrome. If the
-owner policy changes, the old connector reports that a reconnect is required
-and does not open or operate the browser. The status is about desktop routing;
-the agent must still verify the requested Chrome profile on that desktop.
+read the current route and whether a shared desktop is configured without
+opening Chrome. If the route changes, the old connector requires a reconnect
+before browser use. Verify the requested Chrome profile on that desktop.
 Check **Open Hermes browser** from two listed pairings and confirm you see the
 same tab; take control from one and confirm agent capture is blocked until
-handback. To revert, remove the member or the policy file and reconnect the
-affected chats to discard their old browser connector processes. The Chrome
-data stays in the owner's original desktop.
+handback. To revoke a profile's shared desktop access, remove it from all
+configured membership sources and reconnect the affected chats. Remove
+`pairing_manifest` to return to explicit membership for all pairings.
 
 ## Local Codex handoff proof
 

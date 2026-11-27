@@ -7,21 +7,23 @@ description: Browse in the shared Hermes Chrome window and hand it to the user f
 
 ## Check the route before opening a sign-in page
 
-Riptide can route multiple Hermes agents to one existing Chrome desktop. This
-does **not** merge Hermes agents or their workspaces. Sharing is opt-in: new
-agents stay isolated until included in the host owner's shared-browser policy.
-A shared route grants the whole owner desktop, not just one Chrome profile.
+Riptide can route multiple Hermes agents to one existing Chrome desktop.
+The host owner can allow individual profiles or opt into sharing with the
+trusted targets in the Riptide pairing manifest. A shared route grants access
+to the owner's desktop and its signed-in Chrome sessions.
 
-1. Try `computer_use(action="status")` before capture. `shared` means this
-   chat reaches the configured owner's desktop; `isolated` means it reaches
-   only the paired agent's desktop. If it says `reconnect_required`, wait for
-   a fresh connector and recheck before sending browser input.
+1. Call `computer_use(action="status")` before capture. `shared` means this
+   chat reaches the configured owner's desktop. `isolated` means it reaches
+   the paired agent's desktop. If `shared_desktop_configured` is true and the
+   route is isolated, tell the user shared Chrome exists and access for this
+   pairing depends on the host policy. If the status says `reconnect_required`,
+   wait for a fresh connector and recheck before sending browser input.
 2. On older connectors without `status`, use an authorized read-only host
    check of `riptide-shared-browser.json` in the root Hermes home. Compare the
-   current agent slug with the explicit `members` and the live connector's
-   route, not just the policy on disk. If host access is unavailable or the
-   route can't be verified, say so; don't assume a blank window means the
-   existing profile is missing. Never add agents to the policy implicitly.
+   current agent slug with the explicit `members` and any configured
+   `pairing_manifest`, then verify the live connector's route. If you can't
+   verify the route, say so. A blank window only describes the current
+   desktop. The host owner controls changes to sharing policy.
 3. Verify the requested Chrome profile on that desktop before navigating.
    The Chrome profile and the signed-in website account are separate checks.
 

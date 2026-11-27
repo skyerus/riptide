@@ -15,7 +15,7 @@ import tempfile
 HOST = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HOST))
 
-from hermes_chrome_profile import CHROME, ChromePolicy, PROFILE, absolute_path, owned_directory, profile_edits
+from hermes_chrome_profile import CHROME, SHARED_BROWSER, ChromePolicy, PROFILE, absolute_path, owned_directory, profile_edits
 from ssh_pairing_files import Edit, key_command, lock_keys, read_owned, require
 from update_ssh_release import retire_safari, stage, verify
 
@@ -110,6 +110,15 @@ def activate(args):
             config["chrome"] = chrome
             edits.append(Edit(manifest, raw, (json.dumps(config, indent=2) + "\n").encode(), manifest_mode))
         edits.append(Edit(keys, source, updated.encode(), mode))
+        if args.share_with_pairable_agents:
+            path = policy.home / SHARED_BROWSER
+            original, sharing_mode = read_owned(path)
+            require(original is not None, "Configure the existing desktop owner and members before enabling sharing.")
+            sharing = json.loads(original)
+            require(isinstance(sharing, dict) and sharing.get("pairing_manifest", str(manifest)) == str(manifest),
+                    "The shared Chrome policy points to a different pairing manifest.")
+            sharing["pairing_manifest"] = str(manifest)
+            edits.append(Edit(path, original, (json.dumps(sharing, indent=2) + "\n").encode(), sharing_mode))
         changes = [edit for edit in edits if edit.before != edit.after]
         if changes:
             backup = Path(tempfile.mkdtemp(prefix="chrome-rollout-", dir=args.releases.parent))
@@ -137,6 +146,8 @@ def main():
     parser.add_argument("--previous-releases", type=Path, action="append", default=[])
     parser.add_argument("--legacy-wrapper", type=Path)
     parser.add_argument("--reload-gateway", action="store_true")
+    parser.add_argument("--share-with-pairable-agents", action="store_true",
+                        help="Trust every current and future Chrome-enabled target in this pairing manifest.")
     args = parser.parse_args()
     try:
         for path in [args.releases, *args.previous_releases, args.legacy_wrapper]:
