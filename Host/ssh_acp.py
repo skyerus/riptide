@@ -430,8 +430,15 @@ if __name__ == "__main__":
         home, hermes = args.hermes_screen
         if not os.path.isabs(home) or not os.path.isdir(home) or not os.path.isabs(hermes):
             parser.error("An absolute Hermes profile and launcher are required.")
+        from hermes_chrome_profile import shared_browser
+        paired_home = Path(home).resolve()
+        try:
+            shared = shared_browser(paired_home) if args.hermes_browser_mcp else None
+        except (OSError, ValueError):
+            print(json.dumps({"event": "error", "message": "The shared Chrome policy is invalid."}))
+            sys.exit(1)
         adapter = os.path.join(os.path.dirname(os.path.realpath(__file__)), "hermes_screen.py")
-        os.execv(sys.executable, [sys.executable, adapter, hermes, os.path.realpath(home)])
+        os.execv(sys.executable, [sys.executable, adapter, hermes, str(shared.home if shared else paired_home)])
     if requested not in ("riptide-acp", "riptide-private-file") or not command or not os.path.isabs(command[0]):
         parser.exit(1, "This key is only authorized for Riptide ACP.\n")
     if not os.path.isabs(args.workspace) or not os.path.isdir(args.workspace):

@@ -1,7 +1,7 @@
 """Give a paired Codex App Server chat access to Chrome through Hermes computer use."""
 
 import argparse
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from importlib import import_module
 import json
 import os
@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 
+from hermes_chrome_profile import shared_browser
 from hermes_screen import BrowserWindow, ScreenError
 from mcp_stdio import MCPServer, ToolContent
 
@@ -80,13 +81,14 @@ class HumanControl(ScreenError):
 
 
 class Chrome:
-    def __init__(self, home, lease, desktop, placement, native, *, codex_reviewed_input=False):
+    def __init__(self, home, lease, desktop, placement, native, *, codex_reviewed_input=False, shared=None):
         self.home = home
         self.lease = lease
         self.desktop = desktop
         self.placement = placement
         self.native = native
         self.codex_reviewed_input = codex_reviewed_input
+        self.shared = shared
         self.captured = None
 
     def epoch(self):
@@ -130,16 +132,18 @@ class Chrome:
 
     def call(self, name, args, elicit):
         try:
-            with redirect_stdout(sys.stderr):
-                return self.perform(name, args, elicit)
+            with redirect_stdout(sys.stderr), (self.shared.turn() if self.shared else nullcontext()) as turn:
+                return self.perform(name, args, elicit, turn=turn)
         except HumanControl as error:
             return {"error": str(error), "code": "human_has_control"}
+        except BlockingIOError:
+            return {"error": "Another agent is using shared Chrome. Capture it again when the browser is available."}
         except ScreenError as error:
             return {"error": str(error)}
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
             return {"error": "Could not use the paired Chrome window. Open Hermes browser and retry."}
 
-    def perform(self, name, args, elicit):
+    def perform(self, name, args, elicit, *, turn=None):
         if not isinstance(args, dict):
             return {"error": "Invalid Chrome tool arguments."}
         epoch = self.epoch()
@@ -165,7 +169,8 @@ class Chrome:
                 return {"error": "Chrome input requires the paired Codex App Server approval route."}
         target = self.window(epoch, open_or_activate=capture, fit_capture=capture)
         was_captured, self.captured = self.captured, None
-        if not capture and was_captured != (epoch, target):
+        previous_turn = None if turn is None else turn - 1
+        if not capture and was_captured != (epoch, target, previous_turn):
             return {"error": "Capture the Chrome window again before sending input."}
         _, window_id, pid = target
 
@@ -193,7 +198,7 @@ class Chrome:
         if self.epoch() != epoch:
             raise ScreenError("Chrome control changed. Capture it again after handback.")
         if capture and (isinstance(result, ToolContent) or "error" not in result):
-            self.captured = (epoch, target)
+            self.captured = (epoch, target, turn)
         return result
 
 
@@ -205,7 +210,9 @@ def main():
     args = parser.parse_args()
     if not all(path.is_absolute() and path.is_dir() for path in (args.hermes_source, args.profile)):
         parser.error("Use the installed Hermes source and the paired profile’s absolute paths.")
-    os.environ.update(HERMES_HOME=str(args.profile), HERMES_INTERACTIVE="1", RIPTIDE_CODEX_COMPUTER_USE="1")
+    shared = shared_browser(args.profile)
+    home = shared.home if shared else args.profile
+    os.environ.update(HERMES_HOME=str(home), HERMES_INTERACTIVE="1", RIPTIDE_CODEX_COMPUTER_USE="1")
     sys.path.insert(0, str(args.hermes_source))
     writer = sys.stdout.buffer
     with redirect_stdout(sys.stderr):
@@ -214,7 +221,8 @@ def main():
         placement = import_module("tools.bot_desktop.placement")
         native = import_module("tools.computer_use.tool")
         schema = import_module("tools.computer_use.schema").COMPUTER_USE_SCHEMA
-    chrome = Chrome(args.profile, lease, desktop, placement, native, codex_reviewed_input=args.codex_reviewed_input)
+    chrome = Chrome(home, lease, desktop, placement, native,
+                    codex_reviewed_input=args.codex_reviewed_input, shared=shared)
     MCPServer(SERVER, tool_definitions(schema), chrome.call, sys.stdin.buffer, writer).serve()
 
 
