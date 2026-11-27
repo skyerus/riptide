@@ -101,7 +101,7 @@ async def fixture(socket, live=False, watch_progress=False, compaction=False, vo
         except ConnectionClosed:
             return
 
-    thread = {"id": CHAT, "name": "Busy Codex fixture", "cwd": WORKSPACE,
+    thread = {"id": CHAT, "name": "Release draft review" if voice else "Busy Codex fixture", "cwd": WORKSPACE,
               "status": {"type": "active" if live else "idle"}}
     thread_settings = {"model": "gpt-6.2-sol", "effort": "xhigh", "serviceTier": None}
     approval = None

@@ -6,86 +6,20 @@ import SwiftUI
 
 struct CodexVoiceScreen: View {
     let call: CodexVoiceCallModel
+    let agent: WorkspaceAgent?
     let minimize: () -> Void
 
     var body: some View {
-        VStack(spacing: 22) {
-            VStack(spacing: 6) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 33, weight: .medium))
-                    .foregroundStyle(ChatTheme.accent)
-                    .frame(width: 80, height: 80)
-                    .background(ChatTheme.surface, in: Circle())
-                    .accessibilityHidden(true)
-                Text("Codex voice").font(.title2.weight(.semibold))
-                Text(call.status)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .accessibilityIdentifier("codex-voice-status")
-            }
-            if let connectedAt = call.connectedAt, !call.finished {
-                Text(connectedAt, style: .timer)
-                    .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            Text(call.chat.map { "Continuing “\($0.title)” using the host’s ChatGPT sign-in." }
-                 ?? "Uses the host’s ChatGPT sign-in. This call opens a separate temporary chat.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            HStack(spacing: 24) {
-                if !call.listenOnly {
-                    control(call.muted ? "Unmute" : "Mute", symbol: call.muted ? "mic.slash.fill" : "mic.fill",
-                            tint: ChatTheme.surface, identifier: "codex-voice-mute") {
-                        call.toggleMute()
-                    }
-                    .disabled(!call.connected)
-                }
-                control(call.finished ? "Done" : "End call", symbol: call.finished ? "checkmark" : "phone.down.fill",
-                        tint: call.finished ? ChatTheme.surface : .red.opacity(0.78), identifier: "codex-voice-end") {
-                    if call.finished { minimize() }
-                    else { call.requestEnd() }
-                }
-            }
-        }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ChatTheme.background.ignoresSafeArea())
-        .overlay(alignment: .topTrailing) {
-            if !call.finished {
-                Button("Minimize call", systemImage: "chevron.down", action: minimize)
-                    .labelStyle(.iconOnly)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .accessibilityIdentifier("minimize-voice-call")
-                    .padding(12)
-            }
-        }
-    }
-
-    private func control(_ label: String, symbol: String, tint: Color,
-                         identifier: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(.white)
-                    .frame(width: 58, height: 58)
-                    .background(tint, in: Circle())
-                Text(label).font(.caption)
-            }
-            .frame(minWidth: 74)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
-        .accessibilityIdentifier(identifier)
+        AgentCallScreen(call: call, agent: agent, context: call.chat?.title ?? "Temporary call",
+                        accessibilityPrefix: "codex-voice", minimize: minimize) { EmptyView() }
     }
 }
 
 @MainActor
 @Observable
-final class CodexVoiceCallModel: SystemVoiceCall {
+final class CodexVoiceCallModel: VoiceCallControls {
     let id = UUID()
+    let workspaceID: String
     let chat: CodexChatSummary?
     let locator: WorkspaceChatID?
     let name: String
@@ -97,10 +31,11 @@ final class CodexVoiceCallModel: SystemVoiceCall {
     @ObservationIgnored private let clock = ContinuousClock()
     @ObservationIgnored private var connectedInstant: ContinuousClock.Instant?
     private(set) var connectedAt: Date?
-    private(set) var status = "Connecting…"
+    private var status = "Calling…"
     private(set) var connected = false
-    private(set) var muted = true
+    private(set) var muted = false
     private(set) var finished = false
+    private(set) var audioRoute = VoiceCallAudioRoute()
     private var systemAudioActive = false
     private var held = false
     @ObservationIgnored private var mediaTask: Task<Void, Never>?
@@ -109,7 +44,11 @@ final class CodexVoiceCallModel: SystemVoiceCall {
     @ObservationIgnored private var media: CodexVoiceMedia?
     @ObservationIgnored private var startupDeadline: Task<Void, Never>?
 
-    var listenOnly: Bool {
+    var displayStatus: String { status }
+    var canMute: Bool { connected && (!listenOnly || fixture) }
+    var audioControlsEnabled: Bool { !finished && !held && (systemAudioActive || (fixture && connected)) }
+
+    private var listenOnly: Bool {
         #if DEBUG && targetEnvironment(simulator)
         fixture || ProcessInfo.processInfo.environment["RIPTIDE_CODEX_VOICE_CHECK"] == "1"
         #else
@@ -120,6 +59,7 @@ final class CodexVoiceCallModel: SystemVoiceCall {
     init(endpoint: CodexLocalEndpoint, workspace: WorkspaceState, workspaceID: String,
          session: CodexWorkspaceSession? = nil) {
         self.endpoint = endpoint
+        self.workspaceID = workspaceID
         self.workspace = workspace
         self.session = session
         chat = session?.chat
@@ -157,6 +97,7 @@ final class CodexVoiceCallModel: SystemVoiceCall {
         let media = CodexVoiceMedia { [weak self] state in self?.handle(state) }
         if systemAudio { try media.prepareSystemAudio() }
         self.media = media
+        status = "Connecting…"
         mediaTask = Task { await connect(media) }
         startupDeadline = Task { [weak self] in
             try? await Task.sleep(for: .seconds(24))
@@ -187,7 +128,11 @@ final class CodexVoiceCallModel: SystemVoiceCall {
     }
 
     func toggleMute() {
-        guard connected, !listenOnly else { return }
+        guard canMute else { return }
+        if fixture {
+            setMuted(!muted)
+            return
+        }
         Task {
             do { try await NativeCallSystem.shared.requestMute(!muted, for: self) }
             catch { if !finished { status = "Couldn’t change microphone mute." } }
@@ -207,6 +152,24 @@ final class CodexVoiceCallModel: SystemVoiceCall {
     func setSystemAudioActive(_ active: Bool) {
         systemAudioActive = active
         updateAudio()
+        refreshAudioRoute()
+    }
+
+    func refreshAudioRoute() {
+        guard systemAudioActive else { return }
+        audioRoute = VoiceCallAudioRoute.current()
+    }
+
+    func setAudioOutput(speaker: Bool, input: AVAudioSessionPortDescription?) {
+        guard audioControlsEnabled, let media else { return }
+        if fixture {
+            audioRoute = VoiceCallAudioRoute(name: speaker ? "Speaker" : "iPhone",
+                                            port: speaker ? .builtInSpeaker : .builtInReceiver)
+            return
+        }
+        do { try media.selectSystemAudioOutput(speaker: speaker, input: input) }
+        catch { status = "Couldn’t change audio output." }
+        refreshAudioRoute()
     }
 
     private func updateAudio() {
@@ -275,8 +238,8 @@ final class CodexVoiceCallModel: SystemVoiceCall {
             connected = true
             connectedAt = .now
             connectedInstant = clock.now
-            muted = listenOnly
-            status = listenOnly ? "Connected · Microphone off" : "Connected"
+            if listenOnly { muted = !fixture }
+            status = listenOnly && !fixture ? "Connected · Microphone off" : "Connected"
             updateAudio()
             if !listenOnly { NativeCallSystem.shared.connected(self) }
             startupDeadline?.cancel()

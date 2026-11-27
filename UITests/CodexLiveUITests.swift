@@ -38,13 +38,29 @@ final class CodexLiveUITests: XCTestCase {
         let status = app.staticTexts["codex-voice-status"]
         XCTAssertTrue(status.waitForExistence(timeout: 6))
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label == %@", "Connected · Microphone off"), object: status
+            predicate: NSPredicate(format: "label == %@", "Connected"), object: status
         )], timeout: 8), .completed)
         let minimize = app.buttons["minimize-voice-call"]
         XCTAssertTrue(minimize.isHittable)
         XCTAssertLessThan(minimize.frame.midY, app.frame.height * 0.2)
-        capture(app, as: "Full-screen voice call")
+        let mute = app.buttons["codex-voice-mute"]
+        let speaker = app.buttons["codex-voice-audio"]
+        XCTAssertTrue(mute.isHittable && mute.isEnabled)
+        XCTAssertEqual(mute.label, "Mute")
+        XCTAssertTrue(speaker.isHittable && speaker.isEnabled)
+        XCTAssertEqual(speaker.value as? String, "iPhone")
+        capture(app, as: "Full-screen call controls")
+        mute.tap()
+        XCTAssertEqual(mute.label, "Unmute")
+        speaker.tap()
+        XCTAssertEqual(speaker.value as? String, "Speaker")
+        capture(app, as: "Call muted and speaker on")
         minimize.tap()
+        if !status.waitForNonExistence(timeout: 5) {
+            capture(app, as: "Call screen after minimizing")
+            XCTFail("The full-screen call did not minimize.")
+            return
+        }
         let resume = app.buttons["resume-voice-call"]
         XCTAssertTrue(resume.waitForExistence(timeout: 5))
         let back = app.navigationBars.buttons["BackButton"]
@@ -62,6 +78,8 @@ final class CodexLiveUITests: XCTestCase {
         XCTAssertTrue(resume.waitForExistence(timeout: 5))
         resume.tap()
         XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertEqual(mute.label, "Unmute")
+        XCTAssertEqual(speaker.value as? String, "Speaker")
         app.buttons["minimize-voice-call"].tap()
 
         let editor = app.descendants(matching: .any).matching(identifier: "codex-composer").firstMatch
@@ -118,7 +136,7 @@ final class CodexLiveUITests: XCTestCase {
         call.tap()
         let callStatus = app.staticTexts["codex-voice-status"]
         XCTAssertTrue(callStatus.waitForExistence(timeout: 6))
-        XCTAssertTrue(app.staticTexts["Continuing “\(title)” using the host’s ChatGPT sign-in."].exists)
+        XCTAssertTrue(app.staticTexts[title].exists)
         let connected = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label == %@", "Connected · Microphone off"), object: callStatus
         )

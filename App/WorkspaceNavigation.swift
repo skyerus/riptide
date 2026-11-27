@@ -24,10 +24,14 @@ struct WorkspaceNavigation: View {
         )) { presentation in
             switch presentation {
             case .codex(let call):
-                CodexVoiceScreen(call: call) { workspace.calls.presentation = nil }
+                CodexVoiceScreen(call: call, agent: workspace.agent(call.workspaceID)) {
+                    workspace.calls.presentation = nil
+                }
             case .native(let call):
-                NativeAgentCallScreen(call: call, agent: workspace.agent(call.locator.workspace),
-                                      minimize: { workspace.calls.presentation = nil })
+                AgentCallScreen(call: call, agent: workspace.agent(call.locator.workspace), context: nil,
+                                accessibilityPrefix: "native-voice", minimize: { workspace.calls.presentation = nil }) {
+                    call.approvals()
+                }
             }
         }
         .environment(workspace)
