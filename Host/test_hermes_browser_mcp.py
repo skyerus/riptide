@@ -1,8 +1,11 @@
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from hermes_browser_mcp import HANDOFF, Chrome, tool_result
+from hermes_chrome_profile import SHARED_BROWSER, shared_browser
 
 
 class ChromeComputerUseTests(unittest.TestCase):
@@ -70,6 +73,27 @@ class ChromeComputerUseTests(unittest.TestCase):
         reply = self.chrome.call("chrome_input", {"action": "key", "keys": "ctrl+l"}, None)
         self.assertIn("requires the paired Codex App Server approval route", reply["error"])
         self.native.handle_computer_use.assert_not_called()
+
+    def test_shared_desktop_invalidates_capture_after_another_agent_acts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "profiles" / "owner"
+            home.mkdir(parents=True)
+            (root / SHARED_BROWSER).write_text('{"owner":"owner","members":["owner","default"]}')
+            self.chrome.shared = shared_browser(root)
+            self.assertEqual(self.chrome.shared.home, home)
+            self.assertIsNone(shared_browser(root / "profiles" / "excluded"))
+            other = Chrome(home, self.lease, None, None, self.native, shared=shared_browser(home))
+            other.window = self.chrome.window
+            capture = {"action": "capture"}
+            self.assertTrue(self.chrome.call("computer_use", capture, None)["ok"])
+            self.assertTrue(other.call("computer_use", capture, None)["ok"])
+            self.native.handle_computer_use.reset_mock()
+            self.assertIn("Capture the Chrome window again", self.chrome.call(
+                "chrome_input", {"action": "key", "keys": "ctrl+l"}, None)["error"])
+            self.native.handle_computer_use.assert_not_called()
+            with other.shared.turn():
+                self.assertIn("Another agent", self.chrome.call("computer_use", capture, None)["error"])
 
     def test_handoff_requires_a_new_lease_epoch(self):
         reply = {"action": "accept", "content": {"browser": HANDOFF}}
