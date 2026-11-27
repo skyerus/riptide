@@ -86,7 +86,8 @@ def verify(argv, verify_talk=False):
         require(reply == {"error": "invalidAudio"}, "The staged dictation route did not accept the request.")
     if verify_talk:
         reply = json.loads(run("riptide-hermes-talk", '{"operation":"status"}\n'))
-        require(reply == {"ok": True}, "The staged SSH call route could not reach subscription-backed Hermes Talk.")
+        require(isinstance(reply, dict) and reply.get("ok") is True,
+                "The staged SSH call route could not reach subscription-backed Hermes Talk.")
     if "--hermes-screen" in argv:
         require(run("riptide-hermes-screen", "") == "", "The Hermes screen command did not close cleanly.")
     if "--hermes-browser-mcp" in argv:

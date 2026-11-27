@@ -59,6 +59,19 @@ class SSHReleaseTests(unittest.TestCase):
         self.assertEqual(backup.read_bytes(), original)
         self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
 
+    def test_voice_readiness_accepts_the_status_voice_catalog(self):
+        command = [sys.executable, "ssh_acp.py", "--", "/bin/hermes-acp"]
+        for response in ('{"ok":true}', '{"ok":true,"voices":["cove","juniper"]}'):
+            with self.subTest(response=response), patch("update_ssh_release.subprocess.run") as run:
+                run.return_value = subprocess.CompletedProcess(command, 0, stdout=response)
+                verify(command, verify_talk=True)
+                self.assertEqual(run.call_args.kwargs["env"]["SSH_ORIGINAL_COMMAND"], "riptide-hermes-talk")
+
+        with patch("update_ssh_release.subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess(command, 0, stdout='{"ok":false,"voices":["cove"]}')
+            with self.assertRaisesRegex(ValueError, "could not reach subscription-backed Hermes Talk"):
+                verify(command, verify_talk=True)
+
     def test_staged_pairing_runs_with_only_the_versioned_host_payload(self):
         home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         wrapper = stage(home, "b" * 40)
