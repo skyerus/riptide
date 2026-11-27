@@ -33,6 +33,18 @@ public struct CodexLocalEndpoint: Sendable {
         .webSocket(at: url, bearer: bearer, accountFingerprint: accountFingerprint)
     }
 
+    public func subscriptionVoices() async throws -> [String] {
+        let client = makeClient()
+        do {
+            let voices = try await client.subscriptionVoices()
+            await client.close()
+            return voices
+        } catch {
+            await client.close()
+            throw error
+        }
+    }
+
     public func makeClient() -> CodexLiveClient {
         let transport = RemoteWebSocketTransport(url: url, bearer: bearer)
         return CodexLiveClient(transport: transport, workspace: workspace, accountFingerprint: accountFingerprint)
@@ -117,6 +129,10 @@ public actor CodexLiveClient {
     private var activeTurnID: String?
     private var voiceThreadID: String?
     private var voiceAttempt: UUID?
+    private var voiceSessionID: String?
+    private var canonicalVoiceTranscript = VoiceTranscript()
+    private var voiceItemRoles: [String: ChatRole] = [:]
+    private var legacyVoiceTranscript = VoiceTranscript()
     private var endingVoice = false
     private var joined = false
     private var joiningEvents: [CodexLiveEvent] = []
@@ -490,21 +506,31 @@ public actor CodexLiveClient {
 
     public func close() { close(CodexLiveError.connectionClosed) }
 
-    public func startSubscriptionCall(offer: String, threadID: String? = nil) async throws
+    public func subscriptionVoices() async throws -> [String] {
+        if reader == nil {
+            try await connect(experimental: true)
+            _ = try await checkedAccount()
+        }
+        let catalog = try await call("thread/realtime/listVoices", [:])["voices"]
+        guard let values = (catalog?["v3"] ?? catalog?["v1"])?.array else { throw CodexLiveError.invalidResponse }
+        return values.compactMap(\.string)
+    }
+
+    public func startSubscriptionCall(offer: String, threadID: String? = nil, voice: String? = nil) async throws
         -> AsyncThrowingStream<CodexCallEvent, any Error> {
         guard offer.hasPrefix("v=0"), offer.utf8.count <= 65_536 else { throw CodexLiveError.invalidResponse }
         guard !endingVoice, voiceAttempt == nil else { throw CodexLiveError.rejected("A call is already open or ending.") }
         let attempt = UUID()
         voiceAttempt = attempt
         do {
-            return try await openVoice(offer: offer, on: threadID, attempt: attempt)
+            return try await openVoice(offer: offer, on: threadID, voice: voice, attempt: attempt)
         } catch {
             if voiceAttempt == attempt { await endSubscriptionCall() }
             throw error
         }
     }
 
-    private func openVoice(offer: String, on threadID: String?, attempt: UUID) async throws
+    private func openVoice(offer: String, on threadID: String?, voice: String?, attempt: UUID) async throws
         -> AsyncThrowingStream<CodexCallEvent, any Error> {
         if verifiedChat {
             guard let threadID, threadID == self.threadID else { throw CodexLiveError.wrongWorkspace }
@@ -533,28 +559,41 @@ public actor CodexLiveClient {
             .makeStream(bufferingPolicy: .bufferingNewest(2))
         emitVoice = continuation
         voiceThreadID = id
-        _ = try await call("thread/realtime/start", [
+        var params: [String: JSON] = [
             "threadId": .string(id), "version": "v3", "model": "gpt-live-1.1-codex",
             "outputModality": "audio", "includeStartupContext": .boolean(threadID != nil),
-            "voiceSessionId": .string(UUID().uuidString.lowercased()),
+            "voiceSessionId": .string(attempt.uuidString.lowercased()),
             "transport": ["type": "webrtc", "sdp": .string(offer)]
-        ])
+        ]
+        if let voice { params["voice"] = .string(voice) }
+        _ = try await call("thread/realtime/start", .object(params))
         return stream
     }
 
-    public func endSubscriptionCall() async {
-        guard !endingVoice else { return }
+    @discardableResult
+    public func endSubscriptionCall() async -> [VoiceTranscriptLine] {
+        guard !endingVoice else { return [] }
         endingVoice = true
         defer { endingVoice = false }
         voiceAttempt = nil
-        let id = voiceThreadID
+        if let id = voiceThreadID, !closed {
+            _ = try? await call("thread/realtime/stop", ["threadId": .string(id)], timeout: .seconds(4))
+            // Keep receiving speech through the close notification, including the final utterance.
+            for _ in 0..<15 where voiceThreadID != nil && !closed {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
+            }
+        }
         voiceThreadID = nil
+        voiceSessionID = nil
         emitVoice?.finish()
         emitVoice = nil
-        if let id, !closed {
-            _ = try? await call("thread/realtime/stop", ["threadId": .string(id)])
-        }
+        let canonical = canonicalVoiceTranscript.lines
+        let lines = canonical.isEmpty ? legacyVoiceTranscript.lines : canonical
+        canonicalVoiceTranscript = VoiceTranscript()
+        voiceItemRoles.removeAll()
+        legacyVoiceTranscript = VoiceTranscript()
         if !verifiedChat { close() }
+        return lines
     }
 
     private func resumeSavedThread(_ id: String) async throws -> JSON {
@@ -596,13 +635,13 @@ public actor CodexLiveClient {
         try await transport.send(JSONEncoder().encode(message))
     }
 
-    private func call(_ method: String, _ params: JSON) async throws -> JSON {
+    private func call(_ method: String, _ params: JSON, timeout duration: Duration = .seconds(12)) async throws -> JSON {
         try Task.checkCancellation()
         guard !closed else { throw CodexLiveError.connectionClosed }
         nextID += 1
         let id = JSON.integer(nextID)
         let timeout = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(12)) } catch { return }
+            do { try await Task.sleep(for: duration) } catch { return }
             await self?.fail(id, CodexLiveError.timedOut)
         }
         defer { timeout.cancel() }
@@ -641,8 +680,20 @@ public actor CodexLiveClient {
                 case "thread/realtime/closed":
                     self.voiceThreadID = nil
                     emitVoice?.finish()
-                case "thread/realtime/item/completed":
-                    if savedChat { receiveSavedChat(method, requestID: nil, params: params) }
+                case "thread/realtime/started":
+                    voiceSessionID = params["realtimeSessionId"]?.string ?? voiceSessionID
+                case "thread/realtime/item/started", "thread/realtime/item/completed":
+                    if let item = params["item"] { receiveVoiceItem(item, final: method.hasSuffix("/completed")) }
+                case "thread/realtime/item/transcript/delta":
+                    if let id = params["itemId"]?.string, let role = voiceItemRoles[id], let text = params["delta"]?.string {
+                        canonicalVoiceTranscript.append(role: role, text: text, itemID: id, final: false)
+                    }
+                case "thread/realtime/transcript/delta", "thread/realtime/transcript/done":
+                    let final = method.hasSuffix("/done")
+                    if let role = params["role"]?.string.flatMap(ChatRole.init(rawValue:)),
+                       let text = params[final ? "text" : "delta"]?.string {
+                        legacyVoiceTranscript.append(role: role, text: text, final: final)
+                    }
                 default:
                     break
                 }
@@ -666,6 +717,27 @@ public actor CodexLiveClient {
             else if let result = packet["result"] { request.resume(returning: result) }
             else { request.resume(throwing: CodexLiveError.invalidResponse) }
         }
+    }
+
+    private func receiveVoiceItem(_ item: JSON, final: Bool) {
+        guard let session = item["realtimeSessionId"]?.string,
+              voiceSessionID == nil || voiceSessionID == session else { return }
+        if item["type"] == "realtimeSessionStarted" {
+            voiceSessionID = session
+            return
+        }
+        let transcript = item["type"] == "frame" ? item["channels"]?["voice_transcript"] : item
+        guard item["type"] == "transcriptSegment" || item["type"] == "frame",
+              let id = item["id"]?.string,
+              let role = transcript?["role"]?.string.flatMap(ChatRole.init(rawValue:)),
+              let text = transcript?["text"]?.string else { return }
+        voiceSessionID = session
+        if final {
+            voiceItemRoles[id] = nil
+        } else if voiceItemRoles.count < 1_000 {
+            voiceItemRoles[id] = role
+        }
+        canonicalVoiceTranscript.append(role: role, text: text, itemID: id, final: final)
     }
 
     private func receiveSavedChat(_ method: String, requestID: JSON?, params: JSON) {

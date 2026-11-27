@@ -115,6 +115,13 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
 
     public var canUseSSHTalk: Bool { kind == .hermes && sshHostFingerprint != nil }
 
+    public func hermesSubscriptionVoices(credential: String) async throws -> [String] {
+        guard let talk = makeHermesSSHTalk(credential: credential) else {
+            throw NativeVoiceError.sshTalkUnavailable
+        }
+        return try await talk.availableVoices()
+    }
+
     public func makeHermesSSHTalk(credential: String) -> (any HermesTalkCalling)? {
         guard canUseSSHTalk, SSHDeviceIdentity(privateCredential: credential) != nil else { return nil }
         return HermesSSHTalk {

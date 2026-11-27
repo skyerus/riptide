@@ -47,6 +47,7 @@ public actor OpenClawTalk {
     private var challenge: JSON?
     private var pending: [String: CheckedContinuation<JSON, any Error>] = [:]
     private var closed = false
+    private var transcript = VoiceTranscript()
 
     public init?(profile: NativeVoiceProfile, token: String, identity: OpenClawDeviceIdentity) {
         guard profile.kind == .openClaw, RemoteProfile.validBearer(token),
@@ -100,12 +101,14 @@ public actor OpenClawTalk {
         output.yield(try NativeVoiceHTTP.checkedSDP(String(data: answer, encoding: .utf8)))
     }
 
-    public func end() async {
+    @discardableResult
+    public func end() async -> [VoiceTranscriptLine] {
         if let sessionKey, !closed {
             self.sessionKey = nil
             _ = try? await call("talk.client.close", ["sessionKey": .string(sessionKey), "voiceSessionId": .string(voiceID)])
         }
         shutdown()
+        return transcript.lines
     }
 
     private func connect() async throws -> JSON {
@@ -166,9 +169,13 @@ public actor OpenClawTalk {
         if frame["type"] == "event" {
             if frame["event"] == "connect.challenge", challenge == nil { challenge = frame["payload"] }
             if frame["event"] == "talk.event", let payload = frame["payload"],
-               payload["voiceSessionId"]?.string == voiceID, payload["talkEvent"]?["type"] == "session.closed" {
-                sessionKey = nil
-                shutdown()
+               payload["voiceSessionId"]?.string == voiceID, let event = payload["talkEvent"] {
+                if event["type"] == "session.closed" {
+                    sessionKey = nil
+                    shutdown()
+                } else {
+                    receiveTranscript(event)
+                }
             }
         } else if frame["type"] == "res", let id = frame["id"]?.string,
                   let request = pending.removeValue(forKey: id) {
@@ -183,6 +190,22 @@ public actor OpenClawTalk {
                 request.resume(throwing: NativeVoiceError.gatewayUnavailable)
             }
         }
+    }
+
+    private func receiveTranscript(_ event: JSON) {
+        guard let type = event["type"]?.string, let payload = event["payload"],
+              let text = payload["text"]?.string, let turnID = event["turnId"]?.string else { return }
+        let role: ChatRole
+        switch type {
+        case "output.text.delta", "output.text.done":
+            role = .assistant
+        case "transcript.delta", "transcript.done":
+            guard let reportedRole = payload["role"]?.string.flatMap(ChatRole.init(rawValue:)) else { return }
+            role = reportedRole
+        default:
+            return
+        }
+        transcript.append(role: role, text: text, itemID: turnID, final: type.hasSuffix(".done"))
     }
 
     private func fail(_ id: String, _ error: any Error) {

@@ -401,16 +401,37 @@ struct ACPCapabilityTests {
                 ])])]
             case "account/read":
                 return [.reply(id, result: ["account": ["type": "chatgpt"]])]
+            case "thread/realtime/listVoices":
+                return [.reply(id, result: ["voices": ["v1": .array(["arbor"]), "v3": .array(["juniper", "cove"])]])]
             case "thread/realtime/start":
                 #expect(params?["threadId"] == "existing")
+                #expect(params?["voice"] == "juniper")
                 #expect(params?["includeStartupContext"] == .boolean(true))
+                #expect(params?["flushTranscriptTailOnSessionEnd"] == nil)
                 return [
+                    .notification("thread/realtime/started", params: [
+                        "threadId": "existing", "realtimeSessionId": "this-call", "version": "v3"
+                    ]),
                     .notification("thread/realtime/sdp", params: ["threadId": "existing", "sdp": "v=0 same-chat"]),
+                    .notification("thread/realtime/transcript/delta", params: [
+                        "threadId": "existing", "role": "user", "delta": "Check"
+                    ]),
                     .reply(id, result: [:])
                 ]
             case "thread/realtime/stop":
                 #expect(params?["threadId"] == "existing")
-                return [.reply(id, result: [:])]
+                return [
+                    .reply(id, result: [:]),
+                    .notification("thread/realtime/item/completed", params: ["threadId": "existing", "item": [
+                        "id": "wrong", "type": "transcriptSegment", "role": "user",
+                        "realtimeSessionId": "another-call", "text": "Must not be saved"
+                    ]]),
+                    .notification("thread/realtime/item/completed", params: ["threadId": "existing", "item": [
+                        "id": "speech", "type": "transcriptSegment", "role": "user",
+                        "realtimeSessionId": "this-call", "text": "Check the draft."
+                    ]]),
+                    .notification("thread/realtime/closed", params: ["threadId": "existing", "reason": "requested"])
+                ]
             case "turn/steer":
                 #expect(params?["expectedTurnId"] == "running")
                 if params?["input"]?.array?.first?["text"] == "send at completion" {
@@ -442,10 +463,11 @@ struct ACPCapabilityTests {
             return
         }
         #expect(approval.command == "echo check")
-        let voice = try await client.startSubscriptionCall(offer: "v=0\r\n", threadID: "existing")
+        #expect(try await client.subscriptionVoices() == ["juniper", "cove"])
+        let voice = try await client.startSubscriptionCall(offer: "v=0\r\n", threadID: "existing", voice: "juniper")
         var voiceEvents = voice.makeAsyncIterator()
         #expect(try await voiceEvents.next() == .answer("v=0 same-chat"))
-        await client.endSubscriptionCall()
+        #expect(await client.endSubscriptionCall() == [.init(role: .user, text: "Check the draft.")])
         try await client.answer(approval, allow: false)
         if case .approvalResolved(let id) = try await chatEvents.next() {
             #expect(id == approval.id)

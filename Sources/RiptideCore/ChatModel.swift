@@ -32,6 +32,11 @@ public struct ChatEntry: Identifiable, Equatable, Sendable {
     public fileprivate(set) var photos: [TranscriptPhoto] = []
     public fileprivate(set) var receipt: MessageReceipt?
     public fileprivate(set) var isAssistantProgress = false
+
+    public var isConversationMessage: Bool {
+        guard !isAssistantProgress, case .message = content else { return false }
+        return true
+    }
 }
 
 public struct Transcript: Equatable, Sendable {
@@ -270,6 +275,7 @@ public final class AgentChatModel {
     @ObservationIgnored private var makeClient: (@Sendable () -> ACPClient)?
     @ObservationIgnored private var observer: Task<Void, Never>?
     @ObservationIgnored private var connectionInUse = false
+    @ObservationIgnored private var voiceConnectionInUse = false
     @ObservationIgnored private var idleTimeout: Duration?
     @ObservationIgnored private var idleDeadline: ContinuousClock.Instant?
     @ObservationIgnored private var idleTask: Task<Void, Never>?
@@ -409,6 +415,21 @@ public final class AgentChatModel {
         scheduleIdleExpiration()
     }
 
+    public func isLoaded(_ sessionID: String) -> Bool { chats[sessionID]?.loaded == true }
+
+    public func recentMessages(in sessionID: String) -> [ChatEntry] {
+        Array(chats[sessionID]?.transcript.entries.suffix(16) ?? [])
+    }
+
+    public func messageCount(in sessionID: String) -> Int {
+        chats[sessionID]?.transcript.entries.count { $0.isConversationMessage } ?? 0
+    }
+
+    public func setVoiceConnectionInUse(_ inUse: Bool) {
+        voiceConnectionInUse = inUse
+        scheduleIdleExpiration()
+    }
+
     public func preloadMain() async {
         let main = target.mainSessionID
         guard mainPreload == nil, chats[main]?.loaded != true, chats[main]?.loading != true else { return }
@@ -526,8 +547,8 @@ public final class AgentChatModel {
     }
 
     public func refreshTalkHistory(in sessionID: String) async {
-        guard selectedID == sessionID, let client, selected.loaded, !selected.loading, !selected.working,
-              !selected.configuring, selected.permissions.isEmpty else { return }
+        guard let chat = chats[sessionID], let client, chat.loaded, !chat.loading, !chat.working,
+              !chat.configuring, chat.permissions.isEmpty else { return }
         chats[sessionID]?.loading = true
         liveEventsDuringLoad[sessionID] = []
         defer {
@@ -766,7 +787,7 @@ public final class AgentChatModel {
 
     public func submitHermesVoice(_ rawText: String, in sessionID: String) async throws -> String {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard sessionID == selectedID, let client = preparePrompt(text, for: sessionID) else {
+        guard let client = preparePrompt(text, for: sessionID) else {
             throw ACPError.rejected("This chat is already working or no longer open.")
         }
         var completed = false
@@ -891,7 +912,7 @@ public final class AgentChatModel {
         idleTask?.cancel()
         idleTask = nil
         idleDeadline = nil
-        guard let idleTimeout, client != nil, !connectionInUse else { return }
+        guard let idleTimeout, client != nil, !connectionInUse, !voiceConnectionInUse else { return }
         let deadline = ContinuousClock.now + idleTimeout
         idleDeadline = deadline
         idleTask = Task { [weak self] in

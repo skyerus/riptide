@@ -2,6 +2,30 @@ import AVFAudio
 import Foundation
 @preconcurrency import WebRTC
 
+struct VoiceCallAudioRoute {
+    var name = "iPhone"
+    var port: AVAudioSession.Port? = .builtInReceiver
+    var externalInputs: [AVAudioSessionPortDescription] = []
+
+    var onSpeaker: Bool { port == .builtInSpeaker }
+
+    var symbol: String {
+        switch port {
+        case .bluetoothHFP, .bluetoothA2DP, .bluetoothLE, .headphones: "headphones"
+        default: onSpeaker ? "speaker.wave.2.fill" : "speaker.wave.2"
+        }
+    }
+
+    @MainActor
+    static func current() -> Self {
+        let session = AVAudioSession.sharedInstance()
+        let output = session.currentRoute.outputs.first
+        let name = output?.portType == .builtInReceiver ? "iPhone" : output?.portName ?? "iPhone"
+        let externalInputs = (session.availableInputs ?? []).filter { $0.portType != .builtInMic }
+        return Self(name: name, port: output?.portType, externalInputs: externalInputs)
+    }
+}
+
 @MainActor
 final class CodexVoiceMedia: NSObject {
     enum State: Sendable {
@@ -17,6 +41,7 @@ final class CodexVoiceMedia: NSObject {
     }()
 
     private var peer: RTCPeerConnection?
+    private var disconnectDeadline: Task<Void, Never>?
     private var microphone: RTCAudioTrack?
     private var channel: RTCDataChannel?
     private var audioDisabled = false
@@ -63,8 +88,9 @@ final class CodexVoiceMedia: NSObject {
         session.lockForConfiguration()
         defer { session.unlockForConfiguration() }
         let audioSession = AVAudioSession.sharedInstance()
+        let destination = speaker ? nil : input ?? audioSession.availableInputs?.first { $0.portType == .builtInMic }
         try audioSession.overrideOutputAudioPort(.none)
-        try audioSession.setPreferredInput(input)
+        try audioSession.setPreferredInput(destination)
         if speaker { try audioSession.overrideOutputAudioPort(.speaker) }
     }
 
@@ -121,6 +147,8 @@ final class CodexVoiceMedia: NSObject {
     }
 
     func close() {
+        disconnectDeadline?.cancel()
+        disconnectDeadline = nil
         setMuted(true)
         channel?.close()
         peer?.close()
@@ -164,7 +192,22 @@ extension CodexVoiceMedia: RTCPeerConnectionDelegate {
         case .failed, .closed: state = .failed
         default: return
         }
-        Task { @MainActor [weak self] in self?.onState(state) }
+        Task { @MainActor [weak self] in self?.reportPeerState(state) }
+    }
+
+    private func reportPeerState(_ state: State) {
+        guard peer != nil else { return }
+        disconnectDeadline?.cancel()
+        disconnectDeadline = nil
+        if state == .interrupted {
+            // ICE can briefly disconnect during a network handoff while the call is still active.
+            disconnectDeadline = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(8)) } catch { return }
+                self?.onState(.interrupted)
+            }
+        } else {
+            onState(state)
+        }
     }
 
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}

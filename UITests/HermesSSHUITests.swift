@@ -43,8 +43,14 @@ final class HermesSSHUITests: XCTestCase {
                            .completed)
             mute.tap()
         }
+        app.buttons["minimize-voice-call"].tap()
+        let callBar = app.buttons["resume-voice-call"]
+        XCTAssertTrue(callBar.waitForExistence(timeout: 6))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch.exists)
         XCUIDevice.shared.press(.home)
         app.activate()
+        XCTAssertTrue(callBar.waitForExistence(timeout: 6))
+        callBar.tap()
         let connected = NSPredicate(format: "label == %@", connectedLabel)
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: connected, object: status)], timeout: 10),
                        .completed, status.label)
@@ -54,6 +60,7 @@ final class HermesSSHUITests: XCTestCase {
         add(capture)
         app.buttons["native-voice-end"].tap()
         XCTAssertTrue(status.waitForNonExistence(timeout: 12))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "chat-call-ended").firstMatch.waitForExistence(timeout: 8))
     }
 
     @MainActor

@@ -115,11 +115,17 @@ final class RemoteStore {
         voices = updated
     }
 
+    func subscriptionVoices(for profile: RemoteProfile) async throws -> [String] {
+        guard profile.canUseSSHTalk, voice(for: profile) == nil else { return [] }
+        guard let credential = bearer(for: profile) else { throw PairingFailure.keychain }
+        return try await profile.hermesSubscriptionVoices(credential: credential)
+    }
+
     func voiceLink(for profile: RemoteProfile) throws -> NativeVoiceLink {
         if profile.canUseSSHTalk, voice(for: profile) == nil {
             guard let credential = bearer(for: profile),
                   let talk = profile.makeHermesSSHTalk(credential: credential) else { throw PairingFailure.keychain }
-            return .hermesTalk(talk)
+            return .hermesTalk(talk, allowsVoiceSelection: true)
         }
         guard let voice = voices[profile.id], voice.kind == profile.kind,
               let token = KeychainToken.read(profile.id, purpose: "voice") else { throw PairingFailure.keychain }
@@ -128,7 +134,7 @@ final class RemoteStore {
             guard let client = HermesTalkVoice(profile: voice, dashboardToken: token, talkToken: talkToken) else {
                 throw PairingFailure.invalid
             }
-            return .hermesTalk(client)
+            return .hermesTalk(client, allowsVoiceSelection: false)
         }
         if let hermes = HermesLiveVoice(profile: voice, token: token) { return .hermes(hermes) }
         let identity = try openClawIdentity(for: profile.id, create: false)
@@ -163,7 +169,7 @@ final class RemoteStore {
 
 enum NativeVoiceLink {
     case hermes(HermesLiveVoice)
-    case hermesTalk(any HermesTalkCalling)
+    case hermesTalk(any HermesTalkCalling, allowsVoiceSelection: Bool)
     case openClaw(OpenClawTalk)
 }
 

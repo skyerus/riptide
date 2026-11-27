@@ -7,15 +7,40 @@ struct WorkspaceNavigation: View {
     @State private var alerts = WorkspaceAlerts()
 
     var body: some View {
-        NavigationStack(path: $workspace.path) {
-            WorkspaceSidebar()
-                .navigationDestination(for: WorkspaceRoute.self) { route in
-                    WorkspaceDestination(route: route)
-                        .id(route)
+        VStack(spacing: 0) {
+            if let call = workspace.calls.active, workspace.calls.presentation == nil, !call.finished {
+                VoiceCallBar(call: call, resume: workspace.calls.resume)
+            }
+            NavigationStack(path: $workspace.path) {
+                WorkspaceSidebar()
+                    .navigationDestination(for: WorkspaceRoute.self) { route in
+                        WorkspaceDestination(route: route)
+                            .id(route)
+                    }
+            }
+        }
+        .fullScreenCover(item: Binding(
+            get: { workspace.calls.presentation }, set: { workspace.calls.presentation = $0 }
+        )) { presentation in
+            switch presentation {
+            case .codex(let call):
+                CodexVoiceScreen(call: call, agent: workspace.agent(call.workspaceID)) {
+                    workspace.calls.presentation = nil
                 }
+            case .native(let call):
+                AgentCallScreen(call: call, agent: workspace.agent(call.locator.workspace), context: nil,
+                                accessibilityPrefix: "native-voice", minimize: { workspace.calls.presentation = nil }) {
+                    call.approvals()
+                }
+            }
         }
         .environment(workspace)
         .environment(alerts)
+        .onChange(of: nativeCallLoaded) {
+            if nativeCallLoaded == false, case .native(let call) = workspace.calls.active {
+                call.finish("Chat disconnected.")
+            }
+        }
         .sheet(isPresented: $workspace.showingSwitcher, onDismiss: {
             if let tab = workspace.sidebarRequested {
                 workspace.sidebarRequested = nil
@@ -67,6 +92,11 @@ struct WorkspaceNavigation: View {
                 catch { return }
             }
         }
+    }
+
+    private var nativeCallLoaded: Bool? {
+        guard case .native(let call) = workspace.calls.active else { return nil }
+        return call.model.isLoaded(call.chatID)
     }
 
     private func notify(_ entries: [WorkspaceAttention]) {

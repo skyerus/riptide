@@ -66,6 +66,19 @@ class HermesSSHTalkTests(unittest.TestCase):
             ("/live/events", {**bound, "after": 0}), ("/live/close", bound), ("/close", self.context),
         ])
 
+    def test_transcript_poll_only_forwards_speech_fields_from_the_bound_call(self):
+        self.call.binding = "test-binding"
+        self.call.context = self.context
+        with patch.object(self.call, "send", return_value={"ok": True, "cursor": 1, "events": [
+            {"sequence": 1, "type": "transcript", "role": "assistant", "text": "I’ll reply in chat.",
+             "final": True, "item_id": "line-one", "internal": "keep private"},
+        ]}) as send:
+            self.assertEqual(self.call.events(0)["events"], [
+                {"sequence": 1, "type": "transcript", "role": "assistant", "text": "I’ll reply in chat.",
+                 "final": True, "item_id": "line-one"},
+            ])
+            send.assert_called_once_with("/live/events", {**self.context, "binding_id": "test-binding", "after": 0})
+
     def test_wrong_profile_is_never_attached(self):
         other_profile = {"ok": True, "targets": [{**self.selection, "profile": "other", "target_id": "test-target"}]}
         with patch.object(self.call, "send", side_effect=[self.ready, other_profile]) as send:

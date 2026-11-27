@@ -4,7 +4,6 @@ import SwiftUI
 struct CodexLiveScreen: View {
     let endpoint: CodexLocalEndpoint
     @Environment(WorkspaceState.self) private var workspace
-    @State private var showVoice = false
     @State private var session: CodexWorkspaceSession?
     @State private var turn: CodexLiveTurn?
     @State private var watchedTurnStartedAt: Date?
@@ -152,12 +151,15 @@ struct CodexLiveScreen: View {
                     Label("Saved chats", systemImage: "bubble.left.and.bubble.right").labelStyle(.iconOnly)
                 }
                 .accessibilityIdentifier("saved-codex-chats")
-                Button("Call Codex", systemImage: "phone") { showVoice = true }
+                Button("Call Codex", systemImage: "phone") {
+                    workspace.calls.present(.codex(CodexVoiceCallModel(endpoint: endpoint, workspace: workspace,
+                                                                     workspaceID: WorkspaceState.localID)))
+                }
+                    .disabled(!workspace.calls.canOpen())
                     .labelStyle(.iconOnly)
                     .accessibilityIdentifier("call-codex")
             }
         }
-        .sheet(isPresented: $showVoice) { CodexVoiceScreen(endpoint: endpoint) }
         .task(id: attempt) { await watch() }
     }
 
