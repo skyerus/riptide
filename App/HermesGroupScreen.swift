@@ -445,6 +445,8 @@ struct HermesGroupScreen: View {
     private func message(_ event: HermesGroupEvent, text: String) -> some View {
         let member = session.members.first { $0.id == event.actor.id }
         let author = session.author(of: event)
+        let sent = session.sentPhotos[event.eventId]
+        let displayText = sent?.text ?? text
         return HStack(alignment: .top, spacing: 9) {
             if event.isOwnMessage { Spacer(minLength: 36) }
             else if event.actor.kind == "member" { GroupIdentityIcon(name: author, size: 30) }
@@ -454,13 +456,16 @@ struct HermesGroupScreen: View {
                     Text(Date(timeIntervalSince1970: event.createdAt), style: .time)
                         .font(.caption2).foregroundStyle(ChatTheme.muted)
                 }
-                Text(verbatim: text)
-                    .font(.body)
-                    .foregroundStyle(ChatTheme.ink)
-                    .textSelection(.enabled)
-                    .padding(event.isOwnMessage ? 12 : 0)
-                    .background(event.isOwnMessage ? ChatTheme.raised : .clear, in: RoundedRectangle(cornerRadius: 17))
-                    .accessibilityIdentifier("hermes-group-message-\(event.seq)")
+                if let sent { TranscriptPhotoStrip(photos: sent.photos) }
+                if !displayText.isEmpty {
+                    Text(verbatim: displayText)
+                        .font(.body)
+                        .foregroundStyle(ChatTheme.ink)
+                        .textSelection(.enabled)
+                        .padding(event.isOwnMessage ? 12 : 0)
+                        .background(event.isOwnMessage ? ChatTheme.raised : .clear, in: RoundedRectangle(cornerRadius: 17))
+                        .accessibilityIdentifier("hermes-group-message-\(event.seq)")
+                }
             }
             if !event.isOwnMessage { Spacer(minLength: 18) }
         }

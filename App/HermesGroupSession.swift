@@ -8,9 +8,11 @@ final class HermesGroupSession {
     let client: HermesGroupsClient
     let roomID: String
     private let pendingFile: URL
+    private let photoStore: SentPhotoStore
     private(set) var snapshot: HermesGroupState?
     private(set) var capabilities: HermesGroupCapabilities?
     private(set) var events: [HermesGroupEvent] = []
+    private(set) var sentPhotos: [String: SentPhotoMessage] = [:]
     private(set) var pending: HermesGroupSend?
     private(set) var sending = false
     private(set) var acting = false
@@ -28,6 +30,7 @@ final class HermesGroupSession {
     init(client: HermesGroupsClient, roomID: String, workspaceID: String) {
         self.client = client
         self.roomID = roomID
+        photoStore = SentPhotoStore(workspace: workspaceID)
         pendingFile = Self.draftDirectory(workspaceID).appending(path: Self.digest(roomID))
         restorePending()
     }
@@ -45,11 +48,13 @@ final class HermesGroupSession {
         SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
+    private static func eventID(for send: HermesGroupSend) -> String { "user:" + digest(send.id) }
+
     private func restorePending() {
         do {
             let saved = try JSONDecoder().decode(HermesGroupSend.self, from: Data(contentsOf: pendingFile))
             pending = saved
-            draft = saved.text
+            draft = photoStore.read(id: Self.eventID(for: saved), chat: roomID)?.text ?? saved.text
             sendMayHavePosted = true
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
             // A first visit has no unresolved send.
@@ -114,11 +119,17 @@ final class HermesGroupSession {
             guard cursor >= (state.room.latestSeq ?? cursor) else { throw HermesGroupError.invalidReply }
             try Task.checkCancellation()
             snapshot = state
-            if reset { events = added }
+            if reset {
+                events = added
+                sentPhotos = [:]
+            }
             else if !added.isEmpty { events += added }
+            for event in added where event.isOwnMessage {
+                sentPhotos[event.eventId] = photoStore.read(id: event.eventId, chat: roomID)
+            }
             readError = nil
             if !sending, let pending,
-               events.contains(where: { $0.eventId == "user:" + Self.digest(pending.id) }) {
+               events.contains(where: { $0.eventId == Self.eventID(for: pending) }) {
                 finishSend()
             }
         } catch {
@@ -139,23 +150,29 @@ final class HermesGroupSession {
             message = pending
         } else {
             let text: String
+            let files = attachments
+            let rawText = draft.trimmingCharacters(in: .whitespacesAndNewlines)
             do {
-                let files = attachments
                 if !files.isEmpty, !supportsAttachments {
                     actionError = "This group’s host bridge needs an update to send attachments."
                     return
                 }
-                text = try await client.stageAttachments(files, text: draft.trimmingCharacters(in: .whitespacesAndNewlines))
+                text = try await client.stageAttachments(files, text: rawText)
             } catch {
                 actionError = error.localizedDescription
                 return
             }
             message = HermesGroupSend(text: text, thread: reply?.payload.threadId)
+            let display = SentPhotoMessage(text: rawText, attachments: files)
             do {
+                if !display.photos.isEmpty {
+                    try photoStore.save(display, id: Self.eventID(for: message), chat: roomID)
+                }
                 try FileManager.default.createDirectory(at: pendingFile.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try JSONEncoder().encode(message).write(to: pendingFile, options: [.atomic, .completeFileProtection])
                 pending = message
             } catch {
+                photoStore.remove(id: Self.eventID(for: message), chat: roomID)
                 actionError = "Riptide couldn’t save this message for a safe retry."
                 return
             }
@@ -166,7 +183,10 @@ final class HermesGroupSession {
             finishSend()
         } catch {
             if (error as? HermesGroupError)?.admittedNothing == true, !sendMayHavePosted {
-                if removePending() { actionError = error.localizedDescription }
+                if removePending() {
+                    photoStore.remove(id: Self.eventID(for: message), chat: roomID)
+                    actionError = error.localizedDescription
+                }
             } else {
                 sendMayHavePosted = true
                 actionError = "Delivery hasn’t been confirmed. Retry to send the same message safely."

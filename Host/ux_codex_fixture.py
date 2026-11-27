@@ -36,6 +36,8 @@ async def fixture(socket, live=False, watch_progress=False):
             "last": {"totalTokens": 8_000}, "modelContextWindow": 32_000,
         }})
 
+    files = {}
+
     async def user_message(inputs, message_id):
         await notify("item/completed", {"turnId": turn_id, "item": {
             "id": message_id, "type": "userMessage", "content": inputs,
@@ -113,6 +115,13 @@ async def fixture(socket, live=False, watch_progress=False):
                     turn_id = f"{TURN}-1"
                     thread["status"] = {"type": "active"}
                 result = {"codexHome": "/riptide-ux-fixture/codex-home"}
+            elif method == "fs/createDirectory":
+                result = {}
+            elif method == "fs/writeFile":
+                files[params["path"]] = params["dataBase64"]
+                result = {}
+            elif method == "fs/readFile" and params.get("path") in files:
+                result = {"dataBase64": files[params["path"]]}
             elif method == "account/read":
                 result = {"account": {"type": "chatgpt"}, "workspaceRouting": {"chatgptAccountId": "fixture-identity"}}
             elif method == "thread/list":

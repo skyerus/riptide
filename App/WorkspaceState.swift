@@ -463,6 +463,7 @@ final class WorkspaceState {
         hermesGroupsClients[workspaceID] = nil
         hermesGroupSessions = hermesGroupSessions.filter { $0.key.workspace != workspaceID }
         HermesGroupSession.removeDrafts(workspaceID: workspaceID)
+        SentPhotoStore(workspace: workspaceID).removeWorkspace()
         try? avatars.removePhoto(for: workspaceID)
         if path.contains(where: { $0.workspace == workspaceID }) { showSidebar(.agents) }
         for key in codexRecency.filter({ $0.workspace == workspaceID }) {

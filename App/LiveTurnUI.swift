@@ -22,17 +22,22 @@ extension View {
 
 struct TranscriptUserMessage: View {
     let text: String
+    var photos: [TranscriptPhoto] = []
     var receipt: MessageReceipt? = nil
+    var photoClient: CodexLiveClient? = nil
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            Text(ChatLinks.styled(AttributedString(text)))
-                .textSelection(.enabled)
-                .environment(\.openURL, ChatLinks.openURL)
-                .foregroundStyle(ChatTheme.ink)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(ChatTheme.raised, in: RoundedRectangle(cornerRadius: 16))
+            TranscriptPhotoStrip(photos: photos, photoClient: photoClient)
+            if !text.isEmpty {
+                Text(ChatLinks.styled(AttributedString(text)))
+                    .textSelection(.enabled)
+                    .environment(\.openURL, ChatLinks.openURL)
+                    .foregroundStyle(ChatTheme.ink)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(ChatTheme.raised, in: RoundedRectangle(cornerRadius: 16))
+            }
             if let receipt {
                 Text(receipt.rawValue)
                     .font(.caption2.weight(.medium))

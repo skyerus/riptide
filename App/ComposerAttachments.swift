@@ -245,7 +245,9 @@ private enum AttachmentImporter {
         defer { try? file.close() }
         let data = try file.read(upToCount: byteLimit + 1) ?? Data()
         guard data.count <= byteLimit else { throw AttachmentImportError.tooLarge(byteLimit) }
-        return ChatAttachment(name: name, data: data)
+        let mime = !acceptsImages && values.contentType?.conforms(to: .image) == true
+            ? values.contentType?.preferredMIMEType : nil
+        return ChatAttachment(name: name, data: data, imageMIMEType: mime)
     }
 
     @MainActor
@@ -264,7 +266,7 @@ private enum AttachmentImporter {
                 return try photo(data, name: name, maxBytes: byteLimit / ChatAttachment.maxCount)
             }
             guard data.count <= byteLimit else { throw AttachmentImportError.tooLarge(byteLimit) }
-            return ChatAttachment(name: name, data: data)
+            return ChatAttachment(name: name, data: data, imageMIMEType: type.preferredMIMEType)
         }
         let file: ChatAttachment? = try await withCheckedThrowingContinuation { continuation in
             provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, _ in

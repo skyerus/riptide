@@ -211,6 +211,12 @@ public actor ACPClient {
         try await runPrompt(text, sessionID: sessionID, collectReply: false, attachments: attachments).reason
     }
 
+    func promptWithDelivery(_ text: String, sessionID: String, attachments: [ChatAttachment], photoID: UUID?,
+                            onWritten: @escaping @Sendable () async -> Void) async throws -> String {
+        try await runPrompt(text, sessionID: sessionID, collectReply: false, attachments: attachments,
+                            photoID: photoID, onWritten: onWritten).reason
+    }
+
     public func promptForVoice(_ text: String, sessionID: String) async throws -> String {
         let result = try await runPrompt(text, sessionID: sessionID, collectReply: true)
         guard result.reason == "end_turn" else { return "" }
@@ -236,7 +242,8 @@ public actor ACPClient {
     }
 
     private func runPrompt(_ text: String, sessionID: String, collectReply: Bool,
-                           attachments: [ChatAttachment] = []) async throws -> (reason: String, reply: String) {
+                           attachments: [ChatAttachment] = [], photoID: UUID? = nil,
+                           onWritten: (@Sendable () async -> Void)? = nil) async throws -> (reason: String, reply: String) {
         let capabilities = try await initialize()
         guard activePrompts.insert(sessionID).inserted else {
             throw ACPError.rejected("This conversation is already working.")
@@ -248,11 +255,11 @@ public actor ACPClient {
             closePermissions(in: sessionID)
         }
         if collectReply { voiceReplies[sessionID] = "" }
-        let blocks = try await promptBlocks(text, attachments: attachments, capabilities: capabilities)
+        let blocks = try await promptBlocks(text, attachments: attachments, capabilities: capabilities, photoID: photoID)
         if cancelledPrompts.contains(sessionID) { return ("cancelled", "") }
         let response = try await call("session/prompt", [
             "sessionId": .string(sessionID), "prompt": .array(blocks)
-        ])
+        ], onWritten: onWritten)
         guard let reason = response["stopReason"]?.string else { throw ACPError.malformedResponse }
         return (reason, voiceReplies[sessionID] ?? "")
     }
@@ -266,7 +273,13 @@ public actor ACPClient {
         capabilities["_meta"]?["riptide.app/attachments"] == .integer(1)
     }
 
-    private func promptBlocks(_ text: String, attachments: [ChatAttachment], capabilities: JSON) async throws -> [JSON] {
+    // Some ACP runtimes only replay text. Carry an opaque reference to this device’s photo copy
+    // in a text block so that replay can recover it without matching on the user's wording.
+    static let photoReferencePrefix = "[Riptide photo reference: "
+    static let photoReferenceSuffix = "]"
+
+    private func promptBlocks(_ text: String, attachments: [ChatAttachment], capabilities: JSON,
+                              photoID: UUID?) async throws -> [JSON] {
         var blocks: [JSON] = text.isEmpty ? [] : [["type": "text", "text": .string(text)]]
         guard !attachments.isEmpty else { return blocks }
         guard attachments.count <= ChatAttachment.maxCount,
@@ -297,6 +310,9 @@ public actor ACPClient {
                     blocks.append(["type": "text", "text": .string("Attached text file: \(file.name)\n\(contents)")])
                 }
             }
+        }
+        if let photoID {
+            blocks.append(["type": "text", "text": .string(Self.photoReferencePrefix + photoID.uuidString + Self.photoReferenceSuffix)])
         }
         if vision {
             for image in attachments {
@@ -367,7 +383,8 @@ public actor ACPClient {
         return try await handshake.value
     }
 
-    private func call(_ method: String, _ params: JSON) async throws -> JSON {
+    private func call(_ method: String, _ params: JSON,
+                      onWritten: (@Sendable () async -> Void)? = nil) async throws -> JSON {
         try Task.checkCancellation()
         guard !disconnected else { throw ACPError.disconnected }
         nextID += 1
@@ -382,8 +399,10 @@ public actor ACPClient {
                 pending[id] = continuation
                 Task {
                     guard pending[id] != nil else { return }
-                    do { try await send(.request(method, id: id, params: params)) }
-                    catch { fail(id, error: error) }
+                    do {
+                        try await send(.request(method, id: id, params: params))
+                        await onWritten?()
+                    } catch { fail(id, error: error) }
                 }
             }
         } onCancel: {

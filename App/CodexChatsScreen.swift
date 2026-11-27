@@ -299,7 +299,8 @@ struct CodexSavedChatScreen: View {
     @ViewBuilder
     private func transcriptMessage(_ message: CodexChatMessage, showsReceipt: Bool) -> some View {
         if message.role == .user {
-            TranscriptUserMessage(text: message.text, receipt: showsReceipt ? message.receipt : nil)
+            TranscriptUserMessage(text: message.text, photos: message.photos,
+                                  receipt: showsReceipt ? message.receipt : nil, photoClient: session?.client)
         } else if !message.text.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 if message.phase == .commentary {

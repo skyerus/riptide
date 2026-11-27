@@ -46,6 +46,45 @@ final class HermesGroupsUITests: XCTestCase {
     }
 
     @MainActor
+    func testGroupPhotoAppearsAndOpensInTheTranscript() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_HERMES_GROUP_FIXTURE"] = "1"
+        continueAfterFailure = false
+        app.launch()
+        app.buttons["sidebar-group-chats"].tap()
+        let group = app.buttons["hermes-group-row-editorial"]
+        XCTAssertTrue(group.waitForExistence(timeout: 8))
+        group.tap()
+        let composer = app.descendants(matching: .any).matching(identifier: "hermes-group-composer").firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        let add = app.buttons["add-attachments"]
+        XCTAssertEqual(XCTWaiter.wait(for: [
+            XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: add)
+        ], timeout: 8), .completed)
+        composer.tap()
+        composer.typeText("Here is the photo")
+        UIPasteboard.general.image = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 80)).image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 80, height: 80))
+        }
+        composer.press(forDuration: 0.65)
+        let paste = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Paste")).firstMatch
+        XCTAssertTrue(paste.waitForExistence(timeout: 5))
+        paste.tap()
+        XCTAssertTrue(app.buttons["remove-attachment"].waitForExistence(timeout: 8))
+
+        app.buttons["send-hermes-group"].tap()
+        let photo = app.buttons["sent-photo-0"]
+        XCTAssertTrue(photo.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Here is the photo"].exists)
+        XCTAssertTrue(app.buttons["remove-attachment"].waitForNonExistence(timeout: 5))
+        XCTAssertNotEqual(composer.value as? String, "Here is the photo")
+        photo.tap()
+        XCTAssertTrue(app.images["sent-photo-preview-image"].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+    }
+
+    @MainActor
     func testCreateDiscussAndReopenGroup() {
         let app = XCUIApplication()
         app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
