@@ -74,9 +74,7 @@ final class HermesSSHUITests: XCTestCase {
             .matching(NSPredicate(format: "label == %@", label)).firstMatch
         XCTAssertTrue(hermes.waitForExistence(timeout: 12))
         hermes.tap()
-        let chats = app.buttons["open-side-chats"]
-        XCTAssertTrue(chats.waitForExistence(timeout: 25))
-        chats.tap()
+        app.openSideChats(timeout: 25)
         app.buttons["new-chat"].tap()
         XCTAssertTrue(app.buttons["close-chats"].waitForNonExistence(timeout: 20))
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch

@@ -4,6 +4,7 @@ import SwiftUI
 struct CodexMainChatScreen: View {
     let endpoint: CodexLocalEndpoint
     let workspaceID: String
+    let showSideChats: (() -> Void)?
     @Environment(WorkspaceState.self) private var workspace
     @State private var initialChat: CodexChatSummary?
     @State private var resolved = false
@@ -13,7 +14,8 @@ struct CodexMainChatScreen: View {
     var body: some View {
         Group {
             if resolved {
-                CodexSavedChatScreen(endpoint: endpoint, initialChat: initialChat, workspaceID: workspaceID, isMainChat: true)
+                CodexSavedChatScreen(endpoint: endpoint, initialChat: initialChat, workspaceID: workspaceID,
+                                    isMainChat: true, showSideChats: showSideChats)
             } else if let failure {
                 ContentUnavailableView {
                     Label("Chat unavailable", systemImage: "bubble.left")
@@ -28,6 +30,18 @@ struct CodexMainChatScreen: View {
         }
         .navigationTitle("Main Chat")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !resolved, let showSideChats {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        SideChatsButton(action: showSideChats)
+                    } label: {
+                        Label("Chat actions", systemImage: "ellipsis.circle")
+                    }
+                    .accessibilityIdentifier("codex-chat-actions")
+                }
+            }
+        }
         .task(id: attempt) { await resolve() }
     }
 
@@ -64,6 +78,7 @@ struct CodexSavedChatScreen: View {
     let initialChat: CodexChatSummary?
     let workspaceID: String
     var isMainChat = false
+    var showSideChats: (() -> Void)? = nil
     @State private var session: CodexWorkspaceSession?
     @State private var draft = ""
     @State private var draftAttachments: [ChatAttachment] = []
@@ -140,6 +155,9 @@ struct CodexSavedChatScreen: View {
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
+                    if let showSideChats {
+                        SideChatsButton(action: showSideChats)
+                    }
                     if let chatKey {
                         if hasCompletedToolCalls {
                             ToolCallsMenuButton(showsCompletedCalls: $showsCompletedToolCalls)
