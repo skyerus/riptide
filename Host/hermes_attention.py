@@ -3,6 +3,8 @@
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
+import hashlib
 import json
 import logging
 import os
@@ -17,6 +19,8 @@ if __name__ == "__main__":
     sys.path.insert(0, str(host.parent / "dependencies"))
 
 from attention_relay import APNs, AttentionState, WORKSPACE_ID, reply_preview, valid
+from hermes_chrome_profile import owned_directory
+from ssh_pairing_files import PROFILE
 
 
 MAX_FRAME = 8192
@@ -38,14 +42,17 @@ async def exchange(socket, request):
             await writer.wait_closed()
 
 
-async def serve_ssh(socket):
+async def serve_ssh(socket, scope=None):
     reader = asyncio.StreamReader(limit=MAX_FRAME)
     loop = asyncio.get_running_loop()
     transport, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer)
     try:
         request = json.loads(await asyncio.wait_for(reader.readline(), 5))
-        if not isinstance(request, dict) or request.get("operation") != "register":
+        if (not isinstance(request, dict) or set(request) != {"operation", "body"}
+                or request["operation"] != "register"):
             raise ValueError("Only device registration is allowed over SSH.")
+        if scope is not None:
+            request["scope"] = scope
         response = await exchange(socket, request)
     except (OSError, ValueError, TimeoutError):
         response = {"ok": False}
@@ -74,18 +81,6 @@ class HermesAttention:
         self.workspace_path = workspace_path
         self.state_lock = asyncio.Lock()
         self.watches = {}
-
-    async def handle(self, reader, writer):
-        try:
-            request = json.loads(await asyncio.wait_for(reader.readline(), 5))
-            ok = isinstance(request, dict) and await self.request(request)
-            writer.write(json.dumps({"ok": bool(ok)}).encode() + b"\n")
-            await writer.drain()
-        except (OSError, ValueError, TimeoutError, RuntimeError):
-            pass
-        finally:
-            writer.close()
-            await writer.wait_closed()
 
     async def request(self, request):
         if request == {"operation": "health"}:
@@ -122,7 +117,8 @@ class HermesAttention:
                     info = await gateway.rpc("session.info", session_id=session)
                     if info.get("cwd") != self.workspace_path:
                         return
-                    snapshot = await gateway.rpc("session.resume", session_id=session)
+                    snapshot = await gateway.rpc("session.resume", session_id=session, omit_messages=True)
+                    session = snapshot.get("session_id") or session
                     ready.set_result(True)
                     epoch = snapshot.get("replay_epoch")
                     sequence = snapshot.get("last_sequence", 0)
@@ -189,11 +185,82 @@ class HermesAttention:
         return None
 
     async def flush(self):
+        async with self.state_lock:
+            if self.state.pending:
+                await asyncio.to_thread(self.state.flush)
+
+
+class HermesAttentionRouter:
+    def __init__(self, state_dir, default_home, default_workspace, connect, logical_id, send):
+        self.state_dir = state_dir
+        self.default_home = default_home
+        self.connect = connect
+        self.logical_id = logical_id
+        self.send = send
+        self.default_scope = ("default", default_workspace)
+        self.relays = {self.default_scope: self.make_relay(default_home, default_workspace, state_dir)}
+
+    def make_relay(self, home, workspace, state_dir):
+        state = AttentionState(send=self.send, device_file=state_dir / "devices.json")
+        return HermesAttention(state, lambda: self.connect(home),
+                               lambda chat: self.logical_id(home, chat), workspace)
+
+    def scope(self, value):
+        if value is None:
+            return self.default_scope, self.default_home
+        if not isinstance(value, dict) or set(value) != {"profile", "workspace"}:
+            raise ValueError("Invalid Hermes notification scope.")
+        profile, workspace = value["profile"], value["workspace"]
+        if (not isinstance(profile, str) or not PROFILE.fullmatch(profile)
+                or not isinstance(workspace, str) or not Path(workspace).is_absolute()
+                or not Path(workspace).is_dir()):
+            raise ValueError("Invalid Hermes notification scope.")
+        home = self.default_home
+        if profile != "default":
+            profiles = home / "profiles"
+            owned_directory(profiles)
+            home = profiles / profile
+            owned_directory(home)
+        return (profile, workspace), home
+
+    async def request(self, request):
+        operation = request.get("operation")
+        if operation not in ("health", "register", "watch"):
+            return False
+        scope, home = self.scope(request.get("scope"))
+        if operation == "health":
+            return True
+        relay = self.relays.get(scope)
+        if relay is None:
+            name = hashlib.sha256(json.dumps(scope).encode()).hexdigest()
+            state_dir = self.state_dir / name
+            state_dir.mkdir(exist_ok=True, mode=0o700)
+            owned_directory(state_dir)
+            relay = self.relays[scope] = self.make_relay(home, scope[1], state_dir)
+        return await relay.request({key: value for key, value in request.items() if key != "scope"})
+
+    async def handle(self, reader, writer):
+        ok = False
+        try:
+            request = json.loads(await asyncio.wait_for(reader.readline(), 5))
+            ok = isinstance(request, dict) and await self.request(request)
+        except (OSError, ValueError, TimeoutError, RuntimeError):
+            pass
+        try:
+            writer.write(json.dumps({"ok": bool(ok)}).encode() + b"\n")
+            await writer.drain()
+        except OSError:
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def flush(self):
         while True:
             await asyncio.sleep(0.5)
-            async with self.state_lock:
-                if self.state.pending:
-                    await asyncio.to_thread(self.state.flush)
+            # The APNs client is shared, so send through one scope at a time.
+            for relay in list(self.relays.values()):
+                await relay.flush()
 
 
 async def run(args):
@@ -205,16 +272,18 @@ async def run(args):
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
 
     @asynccontextmanager
-    async def connect():
-        discovery = await asyncio.to_thread(discover_gateway_endpoint, args.profile)
+    async def connect(home):
+        discovery = await asyncio.to_thread(discover_gateway_endpoint, home)
         if discovery.state != "ready" or discovery.endpoint is None:
             raise RuntimeError("The Hermes gateway is unavailable.")
-        async with connect_gateway(endpoint=discovery.endpoint) as gateway:
+        endpoint = discovery.endpoint
+        if endpoint.control_home is None:
+            endpoint = replace(endpoint, control_home=str(home))
+        async with connect_gateway(endpoint=endpoint) as gateway:
             yield gateway
 
     sender = APNs(team=args.team, key_id=args.key_id, topic="app.riptide.client", key_file=args.key)
-    state = AttentionState(send=sender.send, device_file=args.state / "devices.json")
-    relay = HermesAttention(state, connect, lambda chat: logical_session_id(args.profile, chat), args.workspace)
+    relay = HermesAttentionRouter(args.state, args.profile, args.workspace, connect, logical_session_id, sender.send)
     socket = args.state / "attention.sock"
     socket.unlink(missing_ok=True)
     server = await asyncio.start_unix_server(relay.handle, path=socket, limit=MAX_FRAME)

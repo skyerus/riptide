@@ -78,7 +78,7 @@ def register_key(path, public_key, command, profile):
         Edit(path, content, (source + separator + entry + "\n").encode(), mode).apply()
 
 
-def pair(config_path, wrapper, request, *, codex_dictation_auth=None):
+def pair(config_path, wrapper, request, *, codex_dictation_auth=None, attention_socket=None):
     require(isinstance(request, dict) and set(request) == {"profile", "publicKey"}, "Invalid pairing request.")
     profile = request["profile"]
     raw_key = request["publicKey"]
@@ -101,6 +101,8 @@ def pair(config_path, wrapper, request, *, codex_dictation_auth=None):
     if codex_dictation_auth is not None:
         auth = absolute_path(codex_dictation_auth)
         options.extend(["--codex-dictation-auth", str(auth)])
+    if attention_socket is not None:
+        options.extend(["--attention-socket", str(attention_socket), "--attention-profile", profile])
     command = [str(hermes), "-p", profile, "acp"]
     key = key_identity(raw_key)
     asyncio.run(verify_chat(command, str(workspace), chat_id))
@@ -119,11 +121,12 @@ def pair(config_path, wrapper, request, *, codex_dictation_auth=None):
     return {"name": name, "workspace": str(workspace), "mainSessionID": chat_id}
 
 
-def serve(config_path, wrapper, *, codex_dictation_auth=None):
+def serve(config_path, wrapper, *, codex_dictation_auth=None, attention_socket=None):
     try:
         frame = sys.stdin.buffer.readline(MAX_REQUEST + 1)
         require(len(frame) <= MAX_REQUEST and frame.endswith(b"\n"), "Invalid pairing request.")
-        reply = pair(config_path, wrapper, json.loads(frame), codex_dictation_auth=codex_dictation_auth)
+        reply = pair(config_path, wrapper, json.loads(frame), codex_dictation_auth=codex_dictation_auth,
+                     attention_socket=attention_socket)
     except ValueError as error:
         reply = {"error": str(error)}
     except (KeyError, TypeError, AttributeError, OSError, subprocess.TimeoutExpired):

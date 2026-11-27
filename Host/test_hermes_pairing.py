@@ -38,10 +38,12 @@ for line in sys.stdin:
             "targets": {"accountant": {"name": "Accountant", "workspace": str(self.workspace),
                                        "mainSessionID": self.chat_id}}}))
 
-    def request(self, profile="accountant", key=None, enabled=True, dictation_auth=None):
+    def request(self, profile="accountant", key=None, enabled=True, dictation_auth=None, attention=None):
         flags = ["--pairing-config", str(self.routes)] if enabled else []
         if dictation_auth is not None:
             flags.extend(["--codex-dictation-auth", str(dictation_auth)])
+        if attention is not None:
+            flags.extend(["--attention-socket", str(attention), "--attention-profile", "default"])
         result = subprocess.run(
             [sys.executable, str(self.wrapper), "--workspace", str(self.workspace),
              *flags, "--", sys.executable],
@@ -69,6 +71,16 @@ for line in sys.stdin:
         authorized = self.keys.read_text()
         self.assertEqual(self.request()[0].returncode, 0)
         self.assertEqual(self.keys.read_text(), authorized)
+
+    def test_future_approved_pairing_inherits_relay_with_its_own_profile(self):
+        socket = self.root / "attention.sock"
+        completed, reply = self.request(attention=socket)
+        self.assertEqual(completed.returncode, 0, reply)
+        prefix, _ = self.keys.read_text().splitlines()[1].split(" ssh-ed25519 ")
+        self.assertEqual(shlex.split(prefix[len('restrict,command="'):-1]),
+            [sys.executable, str(self.wrapper), "--workspace", str(self.workspace),
+             "--attention-socket", str(socket), "--attention-profile", "accountant",
+             "--", str(self.agent), "-p", "accountant", "acp"])
 
     def test_future_approved_pairing_inherits_dictation_and_uses_its_own_chrome_profile(self):
         config = json.loads(self.routes.read_text())
