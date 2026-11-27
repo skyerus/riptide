@@ -38,12 +38,14 @@ for line in sys.stdin:
             "targets": {"accountant": {"name": "Accountant", "workspace": str(self.workspace),
                                        "mainSessionID": self.chat_id}}}))
 
-    def request(self, profile="accountant", key=None, enabled=True, dictation_auth=None, attention=None):
+    def request(self, profile="accountant", key=None, enabled=True, dictation_auth=None, attention=None, talk=None):
         flags = ["--pairing-config", str(self.routes)] if enabled else []
         if dictation_auth is not None:
             flags.extend(["--codex-dictation-auth", str(dictation_auth)])
         if attention is not None:
             flags.extend(["--attention-socket", str(attention), "--attention-profile", "default"])
+        if talk is not None:
+            flags.extend(["--hermes-talk-config", str(talk)])
         result = subprocess.run(
             [sys.executable, str(self.wrapper), "--workspace", str(self.workspace),
              *flags, "--", sys.executable],
@@ -71,6 +73,39 @@ for line in sys.stdin:
         authorized = self.keys.read_text()
         self.assertEqual(self.request()[0].returncode, 0)
         self.assertEqual(self.keys.read_text(), authorized)
+
+    def test_future_pairing_inherits_shared_voice_and_uses_its_own_profile_without_chrome(self):
+        profile = self.root / "profiles" / "accountant"
+        profile.mkdir(parents=True)
+        voice_python = self.root / "voice-python"
+        voice_python.write_text(f"#!{sys.executable}\nimport json, sys\n"
+                               "print(json.dumps({'home': sys.argv[3], 'workspace': sys.argv[7]}))\n")
+        voice_python.chmod(0o700)
+        config = self.root / "talk.json"
+        config.write_text(json.dumps({"gateway": {"home": str(self.root), "hermes": str(self.agent),
+            "python": str(voice_python), "source": str(self.root), "talk": str(self.root), "auth": str(self.root)}}))
+        config.chmod(0o600)
+
+        completed, reply = self.request(talk=config)
+        self.assertEqual(completed.returncode, 0, reply)
+        registered = self.keys.read_text()
+        prefix, _ = registered.splitlines()[1].split(" ssh-ed25519 ")
+        argv = shlex.split(prefix[len('restrict,command="'):-1])
+        self.assertIn(str(config), argv)
+        probe = subprocess.run(argv, input='{"operation":"status"}\n', text=True, capture_output=True, timeout=8,
+                               env={**os.environ, "SSH_ORIGINAL_COMMAND": "riptide-hermes-talk"})
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        self.assertEqual(json.loads(probe.stdout), {"home": str(profile), "workspace": str(self.workspace)})
+        self.assertEqual(self.request(talk=config)[0].returncode, 0)
+        self.assertEqual(self.keys.read_text(), registered)
+
+    def test_profile_specific_voice_config_is_not_inherited(self):
+        config = self.root / "talk.json"
+        config.write_text(json.dumps({"gateway": dict.fromkeys(("home", "source", "python", "talk", "auth"),
+                                                               str(self.root))}))
+        config.chmod(0o600)
+        self.assertEqual(self.request(talk=config)[0].returncode, 0)
+        self.assertNotIn("--hermes-talk-config", self.keys.read_text())
 
     def test_future_approved_pairing_inherits_relay_with_its_own_profile(self):
         socket = self.root / "attention.sock"

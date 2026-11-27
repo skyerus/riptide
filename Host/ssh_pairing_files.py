@@ -129,6 +129,15 @@ def key_command(source, key):
     return line.start(1) + command.start(), line.start(1) + command.end(), prefix, scripts[0], agent
 
 
+def hermes_profile(agent, hermes):
+    if agent in ([str(hermes.with_name("hermes-acp"))], [str(hermes), "acp"]):
+        return "default"
+    if (len(agent) == 4 and agent[0] == str(hermes) and agent[1] in ("-p", "--profile")
+            and PROFILE.fullmatch(agent[2]) and agent[3] == "acp"):
+        return agent[2]
+    return None
+
+
 def hermes_commands(source, hermes):
     """Yield transfers for fixed, restricted keys running the configured Hermes launcher."""
     records = set(re.findall(r"(?:^|[ \t])(ssh-ed25519) ([A-Za-z0-9+/=]+)(?=[ \t\r\n]|$)", source, re.M))
@@ -140,11 +149,6 @@ def hermes_commands(source, hermes):
             if any("ssh_acp.py" in line and str(hermes) in line for line in matched if not line.lstrip().startswith("#")):
                 raise
             continue
-        if agent in ([str(hermes.with_name("hermes-acp"))], [str(hermes), "acp"]):
-            profile = "default"
-        elif (len(agent) == 4 and agent[0] == str(hermes) and agent[1] in ("-p", "--profile")
-              and PROFILE.fullmatch(agent[2]) and agent[3] == "acp"):
-            profile = agent[2]
-        else:
-            continue
-        yield start, end, prefix, script, agent, profile
+        profile = hermes_profile(agent, hermes)
+        if profile is not None:
+            yield start, end, prefix, script, agent, profile

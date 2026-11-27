@@ -1,17 +1,64 @@
 from contextlib import redirect_stdout
 import io
 from pathlib import Path
+import runpy
 import shlex
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from update_ssh_release import HOST, PAYLOAD, stage, update, verify
 
 
 class SSHReleaseTests(unittest.TestCase):
+    def test_shared_voice_migration_is_atomic_and_leaves_unrelated_keys_alone(self):
+        enable_pairings = runpy.run_path(str(HOST / "deploy" / "stage-hermes-voice.py"))["enable_pairings"]
+        home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        keys = home / "authorized_keys"
+        hermes = home / "hermes"
+        old = home / "old" / "ssh_acp.py"
+        new = home / "new" / "ssh_acp.py"
+        config = home / "talk.json"
+        old_config = home / "device-voice.json"
+
+        def entry(label, command, options=()):
+            identity = home / label
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(identity)], check=True)
+            key = " ".join(identity.with_suffix(".pub").read_text().split()[:2])
+            argv = [sys.executable, str(old), "--workspace", str(home), *options, "--", *command]
+            return f'from="192.0.2.1",restrict,command="{shlex.join(argv)}" {key} {label}\r\n'
+
+        primary = entry("primary", [str(hermes.with_name("hermes-acp"))],
+                        ["--hermes-talk-config", str(old_config)])
+        named = entry("named", [str(hermes), "-p", "accountant", "acp"])
+        other = entry("other", [str(home / "other-agent"), "acp"])
+        original = (primary + named + other).encode()
+        keys.write_bytes(original)
+        keys.chmod(0o600)
+
+        failing_check = Mock(side_effect=[None, ValueError()])
+        with patch.dict(enable_pairings.__globals__, {"verify": failing_check}):
+            with self.assertRaisesRegex(ValueError, "Voice readiness check failed"):
+                enable_pairings(keys, hermes, new, config)
+        self.assertEqual(failing_check.call_count, 2)
+        self.assertEqual(keys.read_bytes(), original)
+        self.assertEqual(list(home.glob("*.before")), [])
+
+        verify_result = Mock()
+        with patch.dict(enable_pairings.__globals__, {"verify": verify_result}):
+            self.assertEqual(enable_pairings(keys, hermes, new, config), 2)
+            self.assertEqual(enable_pairings(keys, hermes, new, config), 2)
+        self.assertEqual(verify_result.call_count, 4)
+        self.assertTrue(all(call.kwargs == {"verify_talk": True} for call in verify_result.call_args_list))
+        expected = (primary.replace(str(old), str(new)).replace(str(old_config), str(config))
+                    + named.replace(str(old), str(new)).replace(" -- ", f" --hermes-talk-config {config} -- ") + other)
+        self.assertEqual(keys.read_bytes(), expected.encode())
+        backup, = home.glob("*.before")
+        self.assertEqual(backup.read_bytes(), original)
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+
     def test_staged_pairing_runs_with_only_the_versioned_host_payload(self):
         home = Path(self.enterContext(tempfile.TemporaryDirectory()))
         wrapper = stage(home, "b" * 40)

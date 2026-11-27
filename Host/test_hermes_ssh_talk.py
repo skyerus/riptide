@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from hermes_ssh_talk import TalkCall, TalkError
+from hermes_ssh_talk import TalkCall, TalkError, gateway_home
 
 
 class HermesSSHTalkTests(unittest.TestCase):
@@ -28,6 +28,22 @@ class HermesSSHTalkTests(unittest.TestCase):
         self.config.chmod(0o640)
         with self.assertRaisesRegex(TalkError, "^disabled$"):
             TalkCall(self.config)
+
+    def test_shared_gateway_rejects_other_launchers_conflicting_screen_and_profile_aliases(self):
+        home = self.config.parent
+        hermes = home / "hermes"
+        profiles = home / "profiles"
+        profile = profiles / "accountant"
+        profile.mkdir(parents=True)
+        (profiles / "alias").symlink_to(profile)
+        gateway = {"home": home, "hermes": hermes}
+        self.assertEqual(gateway_home(gateway, None, [str(hermes), "acp"]), home)
+        with self.assertRaises(TalkError):
+            gateway_home(gateway, None, ["/other/hermes", "acp"])
+        with self.assertRaises(TalkError):
+            gateway_home(gateway, home, [str(hermes), "-p", "accountant", "acp"])
+        with self.assertRaises(ValueError):
+            gateway_home(gateway, None, [str(hermes), "-p", "alias", "acp"])
 
     def test_matches_the_exact_profile_and_returns_only_call_data(self):
         with patch.object(self.call, "send", side_effect=[

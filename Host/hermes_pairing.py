@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 from hermes_chrome_profile import ChromePolicy, PROFILE, absolute_path
+from hermes_ssh_talk import shared_gateway_for
 from ssh_pairing_files import Edit, key_identity, lock_keys, read_owned, require
 MAX_REQUEST = 4096
 
@@ -78,7 +79,7 @@ def register_key(path, public_key, command, profile):
         Edit(path, content, (source + separator + entry + "\n").encode(), mode).apply()
 
 
-def pair(config_path, wrapper, request, *, codex_dictation_auth=None, attention_socket=None):
+def pair(config_path, wrapper, request, *, codex_dictation_auth=None, attention_socket=None, hermes_talk_config=None):
     require(isinstance(request, dict) and set(request) == {"profile", "publicKey"}, "Invalid pairing request.")
     profile = request["profile"]
     raw_key = request["publicKey"]
@@ -116,17 +117,19 @@ def pair(config_path, wrapper, request, *, codex_dictation_auth=None, attention_
         )
         require(provisioning.returncode == 0, "The host could not prepare this profile's Chrome browser.")
         options.extend(policy.options(home, hermes))
+    if shared_gateway_for(hermes_talk_config, hermes):
+        options.extend(["--hermes-talk-config", str(hermes_talk_config)])
     register_key(keys, key, [sys.executable, str(wrapper), "--workspace", str(workspace), *options, "--", *command],
                  profile)
     return {"name": name, "workspace": str(workspace), "mainSessionID": chat_id}
 
 
-def serve(config_path, wrapper, *, codex_dictation_auth=None, attention_socket=None):
+def serve(config_path, wrapper, *, codex_dictation_auth=None, attention_socket=None, hermes_talk_config=None):
     try:
         frame = sys.stdin.buffer.readline(MAX_REQUEST + 1)
         require(len(frame) <= MAX_REQUEST and frame.endswith(b"\n"), "Invalid pairing request.")
         reply = pair(config_path, wrapper, json.loads(frame), codex_dictation_auth=codex_dictation_auth,
-                     attention_socket=attention_socket)
+                     attention_socket=attention_socket, hermes_talk_config=hermes_talk_config)
     except ValueError as error:
         reply = {"error": str(error)}
     except (KeyError, TypeError, AttributeError, OSError, subprocess.TimeoutExpired):

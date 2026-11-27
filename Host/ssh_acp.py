@@ -391,7 +391,8 @@ if __name__ == "__main__":
             sys.exit(1)
         from hermes_pairing import serve as serve_pairing
         sys.exit(serve_pairing(args.pairing_config, Path(__file__).resolve(),
-                               codex_dictation_auth=args.codex_dictation_auth, attention_socket=args.attention_socket))
+                               codex_dictation_auth=args.codex_dictation_auth, attention_socket=args.attention_socket,
+                               hermes_talk_config=args.hermes_talk_config))
     if requested == "riptide-attention":
         if args.attention_socket is None:
             print('{"ok":false}')
@@ -411,7 +412,7 @@ if __name__ == "__main__":
     if requested == "riptide-hermes-talk":
         from hermes_ssh_talk import serve as serve_talk
         serve_talk(args.hermes_talk_config, home=args.hermes_screen[0] if args.hermes_screen else None,
-                   workspace=args.workspace)
+                   workspace=args.workspace, command=command)
         sys.exit(0)
     if requested == "riptide-hermes-groups":
         if args.hermes_groups is None:
