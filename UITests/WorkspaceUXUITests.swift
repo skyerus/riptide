@@ -1157,20 +1157,24 @@ final class WorkspaceUXUITests: XCTestCase {
         openMainChat(in: app)
         let strip = app.scrollViews["main-chat-agents"]
         XCTAssertTrue(strip.waitForExistence(timeout: 8))
+        let first = strip.buttons["main-chat-agent-hermes"]
+        let sideChats = app.buttons["open-side-chats"]
         let last = strip.buttons["main-chat-agent-ops-12"]
         XCTAssertFalse(last.isHittable)
-        let start = strip.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
-        let end = strip.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        let firstFrame = first.frame
+        let start = origin.withOffset(CGVector(dx: sideChats.frame.minX - 22, dy: firstFrame.midY))
+        let end = origin.withOffset(CGVector(dx: firstFrame.midX, dy: firstFrame.midY))
         for _ in 0..<8 where !last.isHittable {
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
         }
-        XCTAssertTrue(last.isHittable, "Dragging the avatar strip should bring the last agent into view.")
         capture(app, as: "riptide-scrolled-agent-strip")
+        XCTAssertTrue(last.isHittable, "Strip frame \(strip.frame), first avatar \(firstFrame) to \(first.frame), last avatar \(last.frame).")
         last.tap()
         XCTAssertEqual(app.chatHeading.label, "Main Chat")
         XCTAssertEqual(app.chatHeading.value as? String, "Ops 12")
         XCTAssertFalse(strip.buttons["main-chat-agent-ops-12"].exists)
-        XCTAssertTrue(app.buttons["open-side-chats"].isHittable)
+        XCTAssertTrue(sideChats.isHittable)
     }
 
     @MainActor
