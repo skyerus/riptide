@@ -230,6 +230,7 @@ public final class AgentChatModel {
         public fileprivate(set) var connectionLost = false
         fileprivate var submittingPrompt = false
         fileprivate var agentWorking = false
+        fileprivate var steerAdmissionID: String?
         public fileprivate(set) var stopping = false
         fileprivate var preparingPrompt = false
         public fileprivate(set) var steering = false
@@ -243,6 +244,7 @@ public final class AgentChatModel {
 
         public var working: Bool { submittingPrompt || agentWorking }
         public var canStop: Bool { submittingPrompt }
+        public var canSteer: Bool { submittingPrompt || steerAdmissionID != nil }
 
         public var modelName: String? {
             configOptions.first { $0.category == .model }?.currentName ?? reportedModelName
@@ -251,9 +253,10 @@ public final class AgentChatModel {
 
         fileprivate mutating func receive(_ event: ACPEvent, replaying: Bool = false) {
             switch event {
-            case .turnActivity(_, let active):
+            case .turnActivity(_, let active, let admissionID):
                 let wasWorking = working
                 agentWorking = active
+                steerAdmissionID = admissionID
                 guard !replaying, wasWorking != working else { return }
                 if working { transcript.beginObservedTurn() }
                 else { transcript.finishPrompt() }
@@ -544,12 +547,16 @@ public final class AgentChatModel {
         guard let client, let chat = chats[sessionID], sessionID == selectedID, !text.isEmpty,
               chat.loaded, !chat.loading, !chat.configuring, !chat.stopping, !chat.steering else { return false }
         if !chat.working { return startPrompt(text, in: sessionID) }
-        guard chat.canStop else { return false }
+        guard chat.canSteer else {
+            chats[sessionID]?.steeringError = "This reply can’t be steered. Use Queue to send your follow-up."
+            return false
+        }
         if chat.preparingPrompt {
             chats[sessionID]?.steeringError = "This reply is still starting. Try again in a moment."
             return false
         }
         let prompt = prompts[sessionID]
+        let observedAdmissionID = chat.submittingPrompt ? nil : chat.steerAdmissionID
         chats[sessionID]?.steering = true
         chats[sessionID]?.steeringError = nil
         defer {
@@ -559,7 +566,7 @@ public final class AgentChatModel {
             }
         }
         do {
-            let steered = try await client.steer(text, sessionID: sessionID)
+            let steered = try await client.steer(text, sessionID: sessionID, observedAdmissionID: observedAdmissionID)
             guard self.client === client else { return false }
             if steered {
                 chats[sessionID]?.transcript.addSteering(text)
@@ -567,6 +574,10 @@ public final class AgentChatModel {
             }
             await prompt?.value
             guard self.client === client, !Task.isCancelled else { return false }
+            if observedAdmissionID != nil, chats[sessionID]?.working == true {
+                chats[sessionID]?.steeringError = "That reply ended before it could be steered. Your draft is still here."
+                return false
+            }
             return startPrompt(text, in: sessionID)
         } catch {
             if self.client === client { chats[sessionID]?.steeringError = error.localizedDescription }
@@ -742,6 +753,7 @@ public final class AgentChatModel {
                 chat.loaded = false
                 chat.submittingPrompt = false
                 chat.agentWorking = false
+                chat.steerAdmissionID = nil
                 chat.stopping = false
                 chat.preparingPrompt = false
                 chat.steering = false

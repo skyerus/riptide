@@ -682,6 +682,43 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
+    func testHermesCanSteerAnAlreadyRunningReplyAndExplicitlyQueue() {
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_FIXTURE_OBSERVED_TURN"] = "1"
+        continueAfterFailure = false
+        app.launch()
+        openMainChat(in: app, agent: "hermes")
+
+        let deny = app.buttons["approval-reject_once"]
+        XCTAssertTrue(deny.waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["stop-reply"].exists)
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        editor.tap()
+        editor.typeText("Focus on the draft")
+        let send = app.buttons["send-message"]
+        XCTAssertEqual(send.label, "Steer")
+        capture(app, as: "Steer an existing Hermes reply")
+        send.tap()
+        let transcript = app.scrollViews["chat-transcript"]
+        XCTAssertTrue(transcript.staticTexts["Focus on the draft"].waitForExistence(timeout: 5))
+        XCTAssertTrue(deny.exists)
+
+        editor.tap()
+        editor.typeText("Send a separate follow-up")
+        send.press(forDuration: 1)
+        let queue = app.buttons["queue-follow-up"]
+        XCTAssertTrue(queue.waitForExistence(timeout: 5))
+        capture(app, as: "Hold to queue a Hermes follow-up")
+        queue.tap()
+        let followUp = transcript.staticTexts["Send a separate follow-up"]
+        XCTAssertTrue(app.buttons["queued-messages"].waitForExistence(timeout: 5))
+        XCTAssertFalse(followUp.exists)
+        deny.tap()
+        XCTAssertTrue(followUp.waitForExistence(timeout: 8))
+    }
+
+    @MainActor
     func testCodexApprovalArrivingAfterSwitchStillOpensTheSameLiveTurn() throws {
         let (app, editor) = try openCodexFixture()
         editor.tap()

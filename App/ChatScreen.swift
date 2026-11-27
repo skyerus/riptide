@@ -235,7 +235,7 @@ struct ChatScreen: View {
         guard model.selectedID == chat.chat, selected.loaded, !selected.loading, !selected.configuring,
               !selected.stopping, !selected.steering, message.hasContent else { return }
         viewport.jumpToLatest()
-        if queue || (selected.working && (!selected.canStop || !message.attachments.isEmpty)) {
+        if queue || (selected.working && !message.attachments.isEmpty) {
             if model.enqueue(message.text, attachments: message.attachments, in: chat.chat) { message.clear() }
         } else if selected.working {
             Task {
@@ -254,7 +254,7 @@ struct ChatScreen: View {
         let selected = model.selected
         let attachments = Binding(get: { workspace.drafts[attachments: chatKey] },
                                   set: { workspace.drafts[attachments: chatKey] = $0 })
-        let canSteer = selected.canStop && attachments.wrappedValue.isEmpty
+        let canSteer = selected.canSteer && attachments.wrappedValue.isEmpty
         let submission: ChatComposer.Submission = canSteer ? .steer : selected.working ? .queue : .send
         let prompt = switch submission {
         case .send: "Message \(agentName)"

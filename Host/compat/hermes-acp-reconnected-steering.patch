@@ -1,0 +1,50 @@
+--- a/acp_adapter/gateway_server.py
++++ b/acp_adapter/gateway_server.py
+@@ -156,19 +156,26 @@
+     async def ext_method(self, method, params):
+         if method != "riptide/session/steer":
+             raise acp.RequestError.method_not_found(f"_{method}")
+         editor_id, text = params.get("sessionId"), params.get("text")
+-        if (set(params) != {"sessionId", "text"} or not isinstance(editor_id, str)
+-                or not isinstance(text, str) or not text.strip() or len(text) > 65_536):
++        observed = params.get("admissionId")
++        if (set(params) - {"sessionId", "text", "admissionId"} or not isinstance(editor_id, str)
++                or not isinstance(text, str) or not text.strip() or len(text) > 65_536
++                or ("admissionId" in params and (not isinstance(observed, str) or not 0 < len(observed) <= 256))):
+             raise acp.RequestError.invalid_params()
+         session_id = self._held_session(editor_id)
+-        admission_id = self._admissions.get(session_id)
++        if observed is not None:
++            if self._riptide_turns.get(session_id) != observed:
++                return {"status": "idle"}
++            admission_id = observed
++        else:
++            admission_id = self._admissions.get(session_id)
+         if admission_id is None:
+             if session_id in self._submitting:
+                 raise acp.RequestError(-32000, "Hermes is still starting this turn. Try again in a moment.")
+             return {"status": "idle"}
+
+-        # Use this viewer's original admission and its generation. The native
+-        # correction must never steer a different viewer's turn or submit a new prompt.
++        # The viewer explicitly selects an attached admission or uses its own prompt.
++        # Forward its generation so a replacement turn cannot receive the correction.
+         from hermes_cli.gateway_client import GatewayRPCError
+         client = await self._client()
+         receipt = await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id)
+@@ -269,10 +276,13 @@
+         previous = self._riptide_turns.pop(session_id, None)
+         if admission:
+             self._riptide_turns[session_id] = admission
+-        if bool(previous) != bool(admission):
++        if previous != admission:
+             from acp.schema import SessionInfoUpdate
++            meta = {"app.riptide.turnWorking": bool(admission)}
++            if admission:
++                meta["app.riptide.steerAdmissionId"] = admission
+             await self._conn.session_update(session_id=self._editor_id(session_id), update=SessionInfoUpdate(
+-                session_update="session_info_update", field_meta={"app.riptide.turnWorking": bool(admission)}))
++                session_update="session_info_update", field_meta=meta))
+
+     async def _finish_riptide_turn(self, session_id, admission):
+         if admission and self._riptide_turns.get(session_id) == admission:
