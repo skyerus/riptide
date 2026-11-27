@@ -234,4 +234,4 @@ Pair the agent's ACP chat first. The phone button calls in the open chat. Long-p
 
 For Talk, Riptide checks the configured OAuth subscription lane before opening WebRTC and never retries via an API route. The plugin owns audio-side delegation, task permissions, and persistence; phone calls do not translate Talk events into ACP prompts or approve work. Ending a call releases the audio/task binding, not already accepted work. Riptide reloads the selected chat through ACP to pick up saved history. Pairing tests readiness, not entitlement or two-way audio. After pairing, start a call on a real iPhone, confirm audio and a harmless request in that exact chat, and verify any host-managed approval separately.
 
-Calls are outgoing and foreground-only. Neither Hermes route changes direct Codex's App Server subscription-only authentication or OpenClaw Talk.
+Hermes and OpenClaw calls are outgoing. CallKit handles their system call controls, interruptions, and audio while Riptide is in the background.
