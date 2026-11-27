@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from hermes_browser_mcp import HANDOFF, Chrome, tool_result
 
@@ -31,6 +31,19 @@ class ChromeComputerUseTests(unittest.TestCase):
             self.assertEqual(self.chrome.call(name, args, None)["code"], "human_has_control")
         self.chrome.window.assert_not_called()
         self.native.handle_computer_use.assert_not_called()
+
+    def test_capture_fits_a_window_clipped_by_the_framebuffer(self):
+        self.chrome = Chrome("/profile", self.lease, Mock(), Mock(), self.native)
+        self.chrome.placement.resolve.return_value.where = self.chrome.placement.GATEWAY
+        self.chrome.desktop.status.return_value = SimpleNamespace(display=":20", socket="/socket")
+        with patch("hermes_browser_mcp.BrowserWindow") as browser:
+            window = browser.return_value
+            window.active_browser.return_value = (33, "Chrome")
+            window.process_id.return_value = 123
+            window.capture_fits.side_effect = [False, True]
+            self.assertTrue(self.chrome.call("computer_use", {"action": "capture"}, None)["ok"])
+        window.set_state.assert_called_once_with(33, window.STATES, enable=True)
+        self.assertEqual(window.capture_fits.call_count, 2)
 
     def test_reviewed_input_does_not_request_a_second_approval(self):
         self.chrome.call("computer_use", {"action": "capture"}, None)
