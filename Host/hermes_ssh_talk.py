@@ -3,6 +3,8 @@
 from contextlib import suppress
 import http.client
 import json
+import os
+from pathlib import Path
 import re
 import sys
 import uuid
@@ -33,6 +35,25 @@ def sdp(value):
         return isinstance(value, str) and value.startswith("v=0") and len(value.encode()) <= 65536
     except UnicodeEncodeError:
         return False
+
+
+def gateway_config(path):
+    data, mode = read_owned(path)
+    if not path.is_absolute() or mode != 0o600 or not data or len(data) > 16384:
+        raise TalkError("disabled")
+    config = json.loads(data)
+    if not isinstance(config, dict):
+        raise TalkError("disabled")
+    if "gateway" not in config:
+        return None
+    names = ("home", "source", "python", "talk", "auth")
+    gateway = config["gateway"]
+    if set(config) != {"gateway"} or not isinstance(gateway, dict) or set(gateway) != set(names):
+        raise TalkError("disabled")
+    paths = [Path(gateway[name]) for name in names]
+    if not all(p.is_absolute() for p in paths):
+        raise TalkError("disabled")
+    return paths
 
 
 class TalkCall:
@@ -162,11 +183,23 @@ class TalkCall:
                 self.send("/close", self.context, timeout=3)
 
 
-def serve(path):
+def serve(path, *, home=None, workspace=None):
     call = None
     try:
         if path is None:
             raise TalkError("disabled")
+        try:
+            gateway = gateway_config(path)
+            if gateway is not None:
+                profile, source, python, talk, auth = gateway
+                if (home is None or Path(home).resolve() != profile.resolve() or workspace is None
+                        or not Path(workspace).is_absolute() or not os.access(python, os.X_OK)):
+                    raise TalkError("disabled")
+                adapter = Path(__file__).resolve().with_name("hermes_gateway_talk.py")
+                os.execv(str(python), [str(python), "-IB", str(adapter), str(profile), str(source),
+                                      str(talk), str(auth), workspace])
+        except (OSError, ValueError, TypeError) as error:
+            raise TalkError("disabled") from error
         call = TalkCall(path)
         while frame := sys.stdin.buffer.readline(MAX_REQUEST + 1):
             if len(frame) > MAX_REQUEST or not frame.endswith(b"\n"):
