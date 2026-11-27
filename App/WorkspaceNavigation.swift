@@ -7,6 +7,7 @@ struct WorkspaceNavigation: View {
     @State private var alerts = WorkspaceAlerts()
     @State private var sideChatsAgent: WorkspaceAgent?
     @State private var drawerSelection: WorkspaceRoute?
+    @State private var switcherSelection: WorkspaceRoute?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,12 +45,22 @@ struct WorkspaceNavigation: View {
             }
         }
         .sheet(isPresented: $workspace.showingSwitcher, onDismiss: {
-            if let tab = workspace.sidebarRequested {
+            if let route = switcherSelection {
+                switcherSelection = nil
+                if let chat = route.chat { workspace.open(route.workspace, chat: chat) }
+                else { workspace.openMainChat(route.workspace) }
+            } else if let tab = workspace.sidebarRequested {
                 workspace.sidebarRequested = nil
                 workspace.showSidebar(tab)
             }
             else if workspace.alertsRequested { workspace.alertsRequested = false; workspace.showingAlerts = true }
-        }) { WorkspaceSwitcher().environment(workspace) }
+        }) {
+            WorkspaceSwitcher { route in
+                switcherSelection = route
+                workspace.showingSwitcher = false
+            }
+            .environment(workspace)
+        }
         .sheet(item: $sideChatsAgent, onDismiss: {
             if let selection = drawerSelection, workspace.path.last?.workspace == selection.workspace {
                 workspace.open(selection)
@@ -127,24 +138,23 @@ private struct WorkspaceDestination: View {
     @Environment(WorkspaceState.self) private var workspace
 
     var body: some View {
-        destination
-            .background(ChatTheme.background)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if let agent = workspace.agent(route.workspace), route.hermesGroup == nil {
-                    if route.opensMainChat {
-                        AgentChatBar(agent: agent, showSideChats: { showSideChats(agent) })
-                    } else if route.chat != nil || route.startsNewChat {
-                        HStack {
-                            Button("Main Chat", systemImage: "arrow.uturn.backward") { workspace.openMainChat(agent.id) }
-                                .buttonStyle(ChatNavigationButtonStyle())
-                                .accessibilityIdentifier("return-to-main-chat")
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, ChatTheme.gutter)
-                        .background(ChatTheme.background)
+        VStack(spacing: 0) {
+            if let agent = workspace.agent(route.workspace), route.hermesGroup == nil {
+                if route.opensMainChat {
+                    AgentChatBar(agent: agent, showSideChats: { showSideChats(agent) })
+                } else if route.chat != nil || route.startsNewChat {
+                    HStack {
+                        Button("Main Chat", systemImage: "arrow.uturn.backward") { workspace.openMainChat(agent.id) }
+                            .buttonStyle(ChatNavigationButtonStyle())
+                            .accessibilityIdentifier("return-to-main-chat")
+                        Spacer(minLength: 0)
                     }
+                    .padding(.horizontal, ChatTheme.gutter)
                 }
             }
+            destination
+        }
+        .background(ChatTheme.background)
     }
 
     @ViewBuilder
@@ -281,6 +291,8 @@ private struct AgentChatBar: View {
                     .padding(.leading, ChatTheme.gutter - 4)
                 }
                 .scrollIndicators(.hidden)
+                .frame(height: 44)
+                .contentShape(Rectangle())
                 .accessibilityIdentifier("main-chat-agents")
             }
             Button("Side chats", systemImage: "bubble.left.and.bubble.right", action: showSideChats)
@@ -395,6 +407,7 @@ struct WorkspaceTabBar: View {
 }
 
 private struct WorkspaceSwitcher: View {
+    let select: (WorkspaceRoute) -> Void
     @Environment(WorkspaceState.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
@@ -465,7 +478,7 @@ private struct WorkspaceSwitcher: View {
                 if !matchingAgents.isEmpty {
                     Section("Workspaces") {
                         ForEach(matchingAgents) { agent in
-                            Button { workspace.openMainChat(agent.id) } label: {
+                            Button { select(.init(workspace: agent.id, opensMainChat: true)) } label: {
                                 WorkspaceRow(title: agent.name, subtitle: agent.connector, symbol: agent.symbol)
                             }
                             .accessibilityIdentifier("switch-\(agent.id)")
@@ -507,7 +520,7 @@ private struct WorkspaceSwitcher: View {
     private func chats(_ visits: [WorkspaceVisit], names: [String: String], recent: Bool) -> some View {
         Section(recent ? "Recent chats" : "Chats") {
             ForEach(visits) { chat in
-                Button { workspace.open(chat.id.workspace, chat: chat.id.chat) } label: {
+                Button { select(.init(workspace: chat.id.workspace, chat: chat.id.chat)) } label: {
                     WorkspaceRow(title: chat.title, subtitle: names[chat.id.workspace] ?? "", symbol: "bubble.left")
                 }
                 .accessibilityIdentifier("switch-chat-\(chat.id.workspace)-\(chat.id.chat)")
@@ -523,7 +536,7 @@ private struct WorkspaceSwitcher: View {
             Section("Live now") {
                 ForEach(live) { visit in
                     let needsYou = urgent.contains(visit.id)
-                    Button { workspace.open(visit.id.workspace, chat: visit.id.chat) } label: {
+                    Button { select(.init(workspace: visit.id.workspace, chat: visit.id.chat)) } label: {
                         WorkspaceRow(title: visit.title,
                                      subtitle: "\(names[visit.id.workspace] ?? "") · \(needsYou ? "Needs you" : "Working")",
                                      symbol: needsYou ? "bell.badge" : "waveform",
