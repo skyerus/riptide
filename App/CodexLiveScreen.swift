@@ -58,26 +58,37 @@ struct CodexLiveScreen: View {
                         .padding(12)
                         .background(ChatTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                     }
-                    ForEach(replies.visibleMessages(isActive: active)) { reply in
-                        ChatMarkdown(source: reply.text, streaming: active && reply.streaming)
-                            .accessibilityIdentifier("codex-assistant-reply")
+                    ForEach(replies.visibleEntries(isActive: active)) { entry in
+                        switch entry {
+                        case .message(let reply):
+                            ChatMarkdown(source: reply.text, streaming: active && reply.streaming)
+                                .accessibilityIdentifier("codex-assistant-reply")
+                        case .contextCompaction(let compaction):
+                            ContextCompactionLine(compaction: compaction)
+                        }
                     }
                     if let turn, let session {
                         let followUps = session.turns.drop(while: { $0.id != turn.turnID })
                         let latestUserMessage = followUps.latestUserMessageLocation(activeTurnID: session.activeTurnID)
                         ForEach(followUps) { followUp in
-                            let messages = followUp.visibleMessages(isActive: followUp.id == session.activeTurnID)
-                            let visible = followUp.id == turn.turnID
-                                ? messages.filter { $0.role == .user && $0.id != messages.first(where: { $0.role == .user })?.id }
-                                : messages
-                            ForEach(visible) { message in
-                                if message.role == .user {
-                                    let showsReceipt = followUp.id == latestUserMessage?.turnID &&
-                                        message.id == latestUserMessage?.messageID
-                                    TranscriptUserMessage(text: message.text, photos: message.photos,
-                                                          receipt: showsReceipt ? message.receipt : nil, photoClient: session.client)
-                                } else {
-                                    ChatMarkdown(source: message.text, streaming: message.streaming)
+                            let firstUserID = followUp.messages.first { $0.role == .user }?.id
+                            ForEach(followUp.visibleEntries(isActive: followUp.id == session.activeTurnID)) { entry in
+                                switch entry {
+                                case .message(let message):
+                                    if message.role == .user {
+                                        if followUp.id != turn.turnID || message.id != firstUserID {
+                                            let showsReceipt = followUp.id == latestUserMessage?.turnID &&
+                                                message.id == latestUserMessage?.messageID
+                                            TranscriptUserMessage(text: message.text, photos: message.photos,
+                                                                  receipt: showsReceipt ? message.receipt : nil, photoClient: session.client)
+                                        }
+                                    } else if followUp.id != turn.turnID {
+                                        ChatMarkdown(source: message.text, streaming: message.streaming)
+                                    }
+                                case .contextCompaction(let compaction):
+                                    if followUp.id != turn.turnID {
+                                        ContextCompactionLine(compaction: compaction)
+                                    }
                                 }
                             }
                         }
@@ -171,6 +182,7 @@ struct CodexLiveScreen: View {
         do {
             let joined = try await peer.attach()
             turn = joined
+            for compaction in joined.compactions { replies.upsert(compaction) }
             let saved = workspace.codexSession(endpoint: endpoint,
                                                initialChat: .init(id: joined.threadID, title: "Codex on this Mac"),
                                                workspaceID: WorkspaceState.localID)
@@ -187,6 +199,8 @@ struct CodexLiveScreen: View {
                     replies.appendReply(text, id: itemID)
                 case .assistantCompleted(_, let message):
                     replies.upsert(message)
+                case .contextCompaction(_, let compaction):
+                    replies.upsert(compaction)
                 case .diff(_, let update):
                     patch = update
                 case .context(_, let usage):

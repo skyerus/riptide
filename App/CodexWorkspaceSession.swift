@@ -290,6 +290,8 @@ final class CodexWorkspaceSession {
                 turns[turnIndex(for: turn)].appendReply(text, id: item)
             case .assistantCompleted(let turn, let message):
                 turns[turnIndex(for: turn)].upsert(message)
+            case .contextCompaction(let turn, let compaction):
+                turns[turnIndex(for: turn)].upsert(compaction)
             case .completed(let turn, let status):
                 lastCompletedTurnID = turn
                 activeTurnID = nil

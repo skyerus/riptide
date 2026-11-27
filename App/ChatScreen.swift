@@ -383,6 +383,8 @@ struct ChatScreen: View {
                         )
                     case .tool(let activity):
                         toolRow(activity)
+                    case .contextCompaction(let compaction):
+                        ContextCompactionLine(compaction: compaction)
                     case .pairingReceipt(let name, let connected):
                         AgentPairingReceipt(name: name, connected: connected)
                     }
@@ -405,16 +407,20 @@ struct ChatScreen: View {
                     TurnPlanCard(steps: model.selected.plan)
                 }
                 if model.selected.working && !hasVisiblePairingRequest {
-                    let calls = model.selected.transcript.activeToolCalls
-                    let current = calls.last { $0.status == nil || $0.status == "in_progress" || $0.status == "pending" }
-                    LiveTurnActivity(
-                        currentTool: current.map { $0.title ?? "Tool call" },
-                        hasActivity: !calls.isEmpty
-                    ) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            ForEach(calls, id: \.id) { toolRow($0) }
+                    if let compaction = model.selected.transcript.activeCompaction {
+                        ContextCompactionLine(compaction: compaction)
+                    } else {
+                        let calls = model.selected.transcript.activeToolCalls
+                        let current = calls.last { $0.status == nil || $0.status == "in_progress" || $0.status == "pending" }
+                        LiveTurnActivity(
+                            currentTool: current.map { $0.title ?? "Tool call" },
+                            hasActivity: !calls.isEmpty
+                        ) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(calls, id: \.id) { toolRow($0) }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }

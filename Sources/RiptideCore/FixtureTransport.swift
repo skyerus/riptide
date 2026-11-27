@@ -27,6 +27,7 @@ public actor FixtureTransport: ACPTransport {
     private let historyDelay: Duration
     private let pairingDemo: Bool
     private let progressDemo: Bool
+    private let compactionDemo: Bool
     private var startObservedTurn: Bool
     private static let observedAdmissionID = "fixture-observed-reply"
     private let cwd: String
@@ -55,13 +56,14 @@ public actor FixtureTransport: ACPTransport {
 
     public init(target: AgentTarget, file: URL? = nil, pace: Duration = .milliseconds(280),
                 catalog: [String] = [], historyDelay: Duration = .zero, pairingDemo: Bool = false,
-                progressDemo: Bool = false, observedTurnDemo: Bool = false) throws {
+                progressDemo: Bool = false, observedTurnDemo: Bool = false, compactionDemo: Bool = false) throws {
         (incoming, output) = AsyncThrowingStream.makeStream()
         self.file = file
         self.pace = pace
         self.historyDelay = historyDelay
         self.pairingDemo = pairingDemo
         self.progressDemo = progressDemo
+        self.compactionDemo = compactionDemo
         startObservedTurn = observedTurnDemo
         cwd = target.cwd
         mainSessionID = target.mainSessionID
@@ -75,6 +77,12 @@ public actor FixtureTransport: ACPTransport {
                         + "Ask me for a quick project rundown, or start another chat to keep a topic separate.")
                 ])
             ]
+            if compactionDemo {
+                sessions[0].updates += [
+                    Self.legacyCompaction(id: "fixture-earlier-compaction"),
+                    Self.chunk("agent_message_chunk", id: "after-compaction", text: "I finished reviewing the draft.")
+                ]
+            }
             sessions += catalog.enumerated().map { index, title in
                 let id = "\(target.id)-sample-\(index + 1)"
                 return SavedSession(id: id, title: title, updates: [
@@ -286,9 +294,17 @@ public actor FixtureTransport: ACPTransport {
             stream(Self.chunk("agent_message_chunk", id: id, text: "Checking the saved settings.", progress: true),
                    in: sessionID)
         }
-        turns[sessionID]?.work = Task { [weak self, pace, progressDemo] in
+        turns[sessionID]?.work = Task { [weak self, pace, progressDemo, compactionDemo] in
             if progressDemo {
                 do { try await Task.sleep(for: .seconds(6)) } catch { return }
+            }
+            if compactionDemo {
+                let compactionID = UUID().uuidString
+                let start = Int(Date.now.timeIntervalSince1970 * 1_000)
+                await self?.reportCompaction(compactionID, start: start, end: nil, in: sessionID)
+                do { try await Task.sleep(for: .seconds(7)) } catch { return }
+                guard let self else { return }
+                await self.reportCompaction(compactionID, start: start, end: start + 7_000, in: sessionID)
             }
             let messageID = UUID().uuidString
             for text in turn.response {
@@ -392,6 +408,23 @@ public actor FixtureTransport: ACPTransport {
         var metadata: [String: JSON] = ["app.riptide.turnWorking": .boolean(working)]
         if working { metadata["app.riptide.steerAdmissionId"] = .string(Self.observedAdmissionID) }
         stream(["sessionUpdate": "session_info_update", "_meta": .object(metadata)], in: sessionID)
+    }
+
+    private func reportCompaction(_ id: String, start: Int, end: Int?, in sessionID: String) {
+        var item: [String: JSON] = [
+            "type": "contextCompaction", "id": .string(id), "running": .boolean(end == nil), "startedAtMs": .integer(start)
+        ]
+        if let end {
+            item["completedAtMs"] = .integer(end)
+            try? record(Self.legacyCompaction(id: id), in: sessionID, live: false)
+        }
+        stream(["sessionUpdate": "session_info_update", "_meta": ["app.riptide.contextCompaction": .object(item)]],
+               in: sessionID)
+    }
+
+    private static func legacyCompaction(id: String) -> JSON {
+        let text = #"[codex contextCompaction] {"type":"contextCompaction","id":"\#(id)","startedAtMs":1000,"completedAtMs":25000}"#
+        return ["sessionUpdate": "agent_message_chunk", "content": ["type": "text", "text": .string(text)]]
     }
 
     private func fail(_ sessionID: String) {

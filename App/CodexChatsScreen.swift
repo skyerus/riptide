@@ -244,10 +244,15 @@ struct CodexSavedChatScreen: View {
                     Text("Showing the latest 30 turns.").font(.caption).foregroundStyle(.secondary)
                 }
                 ForEach(turns) { turn in
-                    ForEach(turn.visibleMessages(isActive: turn.id == activeTurnID)) { message in
-                        let showsReceipt = turn.id == latestUserMessage?.turnID &&
-                            message.id == latestUserMessage?.messageID
-                        transcriptMessage(message, showsReceipt: showsReceipt)
+                    ForEach(turn.visibleEntries(isActive: turn.id == activeTurnID)) { entry in
+                        switch entry {
+                        case .message(let message):
+                            let showsReceipt = turn.id == latestUserMessage?.turnID &&
+                                message.id == latestUserMessage?.messageID
+                            transcriptMessage(message, showsReceipt: showsReceipt)
+                        case .contextCompaction(let compaction):
+                            ContextCompactionLine(compaction: compaction)
+                        }
                     }
                     if showsCompletedToolCalls && turn.id != activeTurnID && !turn.progress.items.isEmpty {
                         CodexActivityList(items: turn.progress.items)
@@ -272,14 +277,14 @@ struct CodexSavedChatScreen: View {
                     if !ready { Button("Reconnect") { session?.start() } }
                 } else if !ready {
                     ProgressView("Opening chat…")
-                } else if turns.allSatisfy({ $0.messages.isEmpty }) && !working {
+                } else if turns.allSatisfy({ $0.visibleEntries(isActive: false).isEmpty }) && !working {
                     Text("Start a conversation").foregroundStyle(.secondary)
                 }
                 if let sendIssue = session?.sendIssue {
                     Text(sendIssue).font(.footnote).foregroundStyle(.secondary)
                 }
                 if !progress.plan.isEmpty { TurnPlanCard(steps: progress.plan) }
-                if let activeTurnID {
+                if let activeTurnID, turns.last(where: { $0.id == activeTurnID })?.isCompactingContext != true {
                     let current = progress.items.last {
                         $0.state == .running && $0.kind != .summary && $0.kind != .planning
                     }

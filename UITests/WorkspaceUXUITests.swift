@@ -920,6 +920,59 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
+    func testSavedCodexShowsContextCompactionLiveAndInHistory() throws {
+        continueAfterFailure = false
+        let (app, editor) = try openCodexFixture(portKey: "RIPTIDE_UX_COMPACTION_FIXTURE_PORT")
+        let completed = app.staticTexts.matching(identifier: "context-compaction-completed")
+        XCTAssertTrue(completed.firstMatch.waitForExistence(timeout: 8))
+        XCTAssertEqual(completed.firstMatch.label, "Context compacted")
+        XCTAssertTrue(app.staticTexts["I finished reviewing the draft."].exists)
+
+        editor.tap()
+        editor.typeText("Review the release draft")
+        app.buttons["Send"].tap()
+        let running = app.staticTexts["context-compaction-running"]
+        XCTAssertTrue(running.waitForExistence(timeout: 8))
+        XCTAssertTrue(running.label.hasPrefix("Compacting context · "))
+        XCTAssertTrue(app.buttons["stop-codex-turn"].exists)
+        capture(app, as: "Saved Codex chat compacting context")
+
+        XCTAssertTrue(app.staticTexts["The release draft is ready."].waitForExistence(timeout: 14))
+        XCTAssertFalse(running.exists)
+        XCTAssertEqual(completed.count, 2)
+        XCTAssertEqual(completed.element(boundBy: 1).label, "Context compacted · 7s")
+        capture(app, as: "Saved Codex chat after context compaction")
+    }
+
+    @MainActor
+    func testHermesReplaysLegacyCompactionAndShowsLiveStatus() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_FIXTURE_CONTEXT_COMPACTION"] = "1"
+        app.launch()
+        openMainChat(in: app, agent: "hermes")
+        let completed = app.staticTexts.matching(identifier: "context-compaction-completed")
+        XCTAssertTrue(completed.firstMatch.waitForExistence(timeout: 8))
+        XCTAssertEqual(completed.firstMatch.label, "Context compacted")
+        let nextMessage = app.staticTexts["I finished reviewing the draft."]
+        XCTAssertTrue(nextMessage.exists)
+        XCTAssertLessThan(completed.firstMatch.frame.midY, nextMessage.frame.midY)
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "[codex contextCompaction]")).firstMatch.exists)
+        capture(app, as: "Hermes history with legacy context compaction")
+
+        let editor = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        editor.tap()
+        editor.typeText("Review the new draft")
+        app.buttons["Send"].tap()
+        let running = app.staticTexts["context-compaction-running"]
+        XCTAssertTrue(running.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(running.label.hasPrefix("Compacting context · "))
+        XCTAssertTrue(running.waitForNonExistence(timeout: 12))
+        XCTAssertEqual(completed.element(boundBy: 1).label, "Context compacted · 7s")
+    }
+
+    @MainActor
     func testSavedCodexHidesProgressOnCompletion() throws {
         continueAfterFailure = false
         let (app, editor) = try openCodexFixture()
@@ -952,8 +1005,8 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
-    private func openCodexFixture(dictation: Bool = false) throws -> (XCUIApplication, XCUIElement) {
-        let app = try launchCodexFixture(dictation: dictation)
+    private func openCodexFixture(portKey: String = "RIPTIDE_UX_FIXTURE_PORT", dictation: Bool = false) throws -> (XCUIApplication, XCUIElement) {
+        let app = try launchCodexFixture(portKey: portKey, dictation: dictation)
         let row = app.buttons["sidebar-chat-busy-fixture-thread"]
         XCTAssertTrue(row.waitForExistence(timeout: 8))
         row.tap()

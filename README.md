@@ -161,6 +161,8 @@ ACP clients opt in with `clientCapabilities._meta["app.riptide.assistantProgress
 
 Apply [the screenshot transcript patch](Host/compat/hermes-codex-image-view-transcript.patch) after the assistant progress patch. It keeps Codex screenshot viewing activity out of new assistant replies and omits legacy screenshot records when ACP reopens a chat. Use the same apply, restart, and rollback procedure.
 
+Apply [the context compaction patch](Host/compat/hermes-codex-context-compaction.patch) after the assistant progress patch to show live Codex compaction in gateway-managed Hermes chats. Use the same apply, restart, and rollback procedure. The patched gateway sends the lifecycle through ACP session metadata. Riptide can also display compactions from previously saved Hermes history.
+
 ### Hermes browser handoff over SSH
 
 Configure [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) on the Linux gateway. Install its desktop packages, set `bot_desktop.auto_start: true` and `model.openai_runtime: codex_app_server` in the paired profile, and apply [the Hermes gateway patches](Host/compat/hermes-gateway-pairing.md). The SSH wrapper needs `websockets` and `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` in the key’s forced command. Give this option only to devices trusted to control the profile’s desktop.

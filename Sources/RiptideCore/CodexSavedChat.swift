@@ -111,17 +111,57 @@ public struct CodexChatMessage: Equatable, Identifiable, Sendable {
     }
 }
 
+public enum CodexTranscriptEntry: Identifiable, Sendable {
+    public enum ID: Hashable, Sendable {
+        case message(String)
+        case contextCompaction(String)
+    }
+
+    case message(CodexChatMessage)
+    case contextCompaction(ContextCompaction)
+
+    public var id: ID {
+        switch self {
+        case .message(let message): .message(message.id)
+        case .contextCompaction(let compaction): .contextCompaction(compaction.id)
+        }
+    }
+
+    var message: CodexChatMessage? {
+        guard case .message(let message) = self else { return nil }
+        return message
+    }
+}
+
 public struct CodexTranscriptTurn: Identifiable, Sendable {
     public let id: String
-    public private(set) var messages: [CodexChatMessage] = []
+    public private(set) var entries: [CodexTranscriptEntry] = []
     public private(set) var progress = CodexTurnProgress()
 
     public init(id: String) { self.id = id }
 
+    public var messages: [CodexChatMessage] { entries.compactMap(\.message) }
     public var replyText: String? { Self.replyText(in: messages) }
 
+    public var isCompactingContext: Bool {
+        entries.contains {
+            guard case .contextCompaction(let compaction) = $0 else { return false }
+            return compaction.isRunning
+        }
+    }
+
     public func visibleMessages(isActive: Bool) -> [CodexChatMessage] {
-        isActive ? messages : messages.filter { $0.phase != .commentary }
+        visibleEntries(isActive: isActive).compactMap(\.message)
+    }
+
+    public func visibleEntries(isActive: Bool) -> [CodexTranscriptEntry] {
+        guard !isActive else { return entries }
+        return entries.filter {
+            switch $0 {
+            case .message(let message): message.phase != .commentary
+            case .contextCompaction(let compaction): !compaction.isRunning
+            }
+        }
     }
 
     static func replyText(in messages: [CodexChatMessage]) -> String? {
@@ -130,25 +170,34 @@ public struct CodexTranscriptTurn: Identifiable, Sendable {
     }
 
     public mutating func upsert(_ message: CodexChatMessage) {
-        let index: Int
-        if let existing = messages.firstIndex(where: { $0.id == message.id }) {
-            index = existing
-            let receipt = messages[index].receipt
-            messages[index] = message
-            if receipt == .seen { messages[index].receipt = receipt }
+        let index = entries.firstIndex { $0.id == .message(message.id) } ?? entries.endIndex
+        var message = message
+        if index == entries.endIndex {
+            entries.append(.message(message))
         } else {
-            index = messages.count
-            messages.append(message)
+            if entries[index].message?.receipt == .seen { message.receipt = .seen }
+            entries[index] = .message(message)
         }
         if message.role == .assistant, !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            for prompt in messages.indices.prefix(index) where messages[prompt].receipt == .delivered {
-                messages[prompt].receipt = .seen
+            for index in entries.indices.prefix(index) {
+                guard var prompt = entries[index].message, prompt.receipt == .delivered else { continue }
+                prompt.receipt = .seen
+                entries[index] = .message(prompt)
             }
         }
     }
 
+    public mutating func upsert(_ compaction: ContextCompaction) {
+        if let index = entries.firstIndex(where: { $0.id == .contextCompaction(compaction.id) }),
+           case .contextCompaction(let previous) = entries[index] {
+            entries[index] = .contextCompaction(previous.merging(compaction))
+        } else {
+            entries.append(.contextCompaction(compaction))
+        }
+    }
+
     public mutating func appendReply(_ text: String, id: String) {
-        let current = messages.first { $0.id == id }
+        let current = entries.first { $0.id == .message(id) }?.message
         guard current?.streaming != false else { return }
         var message = current ?? CodexChatMessage(id: id, role: .assistant, text: "", streaming: true)
         message.text += text
@@ -156,7 +205,11 @@ public struct CodexTranscriptTurn: Identifiable, Sendable {
     }
 
     public mutating func finishStreaming() {
-        for index in messages.indices where messages[index].streaming { messages[index].streaming = false }
+        for index in entries.indices {
+            guard var message = entries[index].message, message.streaming else { continue }
+            message.streaming = false
+            entries[index] = .message(message)
+        }
     }
 
     public mutating func apply(_ update: CodexWorkUpdate) { progress.apply(update) }

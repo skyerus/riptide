@@ -3,6 +3,7 @@ import asyncio
 from functools import partial
 import json
 import ssl
+import time
 from http import HTTPStatus
 from pathlib import Path
 
@@ -24,7 +25,7 @@ MODELS = [
 ]
 
 
-async def fixture(socket, live=False, watch_progress=False):
+async def fixture(socket, live=False, watch_progress=False, compaction=False):
     async def send(body):
         await socket.send(json.dumps(body))
 
@@ -83,6 +84,18 @@ async def fixture(socket, live=False, watch_progress=False):
             await notify("item/completed", {"turnId": turn_id, "item": {**command, "status": "completed", "exitCode": 0}})
             await notify("turn/plan/updated", {"turnId": turn_id, "plan": [{**step, "status": "completed"} for step in steps]})
             await conclude("The fixture turn is complete.")
+        except ConnectionClosed:
+            return
+
+    async def compact_context():
+        try:
+            await asyncio.sleep(1)
+            started_at = int(time.time() * 1000)
+            item = {"id": "fixture-live-compaction", "type": "contextCompaction", "startedAtMs": started_at}
+            await notify("item/started", {"turnId": turn_id, "item": item})
+            await asyncio.sleep(7)
+            await notify("item/completed", {"turnId": turn_id, "item": {**item, "completedAtMs": started_at + 7000}})
+            await conclude("The release draft is ready.")
         except ConnectionClosed:
             return
 
@@ -151,11 +164,18 @@ async def fixture(socket, live=False, watch_progress=False):
                     "id": "fixture-original", "type": "userMessage",
                     "content": [{"type": "text", "text": "Review the release draft"}],
                 }]}] if live else []
+                if compaction:
+                    history.append({"id": "fixture-earlier-turn", "status": "completed", "items": [
+                        {"id": "fixture-earlier-compaction", "type": "contextCompaction",
+                         "startedAtMs": 1000, "completedAtMs": 25000},
+                        {"id": "fixture-earlier-reply", "type": "agentMessage", "phase": "final_answer",
+                         "text": "I finished reviewing the draft."},
+                    ]})
                 result = {"data": history}
                 if live:
                     await notify_usage()
-                    if watch_progress and params.get("limit") in (3, 30) and approval is None:
-                        approval = asyncio.create_task(show_live_feedback())
+                    if (compaction or watch_progress) and params.get("limit") in (3, 30) and approval is None:
+                        approval = asyncio.create_task(compact_context() if compaction else show_live_feedback())
             elif method == "turn/start" and not started:
                 started = True
                 turn_number += 1
@@ -167,7 +187,10 @@ async def fixture(socket, live=False, watch_progress=False):
                 await user_message(inputs, "fixture-user-message")
                 feedback = any("show live feedback" in item.get("text", "") for item in inputs)
                 needs_approval = not any("finish without approval" in item.get("text", "") for item in inputs)
-                approval = asyncio.create_task(show_live_feedback() if feedback else continue_turn(needs_approval))
+                if compaction:
+                    approval = asyncio.create_task(compact_context())
+                else:
+                    approval = asyncio.create_task(show_live_feedback() if feedback else continue_turn(needs_approval))
             elif method == "turn/steer" and started and params.get("expectedTurnId") == turn_id:
                 steering_number += 1
                 await user_message(params.get("input", []), f"fixture-steer-{steering_number}")
@@ -183,12 +206,12 @@ async def fixture(socket, live=False, watch_progress=False):
             approval.cancel()
 
 
-async def run(port_file, tls=None, live=False, watch_progress=False):
+async def run(port_file, tls=None, live=False, watch_progress=False, compaction=False):
     def authenticate(connection, request):
         if request.headers.get("Authorization") != f"Bearer {TOKEN}":
             return connection.respond(HTTPStatus.UNAUTHORIZED, "Fixture credential required.\n")
 
-    handler = partial(fixture, live=live, watch_progress=watch_progress)
+    handler = partial(fixture, live=live, watch_progress=watch_progress, compaction=compaction)
     async with serve(handler, "127.0.0.1", 0, process_request=authenticate, ssl=tls) as service:
         port_file.write_text(str(service.sockets[0].getsockname()[1]), encoding="utf-8")
         await service.serve_forever()
@@ -201,6 +224,7 @@ if __name__ == "__main__":
     parser.add_argument("--tls-key", type=Path)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--watch-progress", action="store_true")
+    parser.add_argument("--compaction", action="store_true")
     args = parser.parse_args()
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key must be used together")
@@ -208,4 +232,4 @@ if __name__ == "__main__":
     if args.tls_cert:
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(args.tls_cert, args.tls_key)
-    asyncio.run(run(args.port_file, tls, args.live, args.watch_progress))
+    asyncio.run(run(args.port_file, tls, args.live, args.watch_progress, args.compaction))
