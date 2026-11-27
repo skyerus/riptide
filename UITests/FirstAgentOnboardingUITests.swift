@@ -65,7 +65,9 @@ final class FirstAgentOnboardingUITests: XCTestCase {
         XCTAssertTrue(agent.exists)
         XCTAssertFalse(app.staticTexts["Connect your first agent"].exists)
         agent.tap()
-        XCTAssertTrue(app.buttons["sidebar-chat-busy-fixture-thread"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.chatHeading.waitForExistence(timeout: 8))
+        XCTAssertEqual(app.chatHeading.label, "Main Chat")
+        XCTAssertEqual(app.chatHeading.value as? String, "My Codex")
     }
 
     @MainActor

@@ -5,6 +5,9 @@ struct WorkspaceNavigation: View {
     @Bindable var workspace: WorkspaceState
     @Environment(\.scenePhase) private var scenePhase
     @State private var alerts = WorkspaceAlerts()
+    @State private var sideChatsAgent: WorkspaceAgent?
+    @State private var drawerSelection: WorkspaceRoute?
+    @State private var switcherSelection: WorkspaceRoute?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14,7 +17,7 @@ struct WorkspaceNavigation: View {
             NavigationStack(path: $workspace.path) {
                 WorkspaceSidebar()
                     .navigationDestination(for: WorkspaceRoute.self) { route in
-                        WorkspaceDestination(route: route)
+                        WorkspaceDestination(route: route, showSideChats: { sideChatsAgent = $0 })
                             .id(route)
                     }
             }
@@ -42,12 +45,34 @@ struct WorkspaceNavigation: View {
             }
         }
         .sheet(isPresented: $workspace.showingSwitcher, onDismiss: {
-            if let tab = workspace.sidebarRequested {
+            if let route = switcherSelection {
+                switcherSelection = nil
+                if let chat = route.chat { workspace.open(route.workspace, chat: chat) }
+                else { workspace.openMainChat(route.workspace) }
+            } else if let tab = workspace.sidebarRequested {
                 workspace.sidebarRequested = nil
                 workspace.showSidebar(tab)
             }
             else if workspace.alertsRequested { workspace.alertsRequested = false; workspace.showingAlerts = true }
-        }) { WorkspaceSwitcher().environment(workspace) }
+        }) {
+            WorkspaceSwitcher { route in
+                switcherSelection = route
+                workspace.showingSwitcher = false
+            }
+            .environment(workspace)
+        }
+        .sheet(item: $sideChatsAgent, onDismiss: {
+            if let selection = drawerSelection, workspace.path.last?.workspace == selection.workspace {
+                workspace.open(selection)
+            }
+            drawerSelection = nil
+        }) { agent in
+            ChatPicker(agent: agent) { route in
+                drawerSelection = route
+                sideChatsAgent = nil
+            }
+            .environment(workspace)
+        }
         .sheet(isPresented: $workspace.showingAlerts) { WorkspaceAlertSettings().environment(alerts) }
         .onChange(of: workspace.approvalIDs) {
             notify(workspace.newApprovals())
@@ -109,24 +134,38 @@ struct WorkspaceNavigation: View {
 
 private struct WorkspaceDestination: View {
     let route: WorkspaceRoute
+    let showSideChats: (WorkspaceAgent) -> Void
     @Environment(WorkspaceState.self) private var workspace
 
     var body: some View {
-        destination
-            .background(ChatTheme.background)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { WorkspaceSwitcherButton() }
+        VStack(spacing: 0) {
+            if let agent = workspace.agent(route.workspace), route.hermesGroup == nil {
+                if route.opensMainChat {
+                    AgentChatBar(agent: agent, showSideChats: { showSideChats(agent) })
+                } else if route.chat != nil || route.startsNewChat {
+                    HStack {
+                        Button("Main Chat", systemImage: "arrow.uturn.backward") { workspace.openMainChat(agent.id) }
+                            .buttonStyle(ChatNavigationButtonStyle())
+                            .accessibilityIdentifier("return-to-main-chat")
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, ChatTheme.gutter)
+                }
             }
+            destination
+        }
+        .background(ChatTheme.background)
     }
 
     @ViewBuilder
     private var destination: some View {
-        if route.showsAgentWorkspace, let agent = workspace.agent(route.workspace) {
-            AgentWorkspaceScreen(agent: agent)
-        } else if let id = route.hermesGroup {
+        if let id = route.hermesGroup {
             if let session = workspace.hermesGroupSession(roomID: id, workspaceID: route.workspace) {
                 HermesGroupScreen(workspaceName: workspace.agent(route.workspace)?.name ?? "Hermes",
                                   privateFileTransfer: workspace.privateFileTransfer(for: route.workspace), session: session)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) { WorkspaceSwitcherButton() }
+                    }
             } else {
                 ContentUnavailableView("Group chat unavailable", systemImage: "lock",
                                        description: Text("Unlock this device or pair the remote again."))
@@ -134,15 +173,14 @@ private struct WorkspaceDestination: View {
         } else if let model = workspace.roster.first(where: { $0.target.id == route.workspace }) {
             ChatScreen(model: model, initialChatID: route.chat)
         } else if let endpoint = workspace.codexEndpoint(for: route.workspace) {
-            if route.startsNewChat {
-                CodexSavedChatScreen(endpoint: endpoint, initialChat: nil, workspaceID: route.workspace, includesSwitcher: false) { _ in }
+            if route.opensMainChat {
+                CodexMainChatScreen(endpoint: endpoint, workspaceID: route.workspace)
+            } else if route.startsNewChat {
+                CodexSavedChatScreen(endpoint: endpoint, initialChat: nil, workspaceID: route.workspace)
             } else if let chat = route.chat {
                 focusedCodex(endpoint, chat: chat)
-            } else if route.workspace == WorkspaceState.localID {
-                CodexLiveScreen(endpoint: endpoint)
-            } else {
-                CodexChatsScreen(endpoint: endpoint, name: workspace.agent(route.workspace)?.name ?? "Codex",
-                                 selectionKey: route.workspace, workspaceID: route.workspace)
+            } else if route.workspace == WorkspaceState.localID, let agent = workspace.agent(route.workspace) {
+                CodexLiveScreen(endpoint: endpoint, showSavedChats: { showSideChats(agent) })
             }
         } else if let profile = workspace.profile(route.workspace), profile.kind != .codex,
                   let bearer = workspace.remotes.bearer(for: profile) {
@@ -156,7 +194,7 @@ private struct WorkspaceDestination: View {
     private func focusedCodex(_ endpoint: CodexLocalEndpoint, chat: String) -> some View {
         let locator = WorkspaceChatID(workspace: route.workspace, chat: chat)
         return CodexSavedChatScreen(endpoint: endpoint, initialChat: CodexChatSummary(id: chat, title: workspace.displayName(for: locator)),
-                                   workspaceID: route.workspace, includesSwitcher: false) { _ in }
+                                   workspaceID: route.workspace)
     }
 }
 
@@ -189,12 +227,22 @@ struct WorkspaceSwitcherButton: View {
             .accessibilityIdentifier("workspace-switcher")
             .contextMenu {
                 if let previous = workspace.previousWorkspace {
-                    Button("Back to \(previous.name)", systemImage: "arrow.uturn.backward") { workspace.open(previous.id) }
+                    Button("Back to \(previous.name)", systemImage: "arrow.uturn.backward") { workspace.openMainChat(previous.id) }
                 }
                 Button("Open Inbox", systemImage: "tray") { workspace.showSidebar(.inbox) }
                 Button("Open Agents", systemImage: "person.crop.circle") { workspace.showSidebar(.agents) }
                 Button("Open Group chats", systemImage: "person.2") { workspace.showSidebar(.groups) }
             }
+    }
+}
+
+struct WorkspaceSearchButton: View {
+    @Environment(WorkspaceState.self) private var workspace
+
+    var body: some View {
+        Button("Find an agent or chat", systemImage: "magnifyingglass") { workspace.showingSwitcher = true }
+            .keyboardShortcut("k", modifiers: .command)
+            .accessibilityIdentifier("workspace-search")
     }
 }
 
@@ -204,39 +252,80 @@ struct WorkspaceChatHeading: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 5) {
-                Text(title).font(.headline).lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(ChatTheme.muted)
-                    .accessibilityHidden(true)
-            }
+            Text(title).font(.headline).lineLimit(1)
             Text(workspaceName).font(.caption).foregroundStyle(ChatTheme.muted).lineLimit(1)
         }
         .frame(minHeight: 44)
-        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(workspaceName)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
-extension View {
-    func workspaceFlickNavigation(_ workspaceID: String) -> some View {
-        modifier(WorkspaceFlickNavigation(workspaceID: workspaceID))
-    }
-}
-
-private struct WorkspaceFlickNavigation: ViewModifier {
-    let workspaceID: String
+private struct AgentChatBar: View {
+    let agent: WorkspaceAgent
+    let showSideChats: () -> Void
     @Environment(WorkspaceState.self) private var workspace
 
-    func body(content: Content) -> some View {
-        content
-            .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { value in
-                guard abs(value.translation.width) >= 48,
-                      abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }
-                workspace.step(from: workspaceID, by: value.translation.width < 0 ? 1 : -1)
-            })
-            .accessibilityAction(named: "Previous workspace") { workspace.step(from: workspaceID, by: -1) }
-            .accessibilityAction(named: "Next workspace") { workspace.step(from: workspaceID, by: 1) }
+    var body: some View {
+        let otherAgents = workspace.rosterAgents().filter { $0.id != agent.id }
+        HStack(spacing: 12) {
+            if otherAgents.isEmpty {
+                Spacer(minLength: 0)
+            } else {
+                agentStrip(otherAgents)
+            }
+            Button("Side chats", systemImage: "bubble.left.and.bubble.right", action: showSideChats)
+                .buttonStyle(ChatNavigationButtonStyle())
+                .accessibilityIdentifier("open-side-chats")
+                .padding(.trailing, ChatTheme.gutter)
+        }
+        .background(ChatTheme.background)
+    }
+
+    @ViewBuilder
+    private func agentStrip(_ agents: [WorkspaceAgent]) -> some View {
+        let strip = ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(agents) { other in
+                    Button { workspace.openMainChat(other.id) } label: {
+                        AgentAvatar(agent: other, size: 36)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(other.name)
+                    .accessibilityHint("Opens Main Chat")
+                    .accessibilityIdentifier("main-chat-agent-\(other.id)")
+                }
+            }
+            .padding(.leading, ChatTheme.gutter - 4)
+        }
+        .scrollIndicators(.hidden)
+        .frame(height: 44)
+        .contentShape(Rectangle())
+        .accessibilityIdentifier("main-chat-agents")
+
+        if #available(iOS 26.0, *) {
+            strip.scrollEdgeEffectHidden(for: .vertical)
+        } else {
+            strip
+        }
+    }
+}
+
+private struct ChatNavigationButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ChatTheme.ink)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(ChatTheme.surface, in: Capsule())
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.65 : 1)
     }
 }
 
@@ -329,6 +418,7 @@ struct WorkspaceTabBar: View {
 }
 
 private struct WorkspaceSwitcher: View {
+    let select: (WorkspaceRoute) -> Void
     @Environment(WorkspaceState.self) private var workspace
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
@@ -399,7 +489,7 @@ private struct WorkspaceSwitcher: View {
                 if !matchingAgents.isEmpty {
                     Section("Workspaces") {
                         ForEach(matchingAgents) { agent in
-                            Button { workspace.open(agent.id) } label: {
+                            Button { select(.init(workspace: agent.id, opensMainChat: true)) } label: {
                                 WorkspaceRow(title: agent.name, subtitle: agent.connector, symbol: agent.symbol)
                             }
                             .accessibilityIdentifier("switch-\(agent.id)")
@@ -441,7 +531,7 @@ private struct WorkspaceSwitcher: View {
     private func chats(_ visits: [WorkspaceVisit], names: [String: String], recent: Bool) -> some View {
         Section(recent ? "Recent chats" : "Chats") {
             ForEach(visits) { chat in
-                Button { workspace.open(chat.id.workspace, chat: chat.id.chat) } label: {
+                Button { select(.init(workspace: chat.id.workspace, chat: chat.id.chat)) } label: {
                     WorkspaceRow(title: chat.title, subtitle: names[chat.id.workspace] ?? "", symbol: "bubble.left")
                 }
                 .accessibilityIdentifier("switch-chat-\(chat.id.workspace)-\(chat.id.chat)")
@@ -457,7 +547,7 @@ private struct WorkspaceSwitcher: View {
             Section("Live now") {
                 ForEach(live) { visit in
                     let needsYou = urgent.contains(visit.id)
-                    Button { workspace.open(visit.id.workspace, chat: visit.id.chat) } label: {
+                    Button { select(.init(workspace: visit.id.workspace, chat: visit.id.chat)) } label: {
                         WorkspaceRow(title: visit.title,
                                      subtitle: "\(names[visit.id.workspace] ?? "") · \(needsYou ? "Needs you" : "Working")",
                                      symbol: needsYou ? "bell.badge" : "waveform",

@@ -16,9 +16,6 @@ final class HermesSSHUITests: XCTestCase {
         let hermes = app.showAgentGrid().buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
         XCTAssertTrue(hermes.waitForExistence(timeout: 12))
         hermes.tap()
-        let main = app.buttons["sidebar-main-chat"]
-        XCTAssertTrue(main.waitForExistence(timeout: 12))
-        main.tap()
         let call = app.buttons["native-call-in-chat"]
         let ready = NSPredicate(format: "exists == true AND enabled == true")
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: call)], timeout: 25), .completed)
@@ -77,10 +74,7 @@ final class HermesSSHUITests: XCTestCase {
             .matching(NSPredicate(format: "label == %@", label)).firstMatch
         XCTAssertTrue(hermes.waitForExistence(timeout: 12))
         hermes.tap()
-        let main = app.buttons["sidebar-main-chat"]
-        XCTAssertTrue(main.waitForExistence(timeout: 10))
-        main.tap()
-        let chats = app.buttons["chats-button"]
+        let chats = app.buttons["open-side-chats"]
         XCTAssertTrue(chats.waitForExistence(timeout: 25))
         chats.tap()
         app.buttons["new-chat"].tap()
@@ -124,9 +118,6 @@ final class HermesSSHUITests: XCTestCase {
             .matching(NSPredicate(format: "label == %@", label)).firstMatch
         XCTAssertTrue(hermes.waitForExistence(timeout: 12))
         hermes.tap()
-        let main = app.buttons["sidebar-main-chat"]
-        XCTAssertTrue(main.waitForExistence(timeout: 10))
-        main.tap()
         let actions = app.buttons["chat-actions"]
         XCTAssertTrue(actions.waitForExistence(timeout: 25))
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: actions)
@@ -163,9 +154,6 @@ final class HermesSSHUITests: XCTestCase {
             .matching(NSPredicate(format: "label == %@", label)).firstMatch
         XCTAssertTrue(hermes.waitForExistence(timeout: 12))
         hermes.tap()
-        let main = app.buttons["sidebar-main-chat"]
-        XCTAssertTrue(main.waitForExistence(timeout: 10))
-        main.tap()
         let reply = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", marker)).firstMatch
         XCTAssertTrue(reply.waitForExistence(timeout: 35), "The existing SSH pairing did not replay the saved reply.")
     }
@@ -246,7 +234,6 @@ final class HermesSSHUITests: XCTestCase {
                 .matching(NSPredicate(format: "label == %@", label)).firstMatch
             XCTAssertTrue(hermes.waitForExistence(timeout: 12))
             hermes.tap()
-            button("sidebar-main-chat").tap()
         }
 
         openHermes()

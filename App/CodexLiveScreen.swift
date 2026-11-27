@@ -3,6 +3,7 @@ import SwiftUI
 
 struct CodexLiveScreen: View {
     let endpoint: CodexLocalEndpoint
+    let showSavedChats: () -> Void
     @Environment(WorkspaceState.self) private var workspace
     @State private var session: CodexWorkspaceSession?
     @State private var turn: CodexLiveTurn?
@@ -145,11 +146,8 @@ struct CodexLiveScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                NavigationLink {
-                    CodexChatsScreen(endpoint: endpoint, name: "Chats")
-                } label: {
-                    Label("Saved chats", systemImage: "bubble.left.and.bubble.right").labelStyle(.iconOnly)
-                }
+                Button("Saved chats", systemImage: "bubble.left.and.bubble.right", action: showSavedChats)
+                .labelStyle(.iconOnly)
                 .accessibilityIdentifier("saved-codex-chats")
                 Button("Call Codex", systemImage: "phone") {
                     workspace.calls.present(.codex(CodexVoiceCallModel(endpoint: endpoint, workspace: workspace,

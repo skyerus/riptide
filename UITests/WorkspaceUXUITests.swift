@@ -137,6 +137,7 @@ final class WorkspaceUXUITests: XCTestCase {
     func testSteeredCodexPhotoAppearsInTheDesktopWatcher() throws {
         continueAfterFailure = false
         let app = try launchCodexFixture(portKey: "RIPTIDE_UX_LIVE_FIXTURE_PORT")
+        app.openSideChats()
         app.buttons["watch-desktop-codex"].tap()
         let editor = app.descendants(matching: .any).matching(identifier: "codex-steer-input").firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 8))
@@ -257,17 +258,46 @@ final class WorkspaceUXUITests: XCTestCase {
         }
 
         verifyMenu("Attachments in a saved Codex chat")
-        app.navigationBars.buttons["BackButton"].tap()
-        let newChat = app.buttons["workspace-new-chat"]
+        app.openSideChats()
+        let newChat = app.buttons["new-chat"]
         XCTAssertTrue(newChat.waitForExistence(timeout: 5))
         capture(app, as: "Codex workspace with New chat")
         newChat.tap()
-        XCTAssertTrue(app.staticTexts["New Codex fixture"].waitForExistence(timeout: 8))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", "New Codex fixture"), object: app.chatHeading
+        )], timeout: 8), .completed)
         verifyMenu("Attachments in a new Codex chat")
-        app.navigationBars.buttons["BackButton"].tap()
+        app.returnToMainChat()
+        app.openSideChats()
         app.buttons["watch-desktop-codex"].tap()
         XCTAssertTrue(app.staticTexts["Watching a turn already in progress"].waitForExistence(timeout: 8))
         verifyMenu("Attachments while steering Codex")
+    }
+
+    @MainActor
+    func testCodexMainChatStaysTheSameAfterOpeningASideChat() throws {
+        continueAfterFailure = false
+        let (app, _) = try openCodexFixture(portKey: "RIPTIDE_UX_SIDE_CHATS_PORT")
+        XCTAssertEqual(app.chatHeading.label, "Main Chat")
+        XCTAssertFalse(app.buttons["main-chat-agent-local-codex"].exists)
+        app.openSideChats()
+        let main = app.buttons["sidebar-chat-busy-fixture-thread"]
+        let side = app.buttons["sidebar-chat-fixture-side-thread"]
+        XCTAssertTrue(side.waitForExistence(timeout: 8))
+        XCTAssertFalse(main.exists)
+        capture(app, as: "riptide-codex-side-chats")
+        side.tap()
+        XCTAssertTrue(app.buttons["return-to-main-chat"].waitForExistence(timeout: 8))
+        XCTAssertEqual(app.chatHeading.label, "Fixture side chat")
+
+        app.terminate()
+        app.launch()
+        app.openAgentMainChat("local-codex")
+        XCTAssertTrue(app.chatHeading.waitForExistence(timeout: 8))
+        XCTAssertEqual(app.chatHeading.label, "Main Chat")
+        app.openSideChats()
+        XCTAssertTrue(side.waitForExistence(timeout: 8))
+        XCTAssertFalse(main.exists)
     }
 
     @MainActor
@@ -319,6 +349,7 @@ final class WorkspaceUXUITests: XCTestCase {
     func testCodexDesktopWatcherShowsReportedContextUsage() throws {
         continueAfterFailure = false
         let app = try launchCodexFixture(portKey: "RIPTIDE_UX_LIVE_FIXTURE_PORT")
+        app.openSideChats()
         app.buttons["watch-desktop-codex"].tap()
         let context = app.buttons["context-usage"]
         XCTAssertTrue(context.waitForExistence(timeout: 8))
@@ -333,6 +364,7 @@ final class WorkspaceUXUITests: XCTestCase {
     func testCodexDesktopWatcherHidesProgressOnCompletion() throws {
         continueAfterFailure = false
         let app = try launchCodexFixture(portKey: "RIPTIDE_UX_WATCH_PROGRESS_PORT")
+        app.openSideChats()
         app.buttons["watch-desktop-codex"].tap()
         let progress = app.staticTexts["Checking the current changes."]
         XCTAssertTrue(progress.waitForExistence(timeout: 14))
@@ -538,9 +570,7 @@ final class WorkspaceUXUITests: XCTestCase {
         transcript.swipeUp(velocity: .slow)
         XCTAssertTrue(jump.exists, "Leave the chat while reading its history.")
         app.buttons["BackButton"].tap()
-        let main = app.buttons["sidebar-main-chat"]
-        XCTAssertTrue(main.waitForExistence(timeout: 8))
-        main.tap()
+        openMainChat(in: app)
         XCTAssertTrue(latest.waitForExistence(timeout: 8))
         XCTAssertTrue(isVisible(latest, in: transcript), "Reopening the chat should show the newest message.")
         XCTAssertFalse(jump.exists)
@@ -554,7 +584,8 @@ final class WorkspaceUXUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_BUSY_WORKSPACE"] = "1"
         app.launch()
         openMainChat(in: app)
-        let switcher = app.buttons["workspace-switcher"]
+        app.buttons["chat-actions"].tap()
+        let switcher = app.buttons["workspace-search"]
         XCTAssertTrue(switcher.waitForExistence(timeout: 8))
         switcher.tap()
         let search = app.searchFields.firstMatch
@@ -568,7 +599,7 @@ final class WorkspaceUXUITests: XCTestCase {
         }
         matching.tap()
         XCTAssertTrue(app.staticTexts["Fixture chat: Incident 23 review"].waitForExistence(timeout: 8))
-        let title = app.buttons["chats-button"]
+        let title = app.chatHeading
         XCTAssertEqual(title.value as? String, "Ops 12")
         capture(app, as: "Found a chat across a busy workspace")
     }
@@ -585,20 +616,15 @@ final class WorkspaceUXUITests: XCTestCase {
         for _ in 0..<8 where !last.isHittable { grid.swipeUp() }
         XCTAssertTrue(last.isHittable)
         last.tap()
-        XCTAssertEqual(app.buttons["agent-workspace-heading"].label, "Ops 12")
-        let main = app.buttons["sidebar-main-chat"]
+        XCTAssertTrue(app.chatHeading.waitForExistence(timeout: 8))
+        XCTAssertEqual(app.chatHeading.label, "Main Chat")
+        XCTAssertEqual(app.chatHeading.value as? String, "Ops 12")
+        app.openSideChats()
         let history = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "sidebar-chat-ops-12-sample-")).firstMatch
-        XCTAssertTrue(main.waitForExistence(timeout: 8))
         XCTAssertTrue(history.waitForExistence(timeout: 8))
-        XCTAssertLessThan(main.frame.minY, history.frame.minY)
         XCTAssertTrue(app.staticTexts["Side chats"].exists)
-        capture(app, as: "Agent with main and side chats")
-        main.tap()
-        let heading = app.buttons["chats-button"]
-        XCTAssertTrue(heading.waitForExistence(timeout: 8))
-        XCTAssertEqual(heading.value as? String, "Ops 12")
-        app.navigationBars.buttons["BackButton"].tap()
-        XCTAssertTrue(main.waitForExistence(timeout: 8))
+        capture(app, as: "Agent side chats")
+        app.buttons["close-chats"].tap()
         app.navigationBars.buttons["BackButton"].tap()
         XCTAssertTrue(grid.waitForExistence(timeout: 8))
         XCTAssertTrue(app.buttons["sidebar-agents"].isSelected)
@@ -623,7 +649,7 @@ final class WorkspaceUXUITests: XCTestCase {
         item.tap()
         let deny = app.buttons["approval-reject_once"]
         XCTAssertTrue(deny.waitForExistence(timeout: 8))
-        XCTAssertEqual(app.buttons["chats-button"].value as? String, name)
+        XCTAssertEqual(app.chatHeading.value as? String, name)
         deny.tap()
         XCTAssertTrue(app.staticTexts["I skipped the sample action. Nothing was run."].waitForExistence(timeout: 8))
         app.navigationBars.buttons["BackButton"].tap()
@@ -935,8 +961,8 @@ final class WorkspaceUXUITests: XCTestCase {
         app.buttons["codex-chat-actions"].tap()
         app.buttons["Show Tool Calls"].tap()
         XCTAssertTrue(output.waitForExistence(timeout: 5))
-        app.buttons["codex-chat-heading"].tap()
-        XCTAssertTrue(app.buttons["codex-saved-chat"].firstMatch.waitForExistence(timeout: 8))
+        app.openSideChats()
+        XCTAssertTrue(app.staticTexts["No side chats yet."].waitForExistence(timeout: 8))
     }
 
     @MainActor
@@ -1020,16 +1046,13 @@ final class WorkspaceUXUITests: XCTestCase {
         app.launchEnvironment["RIPTIDE_CODEX_WORKSPACE"] = "/riptide-ux-fixture"
         if dictation { app.launchEnvironment["RIPTIDE_DICTATION_FIXTURE"] = "1" }
         app.launch()
-        app.openAgentWorkspace("local-codex")
+        app.openAgentMainChat("local-codex")
         return app
     }
 
     @MainActor
     private func openCodexFixture(portKey: String = "RIPTIDE_UX_FIXTURE_PORT", dictation: Bool = false) throws -> (XCUIApplication, XCUIElement) {
         let app = try launchCodexFixture(portKey: portKey, dictation: dictation)
-        let row = app.buttons["sidebar-chat-busy-fixture-thread"]
-        XCTAssertTrue(row.waitForExistence(timeout: 8))
-        row.tap()
         let identifiedEditor = app.descendants(matching: .any).matching(identifier: "codex-composer").firstMatch
         let editor = identifiedEditor.waitForExistence(timeout: 5) ? identifiedEditor :
             app.descendants(matching: .any).matching(NSPredicate(format: "placeholderValue == %@", "Message Codex")).firstMatch
@@ -1050,7 +1073,6 @@ final class WorkspaceUXUITests: XCTestCase {
         let back = app.navigationBars.buttons["BackButton"]
         _ = try XCTUnwrap(back.waitForExistence(timeout: 8) ? back : nil, "Codex did not show Back.")
         back.tap()
-        if app.buttons["agent-workspace-heading"].exists { back.tap() }
         XCTAssertTrue(app.buttons["sidebar-agents"].isSelected)
         let inbox = app.buttons["sidebar-inbox"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 12))
@@ -1058,7 +1080,7 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
-    func testSidebarSwitchKeepsTheDraftAndSwitcherFindsAgents() {
+    func testAgentAvatarSwitchOpensMainChatsAndKeepsTheDraft() {
         let app = freshApp()
         openMainChat(in: app)
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
@@ -1068,23 +1090,15 @@ final class WorkspaceUXUITests: XCTestCase {
 
         XCTAssertFalse(app.scrollViews["agent-grid"].exists)
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@", "Inbox")).firstMatch.exists)
-        app.navigationBars.buttons["BackButton"].tap()
-        XCTAssertTrue(app.buttons["agent-workspace-heading"].waitForExistence(timeout: 8))
-        XCTAssertEqual(app.buttons["agent-workspace-heading"].label, "OpenClaw")
-        app.navigationBars.buttons["BackButton"].tap()
-        openMainChat(in: app, agent: "hermes")
-        XCTAssertTrue(app.buttons["chats-button"].waitForExistence(timeout: 8))
-        XCTAssertEqual(app.buttons["chats-button"].value as? String, "Hermes")
+        XCTAssertFalse(app.buttons["main-chat-agent-openclaw"].exists)
+        app.buttons["main-chat-agent-hermes"].tap()
+        XCTAssertTrue(app.chatHeading.waitForExistence(timeout: 8))
+        XCTAssertEqual(app.chatHeading.value as? String, "Hermes")
         XCTAssertNotEqual(composer.value as? String, "Keep this draft")
 
-        app.buttons["workspace-switcher"].tap()
-        let search = app.searchFields.firstMatch
-        XCTAssertTrue(search.waitForExistence(timeout: 8))
-        search.tap()
-        search.typeText("openclaw")
-        let result = app.buttons["switch-openclaw"]
-        XCTAssertTrue(result.waitForExistence(timeout: 8))
-        result.tap()
+        XCTAssertEqual(app.chatHeading.label, "Main Chat")
+        XCTAssertFalse(app.buttons["main-chat-agent-hermes"].exists)
+        app.buttons["main-chat-agent-openclaw"].tap()
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         XCTAssertEqual(composer.value as? String, "Keep this draft")
         capture(app, as: "Chat without connector tabs, with retained draft")
@@ -1103,8 +1117,6 @@ final class WorkspaceUXUITests: XCTestCase {
         app.buttons["send-message"].tap()
         XCTAssertTrue(app.buttons["approval-reject_once"].waitForExistence(timeout: 8))
 
-        app.navigationBars.buttons["BackButton"].tap()
-        XCTAssertTrue(app.buttons["agent-workspace-heading"].waitForExistence(timeout: 8))
         app.navigationBars.buttons["BackButton"].tap()
         app.buttons["sidebar-inbox"].tap()
         let approval = app.buttons["inbox-approval-openclaw"]
@@ -1136,14 +1148,33 @@ final class WorkspaceUXUITests: XCTestCase {
     }
 
     @MainActor
-    func testFlickingTheChatHeaderSwitchesWorkspaces() {
-        let app = freshApp()
+    func testAvatarStripScrollsToAnOffscreenAgent() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["RIPTIDE_FIXTURE_NAMESPACE"] = UUID().uuidString
+        app.launchEnvironment["RIPTIDE_BUSY_WORKSPACE"] = "1"
+        app.launch()
         openMainChat(in: app)
-        let title = app.buttons["chats-button"]
-        XCTAssertTrue(title.waitForExistence(timeout: 8))
-        title.swipeLeft()
-        let hermes = NSPredicate(format: "value == %@", "Hermes")
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: hermes, object: title)], timeout: 8), .completed)
+        let strip = app.scrollViews["main-chat-agents"]
+        XCTAssertTrue(strip.waitForExistence(timeout: 8))
+        let first = strip.buttons["main-chat-agent-hermes"]
+        let sideChats = app.buttons["open-side-chats"]
+        let last = strip.buttons["main-chat-agent-ops-12"]
+        XCTAssertFalse(last.isHittable)
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        let firstFrame = first.frame
+        let start = origin.withOffset(CGVector(dx: sideChats.frame.minX - 22, dy: firstFrame.midY))
+        let end = origin.withOffset(CGVector(dx: firstFrame.midX, dy: firstFrame.midY))
+        for _ in 0..<8 where !last.isHittable {
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
+        capture(app, as: "riptide-scrolled-agent-strip")
+        XCTAssertTrue(last.isHittable, "Strip frame \(strip.frame), first avatar \(firstFrame) to \(first.frame), last avatar \(last.frame).")
+        last.tap()
+        XCTAssertEqual(app.chatHeading.label, "Main Chat")
+        XCTAssertEqual(app.chatHeading.value as? String, "Ops 12")
+        XCTAssertFalse(strip.buttons["main-chat-agent-ops-12"].exists)
+        XCTAssertTrue(sideChats.isHittable)
     }
 
     @MainActor
@@ -1157,10 +1188,8 @@ final class WorkspaceUXUITests: XCTestCase {
 
     @MainActor
     private func openMainChat(in app: XCUIApplication, agent: String = "openclaw") {
-        app.openAgentWorkspace(agent)
-        let main = app.buttons["sidebar-main-chat"]
-        XCTAssertTrue(main.waitForExistence(timeout: 8))
-        main.tap()
+        app.openAgentMainChat(agent)
+        XCTAssertTrue(app.chatHeading.waitForExistence(timeout: 8))
     }
 
     @MainActor

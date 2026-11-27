@@ -32,7 +32,7 @@ struct AgentGrid: View {
 
     private func item(_ agent: WorkspaceAgent, needsAttention: Bool) -> some View {
         Button {
-            workspace.openAgentWorkspace(agent.id)
+            workspace.openMainChat(agent.id)
         } label: {
             VStack(spacing: 9) {
                 AgentAvatar(agent: agent, size: min(avatarSize, 90))
@@ -58,7 +58,7 @@ struct AgentGrid: View {
         .buttonStyle(.plain)
         .accessibilityLabel(agent.name)
         .accessibilityValue(needsAttention ? "Needs attention" : "")
-        .accessibilityHint("Opens agent workspace")
+        .accessibilityHint("Opens Main Chat")
         .accessibilityIdentifier("sidebar-agent-\(agent.id)")
         .contextMenu {
             Button("Edit profile photo", systemImage: "person.crop.circle") {
