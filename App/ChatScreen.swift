@@ -268,13 +268,31 @@ struct ChatScreen: View {
                                   paused: model.selected.queuePaused, canResume: model.selected.loaded,
                                   remove: { model.removeQueuedMessage($0, in: chatKey.chat) },
                                   resume: { model.resumeQueue(in: chatKey.chat) })
-                    if let error = model.selected.steeringError {
+                    if let error = model.selected.steeringError, !model.selected.replyTimedOut {
                         Text(error)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 16)
                             .padding(.top, 4)
                             .accessibilityIdentifier("chat-steering-status")
+                    }
+                    if selected.replyTimedOut && !selected.working {
+                        HStack {
+                            Text("Reply timed out").foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Continue") {
+                                let followUp = model.selected.uncertainFollowUp
+                                if model.continueAfterTimeout(in: chatKey.chat),
+                                   let followUp, draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == followUp {
+                                    draft.wrappedValue = ""
+                                }
+                            }
+                            .accessibilityIdentifier("chat-continue-after-timeout")
+                            .disabled(selected.steering || !selected.loaded)
+                        }
+                        .font(.footnote)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 6)
                     }
                     ChatComposer(
                         prompt: prompt,

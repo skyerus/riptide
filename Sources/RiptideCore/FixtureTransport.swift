@@ -28,6 +28,7 @@ public actor FixtureTransport: ACPTransport {
     private let pairingDemo: Bool
     private let progressDemo: Bool
     private let compactionDemo: Bool
+    private var timeoutOnSteer: Bool
     private var startObservedTurn: Bool
     private static let observedAdmissionID = "fixture-observed-reply"
     private let cwd: String
@@ -56,7 +57,8 @@ public actor FixtureTransport: ACPTransport {
 
     public init(target: AgentTarget, file: URL? = nil, pace: Duration = .milliseconds(280),
                 catalog: [String] = [], historyDelay: Duration = .zero, pairingDemo: Bool = false,
-                progressDemo: Bool = false, observedTurnDemo: Bool = false, compactionDemo: Bool = false) throws {
+                progressDemo: Bool = false, observedTurnDemo: Bool = false, compactionDemo: Bool = false,
+                timeoutOnSteer: Bool = false) throws {
         (incoming, output) = AsyncThrowingStream.makeStream()
         self.file = file
         self.pace = pace
@@ -64,6 +66,7 @@ public actor FixtureTransport: ACPTransport {
         self.pairingDemo = pairingDemo
         self.progressDemo = progressDemo
         self.compactionDemo = compactionDemo
+        self.timeoutOnSteer = timeoutOnSteer
         startObservedTurn = observedTurnDemo
         cwd = target.cwd
         mainSessionID = target.mainSessionID
@@ -182,6 +185,13 @@ public actor FixtureTransport: ACPTransport {
                 }
                 if let turn = turns[sessionID],
                    params["admissionId"]?.string == (turn.id == .null ? Self.observedAdmissionID : nil) {
+                    if timeoutOnSteer {
+                        timeoutOnSteer = false
+                        try recordTool(turn, status: "failed", in: sessionID)
+                        emit(.failure(id, code: -32000, message: "Follow-up delivery could not be confirmed."))
+                        finish(sessionID, reason: "end_turn", timedOut: true)
+                        return
+                    }
                     try record(Self.chunk("user_message_chunk", id: UUID().uuidString, text: text),
                                in: sessionID, live: false)
                     emit(.reply(id, result: ["status": "steered"]))
@@ -397,11 +407,19 @@ public actor FixtureTransport: ACPTransport {
         return turns.removeValue(forKey: sessionID)
     }
 
-    private func finish(_ sessionID: String, reason: String) {
+    private func finish(_ sessionID: String, reason: String, timedOut: Bool = false) {
         guard let turn = removeTurn(sessionID) else { return }
         if let index = index(of: sessionID) { reportUsage(for: sessions[index]) }
-        if turn.id == .null { reportObservedTurn(working: false, in: sessionID) }
-        else { emit(.reply(turn.id, result: ["stopReason": .string(reason)])) }
+        if turn.id == .null {
+            if timedOut {
+                stream(["sessionUpdate": "session_info_update", "_meta": ["app.riptide.turnFailure": "timeout"]], in: sessionID)
+            }
+            reportObservedTurn(working: false, in: sessionID)
+        } else {
+            var result: [String: JSON] = ["stopReason": .string(reason)]
+            if timedOut { result["_meta"] = ["app.riptide.turnFailure": "timeout"] }
+            emit(.reply(turn.id, result: .object(result)))
+        }
     }
 
     private func reportObservedTurn(working: Bool, in sessionID: String) {

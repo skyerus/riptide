@@ -163,6 +163,8 @@ Apply [the screenshot transcript patch](Host/compat/hermes-codex-image-view-tran
 
 Apply [the context compaction patch](Host/compat/hermes-codex-context-compaction.patch) after the assistant progress patch to show live Codex compaction in gateway-managed Hermes chats. Use the same apply, restart, and rollback procedure. The patched gateway sends the lifecycle through ACP session metadata. Riptide can also display compactions from previously saved Hermes history.
 
+Apply [the Codex turn timeout patch](Host/compat/hermes-codex-turn-timeout.patch) on the same Hermes revision after the pairing, reconnect status, reconnect steering, assistant progress, and context compaction patches. Use the same apply, restart, and rollback procedure. A Codex turn can run for up to one hour with progress and times out after ten minutes without it. The gateway reports the timeout through ACP metadata and tells clients when it can confirm that a follow-up never reached the agent.
+
 ### Hermes browser handoff over SSH
 
 Configure [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) on the Linux gateway. Install its desktop packages, set `bot_desktop.auto_start: true` and `model.openai_runtime: codex_app_server` in the paired profile, and apply [the Hermes gateway patches](Host/compat/hermes-gateway-pairing.md). The SSH wrapper needs `websockets` and `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` in the key’s forced command. Give this option only to devices trusted to control the profile’s desktop.
