@@ -836,6 +836,11 @@ final class RemoteWebSocketTransport: JSONMessageTransport {
         session.invalidateAndCancel()
     }
 
+    func close() async {
+        reader.cancel()
+        socket.cancel(with: .goingAway, reason: nil)
+    }
+
     func send(_ message: Data) async throws {
         try await socket.send(.string(String(decoding: message, as: UTF8.self)))
     }

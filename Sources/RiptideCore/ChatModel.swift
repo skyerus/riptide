@@ -251,9 +251,13 @@ public final class AgentChatModel {
     @ObservationIgnored private var client: ACPClient?
     @ObservationIgnored private var makeClient: (@Sendable () -> ACPClient)?
     @ObservationIgnored private var observer: Task<Void, Never>?
+    @ObservationIgnored private var connectionInUse = false
+    @ObservationIgnored private var idleTimeout: Duration?
+    @ObservationIgnored private var idleDeadline: ContinuousClock.Instant?
+    @ObservationIgnored private var idleTask: Task<Void, Never>?
     @ObservationIgnored private var liveEventsDuringLoad: [String: [ACPEvent]] = [:]
     @ObservationIgnored private var mainPreload: Task<Void, Never>?
-    @ObservationIgnored private var catalogRefresh: (maximumPages: Int?, task: Task<Void, Never>)?
+    @ObservationIgnored private var catalogRefresh: (maximumPages: Int?, client: ACPClient, task: Task<Void, Never>)?
     private var photoStore: SentPhotoStore { SentPhotoStore(workspace: target.id) }
     @ObservationIgnored private var attachmentDeliveries: [String: @MainActor () -> Void] = [:]
     @ObservationIgnored private var prompts: [String: Task<Void, Never>] = [:]
@@ -338,9 +342,11 @@ public final class AgentChatModel {
         selectedID = target.mainSessionID
     }
 
-    public init(target: AgentTarget, connect: @escaping @Sendable () -> ACPClient) {
+    public init(target: AgentTarget, idleTimeout: Duration = .seconds(3_600),
+                connect: @escaping @Sendable () -> ACPClient) {
         self.target = target
         selectedID = target.mainSessionID
+        self.idleTimeout = idleTimeout
         makeClient = connect
     }
 
@@ -351,7 +357,10 @@ public final class AgentChatModel {
         chats[selectedID, default: ChatState()].error = message
     }
 
-    deinit { observer?.cancel() }
+    deinit {
+        observer?.cancel()
+        idleTask?.cancel()
+    }
 
     public var selected: ChatState { chats[selectedID] ?? ChatState() }
 
@@ -371,6 +380,14 @@ public final class AgentChatModel {
 
     public func showMain() async { await open(target.mainSessionID) }
 
+    public func setConnectionInUse(_ inUse: Bool) {
+        guard inUse != connectionInUse else { return }
+        // The timer may not have run while iOS suspended the app.
+        if inUse { expireIdleConnection() }
+        connectionInUse = inUse
+        scheduleIdleExpiration()
+    }
+
     public func preloadMain() async {
         let main = target.mainSessionID
         guard mainPreload == nil, chats[main]?.loaded != true, chats[main]?.loading != true else { return }
@@ -383,8 +400,7 @@ public final class AgentChatModel {
     }
 
     public func open(_ sessionID: String) async {
-        if makeClient != nil, sessionID != target.mainSessionID,
-           !sessions.contains(where: { $0.id == sessionID && $0.cwd == target.cwd }) { return }
+        if makeClient != nil, sessionID != target.mainSessionID, !listsChat(sessionID) { return }
         selectedID = sessionID
         if sessionID == target.mainSessionID, let mainPreload {
             await mainPreload.value
@@ -393,11 +409,34 @@ public final class AgentChatModel {
         await load(sessionID)
     }
 
+    public func openSavedChat(_ sessionID: String) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        if !listsChat(sessionID) {
+            // Adopt an in-flight catalog connection, or keep the one used to look up this chat.
+            guard connectIfNeeded() != nil else { return false }
+            await refreshSessions()
+        }
+        guard !Task.isCancelled, listsChat(sessionID) else { return false }
+        await open(sessionID)
+        return true
+    }
+
+    private func listsChat(_ sessionID: String) -> Bool {
+        sessions.contains { $0.id == sessionID && (makeClient == nil || $0.cwd == target.cwd) }
+    }
+
+    private func connectIfNeeded() -> ACPClient? {
+        expireIdleConnection()
+        guard let connection = client ?? catalogRefresh?.client ?? makeClient?() else { return nil }
+        client = connection
+        observe(connection)
+        return connection
+    }
+
     private func load(_ sessionID: String) async {
+        expireIdleConnection()
         guard chats[sessionID]?.loaded != true, chats[sessionID]?.loading != true else { return }
-        if client == nil { client = makeClient?() }
-        guard let client else { return }
-        observe(client)
+        guard let client = connectIfNeeded() else { return }
         chats[sessionID, default: ChatState()].loading = true
         chats[sessionID]?.error = nil
         liveEventsDuringLoad[sessionID] = []
@@ -429,21 +468,25 @@ public final class AgentChatModel {
             if maximumPages == nil, refresh.maximumPages != nil { await refreshSessions() }
             return
         }
+        guard let lookup = client ?? makeClient?() else { listError = selected.error; return }
         refreshingList = true
         let task = Task {
-            defer {
-                catalogRefresh = nil
-                refreshingList = false
+            let listed = await readSessions(using: lookup, maximumPages: maximumPages)
+            catalogRefresh = nil
+            refreshingList = false
+            if client !== lookup {
+                await lookup.close()
+            } else if !listed, makeClient != nil, !creatingChat, !chats.values.contains(where: { $0.loaded || $0.loading }) {
+                observer?.cancel()
+                clearConnection()
+                await lookup.close()
             }
-            await readSessions(maximumPages: maximumPages)
         }
-        catalogRefresh = (maximumPages, task)
+        catalogRefresh = (maximumPages, lookup, task)
         await task.value
     }
 
-    private func readSessions(maximumPages: Int?) async {
-        let existing = client
-        guard let lookup = existing ?? makeClient?() else { listError = selected.error; return }
+    private func readSessions(using lookup: ACPClient, maximumPages: Int?) async -> Bool {
         listError = nil
         do {
             let listed = try await lookup.sessions(maximumPages: maximumPages)
@@ -454,9 +497,11 @@ public final class AgentChatModel {
             sessions = scoped + sessions.filter {
                 !indexed.contains($0.id) && (maximumPages != nil || unlistedNewChats.contains($0.id))
             }
+            return true
+        } catch {
+            if !Task.isCancelled { listError = error.localizedDescription }
+            return false
         }
-        catch { if !Task.isCancelled { listError = error.localizedDescription } }
-        if existing == nil { await lookup.close() }
     }
 
     public func refreshTalkHistory(in sessionID: String) async {
@@ -485,9 +530,7 @@ public final class AgentChatModel {
     @discardableResult
     public func createChat(openClaw: Bool = false) async -> Bool {
         guard !creatingChat else { return false }
-        if client == nil { client = makeClient?() }
-        guard let client else { listError = selected.error; return false }
-        observe(client)
+        guard let client = connectIfNeeded() else { listError = selected.error; return false }
         creatingChat = true
         listError = nil
         defer { creatingChat = false }
@@ -803,9 +846,10 @@ public final class AgentChatModel {
 
     private func observe(_ client: ACPClient) {
         guard observer == nil else { return }
+        scheduleIdleExpiration()
         observer = Task { [weak self] in
             for await event in client.events {
-                guard let self else { break }
+                guard let self, self.client === client, !Task.isCancelled else { break }
                 if liveEventsDuringLoad[event.sessionID] != nil {
                     // The stream can reach the model before the task awaiting session/load.
                     liveEventsDuringLoad[event.sessionID]?.append(event)
@@ -814,37 +858,70 @@ public final class AgentChatModel {
                 }
             }
             guard let self, self.makeClient != nil, self.client === client, !Task.isCancelled else { return }
-            self.client = nil
-            self.pendingApprovalSince.removeAll()
-            self.workingChats.removeAll()
-            self.prompts.removeAll()
-            self.attachmentDeliveries.removeAll()
-            self.liveEventsDuringLoad.removeAll()
-            self.newlyCreatedOpenClawKeys.removeAll()
-            self.observer = nil
-            for id in Array(self.chats.keys) {
-                guard var chat = self.chats[id] else { continue }
-                if chat.loaded {
-                    chat.connectionLost = true
-                    chat.error = "Connection closed. Reconnect to reopen this chat."
-                } else if chat.loading && chat.error == nil {
-                    chat.error = ACPError.disconnected.localizedDescription
-                }
-                chat.transcript.finishPrompt()
-                chat.loading = false
-                chat.loaded = false
-                chat.submittingPrompt = false
-                chat.sendingAttachmentDraft = false
-                chat.agentWorking = false
-                chat.steerAdmissionID = nil
-                chat.stopping = false
-                chat.preparingPrompt = false
-                chat.steering = false
-                chat.sendingQueuedID = nil
-                chat.queuePaused = !chat.queuedMessages.isEmpty
-                chat.permissions = []
-                self.chats[id] = chat
+            self.clearConnection()
+        }
+    }
+
+    private func scheduleIdleExpiration() {
+        idleTask?.cancel()
+        idleTask = nil
+        idleDeadline = nil
+        guard let idleTimeout, client != nil, !connectionInUse else { return }
+        let deadline = ContinuousClock.now + idleTimeout
+        idleDeadline = deadline
+        idleTask = Task { [weak self] in
+            do { try await Task.sleep(until: deadline, clock: .continuous) }
+            catch { return }
+            self?.expireIdleConnection()
+        }
+    }
+
+    private func expireIdleConnection() {
+        guard let client, let idleDeadline, ContinuousClock.now >= idleDeadline else { return }
+        // Active turns and unanswered approvals must keep their live connection.
+        if creatingChat || catalogRefresh != nil || chats.values.contains(where: {
+            $0.loading || $0.working || $0.preparingPrompt || $0.steering || $0.configuring || !$0.permissions.isEmpty
+        }) {
+            scheduleIdleExpiration()
+            return
+        }
+        observer?.cancel()
+        clearConnection(expired: true)
+        Task { await client.close() }
+    }
+
+    private func clearConnection(expired: Bool = false) {
+        client = nil
+        observer = nil
+        scheduleIdleExpiration()
+        pendingApprovalSince.removeAll()
+        workingChats.removeAll()
+        prompts.removeAll()
+        attachmentDeliveries.removeAll()
+        liveEventsDuringLoad.removeAll()
+        newlyCreatedOpenClawKeys.removeAll()
+        for id in Array(chats.keys) {
+            guard var chat = chats[id] else { continue }
+            if chat.loaded {
+                chat.connectionLost = true
+                if !expired { chat.error = "Connection closed. Reconnect to reopen this chat." }
+            } else if chat.loading && chat.error == nil {
+                chat.error = ACPError.disconnected.localizedDescription
             }
+            chat.transcript.finishPrompt()
+            chat.loading = false
+            chat.loaded = false
+            chat.submittingPrompt = false
+            chat.sendingAttachmentDraft = false
+            chat.agentWorking = false
+            chat.steerAdmissionID = nil
+            chat.stopping = false
+            chat.preparingPrompt = false
+            chat.steering = false
+            chat.sendingQueuedID = nil
+            chat.queuePaused = !chat.queuedMessages.isEmpty
+            chat.permissions = []
+            chats[id] = chat
         }
     }
 

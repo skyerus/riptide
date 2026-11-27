@@ -70,7 +70,13 @@ final class WorkspaceState {
     var showingAlerts = false
     var sidebarRequested: WorkspaceTab?
     var alertsRequested = false
-    private(set) var visibleChat: WorkspaceChatID?
+    private(set) var visibleChat: WorkspaceChatID? {
+        didSet {
+            guard oldValue?.workspace != visibleChat?.workspace else { return }
+            if let previous = oldValue?.workspace { remoteModels[previous]?.setConnectionInUse(false) }
+            if let current = visibleChat?.workspace { remoteModels[current]?.setConnectionInUse(sceneIsActive) }
+        }
+    }
     private(set) var recent: [WorkspaceVisit]
     private(set) var favorites: [String]
     private(set) var demoPins: [String]
@@ -441,7 +447,10 @@ final class WorkspaceState {
         if visibleChat == chat { visibleChat = nil }
     }
 
-    func setSceneActive(_ active: Bool) { sceneIsActive = active }
+    func setSceneActive(_ active: Bool) {
+        sceneIsActive = active
+        if let current = visibleChat?.workspace { remoteModels[current]?.setConnectionInUse(active) }
+    }
 
     func isFollowing(_ chat: WorkspaceChatID) -> Bool {
         savedAttention.contains { $0.chat == chat && $0.reason == .followUp }
