@@ -101,9 +101,12 @@ struct RiptideApp: App {
             let progressDemo = ProcessInfo.processInfo.environment["RIPTIDE_FIXTURE_ASSISTANT_PROGRESS"] == "1"
             let observedTurnDemo = target.id == "hermes"
                 && ProcessInfo.processInfo.environment["RIPTIDE_FIXTURE_OBSERVED_TURN"] == "1"
+            let compactionDemo = target.id == "hermes"
+                && ProcessInfo.processInfo.environment["RIPTIDE_FIXTURE_CONTEXT_COMPACTION"] == "1"
             let transport = try FixtureTransport(target: target, file: file, catalog: catalog,
                                                 historyDelay: historyDelay, pairingDemo: pairingDemo,
-                                                progressDemo: progressDemo, observedTurnDemo: observedTurnDemo)
+                                                progressDemo: progressDemo, observedTurnDemo: observedTurnDemo,
+                                                compactionDemo: compactionDemo)
             return AgentChatModel(target: target, client: ACPClient(transport: transport))
         } catch {
             return AgentChatModel(target: target, unavailable: "Saved demo chats could not be opened.")

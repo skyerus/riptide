@@ -50,6 +50,7 @@ public enum ACPEvent: Sendable, Equatable {
     case assistantProgress(sessionID: String, messageID: String, text: String)
     case agentActivity(sessionID: String)
     case turnActivity(sessionID: String, working: Bool, steerAdmissionID: String?)
+    case contextCompaction(sessionID: String, ContextCompaction)
     case tool(sessionID: String, activity: ToolActivity)
     case plan(sessionID: String, steps: [TurnPlanStep])
     case configOptions(sessionID: String, options: [SessionConfigOption])
@@ -62,7 +63,7 @@ public enum ACPEvent: Sendable, Equatable {
         case .message(let sessionID, _, _, _), .assistantProgress(let sessionID, _, _),
              .tool(let sessionID, _), .configOptions(let sessionID, _),
              .context(let sessionID, _), .permissionClosed(let sessionID, _), .plan(let sessionID, _),
-             .agentActivity(let sessionID), .turnActivity(let sessionID, _, _):
+             .agentActivity(let sessionID), .turnActivity(let sessionID, _, _), .contextCompaction(let sessionID, _):
             sessionID
         case .permission(let request):
             request.sessionID
@@ -448,7 +449,7 @@ public actor ACPClient {
                    let count = newVoiceSessionKeys?.count, count < 24, key.utf8.count <= 512 {
                     newVoiceSessionKeys?[sessionID] = key
                 }
-                guard let event = Self.event(update, sessionID: sessionID) else { return }
+                guard let event = Self.event(update, sessionID: sessionID, replaying: replaying[sessionID] != nil) else { return }
                 if case .message(_, _, .assistant, let text) = event, let soFar = voiceReplies[sessionID] {
                     voiceReplies[sessionID] = String((soFar + text).suffix(4_800))
                 }
@@ -468,10 +469,15 @@ public actor ACPClient {
         }
     }
 
-    private static func event(_ update: JSON, sessionID: String) -> ACPEvent? {
+    private static func event(_ update: JSON, sessionID: String, replaying: Bool) -> ACPEvent? {
         switch update["sessionUpdate"]?.string {
         case "session_info_update":
             let metadata = update["_meta"]
+            if let item = metadata?["app.riptide.contextCompaction"],
+               case .boolean(let running)? = item["running"],
+               let compaction = ContextCompaction(item, running: running) {
+                return .contextCompaction(sessionID: sessionID, compaction)
+            }
             guard case .boolean(let working)? = metadata?["app.riptide.turnWorking"] else { return nil }
             let admissionID = metadata?["app.riptide.steerAdmissionId"]?.string
                 .flatMap { !$0.isEmpty && $0.utf8.count <= 256 ? $0 : nil }
@@ -487,6 +493,9 @@ public actor ACPClient {
             guard update["content"]?["type"] == "text", let text = update["content"]?["text"]?.string else { return nil }
             let role: ChatRole = update["sessionUpdate"] == "agent_message_chunk" ? .assistant : .user
             let messageID = update["messageId"]?.string
+            if replaying, role == .assistant, messageID == nil, let compaction = ContextCompaction(legacyRecord: text) {
+                return .contextCompaction(sessionID: sessionID, compaction)
+            }
             if role == .assistant, let messageID, update["_meta"]?["app.riptide.assistantProgress"] == .boolean(true) {
                 return .assistantProgress(sessionID: sessionID, messageID: messageID, text: text)
             }

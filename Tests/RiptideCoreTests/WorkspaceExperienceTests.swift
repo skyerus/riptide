@@ -95,6 +95,46 @@ struct WorkspaceExperienceTests {
         #expect(turn.visibleMessages(isActive: false).map(\.id) == ["partial", "final"])
     }
 
+    @Test func codexCompactionKeepsItsPlaceAndDoesNotBecomeAReply() throws {
+        let item: JSON = ["type": "contextCompaction", "id": "compact", "startedAtMs": .integer(1_000)]
+        let start = try #require(ContextCompaction(item, running: true))
+        let completion: JSON = [
+            "type": "contextCompaction", "id": "compact", "startedAtMs": .integer(1_000), "completedAtMs": .integer(8_000)
+        ]
+        let end = try #require(ContextCompaction(completion, running: false))
+        let replay = try #require(ContextCompaction(historicalItem: completion, turnInProgress: false))
+        #expect(replay.state == .completed(elapsed: nil))
+        #expect(ContextCompaction(historicalItem: item, turnInProgress: false) == nil)
+
+        var turn = CodexTranscriptTurn(id: "turn")
+        turn.upsert(.init(id: "prompt", role: .user, text: "Review this", streaming: false))
+        turn.upsert(start)
+        #expect(turn.isCompactingContext)
+        #expect(turn.replyText == nil)
+        #expect(turn.visibleEntries(isActive: false).map(\.id) == [.message("prompt")])
+
+        turn.upsert(.init(id: "reply", role: .assistant, text: "Ready.", streaming: false))
+        turn.upsert(end)
+        turn.upsert(replay)
+        turn.upsert(start)
+        #expect(!turn.isCompactingContext)
+        #expect(turn.visibleEntries(isActive: false).map(\.id) == [.message("prompt"), .contextCompaction("compact"), .message("reply")])
+        guard case .contextCompaction(let compaction) = turn.entries[1] else {
+            Issue.record("Expected the compaction between the prompt and reply.")
+            return
+        }
+        #expect(compaction.state == .completed(elapsed: 7))
+        #expect(turn.replyText == "Ready.")
+    }
+
+    @Test func legacyCompactionOnlyRecognizesTheCompleteProtocolRecord() {
+        let record = #"[codex contextCompaction] {"type":"contextCompaction","id":"existing","startedAtMs":1000,"completedAtMs":8000}"#
+        #expect(ContextCompaction(legacyRecord: record)?.state == .completed(elapsed: nil))
+        #expect(ContextCompaction(legacyRecord: "Example: " + record) == nil)
+        #expect(ContextCompaction(legacyRecord: record + "\nThis is a reply.") == nil)
+        #expect(ContextCompaction(legacyRecord: #"[codex contextCompaction] {"type":"agentMessage","id":"existing"}"#) == nil)
+    }
+
     @Test func appServerStatusDistinguishesInputApprovalAndUnloaded() throws {
         let approval = try #require(CodexChatSummary(["id": "chat", "status": [
             "type": "active", "activeFlags": .array(["waitingOnApproval"])

@@ -1,0 +1,147 @@
+diff --git a/acp_adapter/gateway_server.py b/acp_adapter/gateway_server.py
+index 09c94fd..50aa018 100644
+--- a/acp_adapter/gateway_server.py
++++ b/acp_adapter/gateway_server.py
+@@ -274,6 +274,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+             active = next((row["admission_id"] for row in snapshot.get("pending", [])
+                            if row.get("status") == "started"), None)
+             await self._publish_riptide_turn(session_id, active)
++            if active and snapshot.get("context_compaction"):
++                await self._publish_context_compaction(self._editor_id(session_id), snapshot["context_compaction"])
+         await self._project_mode(session_id, self._editor_id(session_id), snapshot.get("info") or {}, client=client)
+
+     async def _publish_riptide_turn(self, session_id, admission):
+@@ -294,6 +296,12 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         if admission and self._riptide_turns.get(session_id) == admission:
+             await self._publish_riptide_turn(session_id, None)
+
++    async def _publish_context_compaction(self, editor_id, compaction):
++        if self._riptide_client and self._conn is not None:
++            from acp.schema import SessionInfoUpdate
++            await self._conn.session_update(session_id=editor_id, update=SessionInfoUpdate(
++                session_update="session_info_update", field_meta={"app.riptide.contextCompaction": compaction}))
++
+     async def _request_live_reasoning(self, client, session_id):
+         """Ask the owner to stream this session's reasoning (``show_reasoning``), as the CLI does.
+
+@@ -1065,6 +1073,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         if kind == "message.start" and aid:
+             await self._publish_riptide_turn(sid, aid)
+             return
++        if kind == "context.compaction":
++            if aid and self._riptide_turns.get(sid) == aid:
++                await self._publish_context_compaction(editor_id, payload)
++            return
+         if kind in {"approval.request", "clarify.request"}:
+             self._permission(sid, payload)
+             return
+diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
+index ec01fc1..17c7de8 100644
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -293,7 +293,7 @@ _CODEX_TEXT_DELTA_METHODS = (
+ _CODEX_PROGRESS_DELTA_METHODS = frozenset(m for m, _ in _CODEX_TEXT_DELTA_METHODS) | {
+     "item/commandExecution/outputDelta", "item/fileChange/outputDelta",
+ }
+-_CODEX_PROGRESS_ITEM_TYPES = _CODEX_TOOL_ITEM_TYPES | {"agentMessage", "reasoning"}
++_CODEX_PROGRESS_ITEM_TYPES = _CODEX_TOOL_ITEM_TYPES | {"agentMessage", "reasoning", "contextCompaction"}
+ # Internal MCP server wrapping Hermes' native tools: its inner dispatch has no tool_progress_callback, so the
+ # codex-level mcpToolCall IS the display event and the mcp.hermes-tools.* prefix is stripped (users see Hermes tools).
+ _STATIC_TOOL_NAMES = {"commandExecution": "exec_command", "fileChange": "apply_patch", "webSearch": "web_search"}
+@@ -486,6 +486,15 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
+         item_type = item.get("type") or ""
+         if item_type in _CODEX_TOOL_ITEM_TYPES:
+             (_fire_tool_completed if completed else _fire_tool_started)(item)
++        elif item_type == "contextCompaction":
++            item_id = item.get("id")
++            if isinstance(item_id, str) and item_id:
++                update = {"type": item_type, "id": item_id, "running": not completed}
++                for key in ("startedAtMs", "completedAtMs") if completed else ("startedAtMs",):
++                    timestamp = item.get(key) or params.get(key)
++                    if type(timestamp) is int and timestamp > 0:
++                        update[key] = timestamp
++                agent_cb("codex_compaction_callback", "Codex compaction callback raised", args=(update,))
+         elif completed and item_type == "agentMessage":
+             _fire_agent_message_completed(item)
+     handlers: dict[str, Callable[[dict], None]] = {
+diff --git a/gateway/run_turn_runner.py b/gateway/run_turn_runner.py
+index 5a11fc6..9b09851 100644
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -555,6 +555,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
+         agent.stream_delta_callback = stream_delta_cb
+         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
+         agent.codex_commentary_callback = None
++        agent.codex_compaction_callback = None
++        if ctx.source.platform == Platform.LOCAL:
++            def publish_codex_compaction(update):
++                if ctx._run_still_current():
++                    self._publish_execution("context.compaction", update)
++
++            agent.codex_compaction_callback = publish_codex_compaction
+         if ctx.source.platform == Platform.LOCAL and stream_delta_cb is not None:
+             def publish_codex_commentary(item_id, text, already_streamed, show_commentary):
+                 if ctx._run_still_current():
+diff --git a/gateway/session_authority.py b/gateway/session_authority.py
+index f688475..ee6d09c 100644
+--- a/gateway/session_authority.py
++++ b/gateway/session_authority.py
+@@ -414,7 +414,8 @@ class SessionAuthority:
+                 history, target = (), self.unless_deleted(ref, lambda: transcript_target(self, ref))
+             snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
+                                         tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts,
+-                                        transcript_target=target)
++                                        transcript_target=target,
++                                        context_compaction=live.event_stream.compaction_for(active_generation))
+         from gateway.session_viewer_close import cancel_persisted_close
+         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
+         from gateway.session_deferred_pick import reask_on_attach
+diff --git a/gateway/session_contract.py b/gateway/session_contract.py
+index accd1d9..4cbf52a 100644
+--- a/gateway/session_contract.py
++++ b/gateway/session_contract.py
+@@ -82,6 +82,7 @@ class SubscriptionSnapshot:
+     prompts: tuple[JsonObject, ...]
+     # The physical transcript a history-less attach resolved under the stream lock (``history=False``).
+     transcript_target: str | None = None
++    context_compaction: JsonObject | None = None
+
+
+ class SessionAuthority(Protocol):
+diff --git a/gateway/session_controls.py b/gateway/session_controls.py
+index 2c124f5..0b5f69c 100644
+--- a/gateway/session_controls.py
++++ b/gateway/session_controls.py
+@@ -776,6 +776,7 @@ class AuthorityConnection:
+                 'execution_generation': snapshot.handle.execution_generation,
+                 'pending': [asdict(r) for r in snapshot.pending],
+                 'prompts': list(snapshot.prompts), 'info': info,
++                'context_compaction': snapshot.context_compaction,
+                 'pending_connection': pending_connection(self.authority, ref.session_id),
+                 # Still-waiting server→client requests: the event ring cannot say "still open".
+                 'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
+diff --git a/gateway/session_events.py b/gateway/session_events.py
+index 5aa8636..08e9d96 100644
+--- a/gateway/session_events.py
++++ b/gateway/session_events.py
+@@ -45,8 +45,20 @@ class SessionEvents:
+             progress['tools'][tool_id] = str(payload.get('name') or '') or 'tool'
+         elif event_type == 'tool.complete':
+             progress['tools'].pop(tool_id, None)
++        elif event_type == 'context.compaction':
++            if payload.get('running'):
++                progress['context_compaction'] = payload
++            elif (progress.get('context_compaction') or {}).get('id') == payload.get('id'):
++                progress.pop('context_compaction', None)
+         progress['at'] = time.time()
+
++    def compaction_for(self, generation):
++        with self.lock:
++            progress = self._progress
++            if progress is None or progress['generation'] != generation:
++                return None
++            return progress.get('context_compaction')
++
+     def progress_for(self, generation):
+         """``{"tool", "progress_at"}`` for *generation*'s execution: the newest open tool call
+         (absent between tools) and its last frame time; ``{}`` before its first frame."""

@@ -51,6 +51,41 @@ struct TranscriptUserMessage: View {
     }
 }
 
+struct ContextCompactionLine: View {
+    let compaction: ContextCompaction
+
+    var body: some View {
+        switch compaction.state {
+        case .running(let since):
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                line("Compacting context", elapsed: timeline.date.timeIntervalSince(since), running: true)
+            }
+        case .completed(let elapsed):
+            line("Context compacted", elapsed: elapsed, running: false)
+        }
+    }
+
+    private func line(_ title: String, elapsed: TimeInterval?, running: Bool) -> some View {
+        let duration = elapsed.map {
+            Duration.seconds(max(0, $0.rounded(.down))).formatted(
+                .units(allowed: [.hours, .minutes, .seconds], width: .narrow, fractionalPart: .hide)
+            )
+        }
+        return HStack(spacing: 8) {
+            if running {
+                ProgressView().controlSize(.mini).accessibilityHidden(true)
+            } else {
+                Image(systemName: "arrow.down.right.and.arrow.up.left").accessibilityHidden(true)
+            }
+            Text(duration.map { "\(title) · \($0)" } ?? title)
+                .monospacedDigit()
+                .accessibilityIdentifier(running ? "context-compaction-running" : "context-compaction-completed")
+        }
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(ChatTheme.muted)
+    }
+}
+
 extension BidirectionalCollection where Element == CodexTranscriptTurn {
     func latestUserMessageLocation(activeTurnID: String?) -> (turnID: String, messageID: String)? {
         for turn in reversed() {

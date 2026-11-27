@@ -101,6 +101,21 @@ final class CodexLiveUITests: XCTestCase {
     }
 
     @MainActor
+    func testDesktopWatcherShowsContextCompaction() throws {
+        continueAfterFailure = false
+        let app = try openLiveCodexFixture(portKey: "RIPTIDE_UX_COMPACTION_FIXTURE_PORT", mode: "--compaction")
+        let running = app.staticTexts["context-compaction-running"]
+        XCTAssertTrue(running.waitForExistence(timeout: 12))
+        XCTAssertTrue(running.label.hasPrefix("Compacting context · "))
+        XCTAssertTrue(app.staticTexts["The release draft is ready."].waitForExistence(timeout: 14))
+        XCTAssertFalse(running.exists)
+        let completed = app.staticTexts.matching(identifier: "context-compaction-completed")
+        XCTAssertEqual(completed.count, 1)
+        XCTAssertEqual(completed.firstMatch.label, "Context compacted · 7s")
+        capture(app, as: "Desktop watcher after context compaction")
+    }
+
+    @MainActor
     func testLiveCodexOnlyShowsLatestFollowUpReceipt() throws {
         continueAfterFailure = false
         let app = try openLiveCodexFixture(portKey: "RIPTIDE_UX_LIVE_PROGRESS_FIXTURE_PORT", mode: "--live --watch-progress")

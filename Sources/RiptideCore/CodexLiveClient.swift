@@ -44,12 +44,14 @@ public struct CodexLiveTurn: Equatable, Sendable {
     public let turnID: String
     public let model: String?
     public let prompt: String?
+    public let compactions: [ContextCompaction]
 }
 
 public enum CodexLiveEvent: Equatable, Sendable {
     case output(turnID: String, text: String)
     case assistantDelta(turnID: String, itemID: String, text: String)
     case assistantCompleted(turnID: String, message: CodexChatMessage)
+    case contextCompaction(turnID: String, ContextCompaction)
     case diff(turnID: String, patch: String)
     case context(turnID: String, usage: ContextUsage?)
     case completed(turnID: String, status: String)
@@ -57,7 +59,7 @@ public enum CodexLiveEvent: Equatable, Sendable {
     var turnID: String {
         switch self {
         case .output(let turnID, _), .assistantDelta(let turnID, _, _), .diff(let turnID, _), .context(let turnID, _),
-             .assistantCompleted(let turnID, _), .completed(let turnID, _): turnID
+             .assistantCompleted(let turnID, _), .contextCompaction(let turnID, _), .completed(let turnID, _): turnID
         }
     }
 }
@@ -212,6 +214,8 @@ public actor CodexLiveClient {
                 if var message = CodexChatMessage(item) {
                     message.streaming = turn["status"] == "inProgress" && message.role == .assistant
                     entry.upsert(message)
+                } else if let compaction = ContextCompaction(historicalItem: item, turnInProgress: turn["status"] == "inProgress") {
+                    entry.upsert(compaction)
                 } else if let work = CodexWorkItem(item, completed: turn["status"] != "inProgress") {
                     entry.apply(.item(work))
                 }
@@ -452,7 +456,11 @@ public actor CodexLiveClient {
         joined = true
         for event in joiningEvents where event.turnID == inFlight { emit.yield(event) }
         joiningEvents.removeAll()
-        return CodexLiveTurn(threadID: selected, turnID: inFlight, model: resume["model"]?.string, prompt: prompt)
+        let compactions = (turn["items"]?.array ?? []).compactMap {
+            ContextCompaction(historicalItem: $0, turnInProgress: true)
+        }
+        return CodexLiveTurn(threadID: selected, turnID: inFlight, model: resume["model"]?.string,
+                             prompt: prompt, compactions: compactions)
     }
 
     @discardableResult
@@ -752,8 +760,14 @@ public actor CodexLiveClient {
         case "item/agentMessage/delta":
             guard let itemID = params["itemId"]?.string, let text = params["delta"]?.string else { return nil }
             return .assistantDelta(turnID: turnID, itemID: itemID, text: text)
-        case "item/completed":
-            guard let item = params["item"], item["type"] == "agentMessage",
+        case "item/started", "item/completed":
+            guard let item = params["item"] else { return nil }
+            let starting = method == "item/started"
+            if let compaction = ContextCompaction(item, running: starting,
+                                                  timestamp: params[starting ? "startedAtMs" : "completedAtMs"]) {
+                return .contextCompaction(turnID: turnID, compaction)
+            }
+            guard !starting, item["type"] == "agentMessage",
                   let message = CodexChatMessage(item) else { return nil }
             return .assistantCompleted(turnID: turnID, message: message)
         default:

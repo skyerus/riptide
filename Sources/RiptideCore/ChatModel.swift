@@ -23,6 +23,7 @@ public struct ChatEntry: Identifiable, Equatable, Sendable {
     public enum Content: Equatable, Sendable {
         case message(ChatRole, String)
         case tool(ToolActivity)
+        case contextCompaction(ContextCompaction)
         case pairingReceipt(name: String, connected: Bool)
     }
 
@@ -35,8 +36,10 @@ public struct ChatEntry: Identifiable, Equatable, Sendable {
 
 public struct Transcript: Equatable, Sendable {
     public private(set) var entries: [ChatEntry] = []
+    public private(set) var activeCompaction: ContextCompaction?
     private var messageIndices: [String: Int] = [:]
     private var toolIndices: [String: Int] = [:]
+    private var completedCompactionIDs: Set<String> = []
     private var openMessage: Int?
     private var latestPromptIndex: Int?
     private var activePromptIndex: Int?
@@ -149,6 +152,7 @@ public struct Transcript: Equatable, Sendable {
 
     fileprivate mutating func finishPrompt() {
         activePromptIndex = nil
+        activeCompaction = nil
         visibleProgress.removeAll()
     }
 
@@ -190,6 +194,22 @@ public struct Transcript: Equatable, Sendable {
             openMessage = nil
             visibleProgress.insert(entries[index].id)
             if let latestPromptIndex, index > latestPromptIndex, !text.isEmpty { markPromptSeen() }
+        case .contextCompaction(_, let compaction):
+            guard !completedCompactionIDs.contains(compaction.id) else { return }
+            openMessage = nil
+            if compaction.isRunning {
+                if activeCompaction?.id != compaction.id { activeCompaction = compaction }
+            } else {
+                let completed: ContextCompaction
+                if let activeCompaction, activeCompaction.id == compaction.id {
+                    completed = activeCompaction.merging(compaction)
+                    self.activeCompaction = nil
+                } else {
+                    completed = compaction
+                }
+                completedCompactionIDs.insert(compaction.id)
+                entries.append(ChatEntry(content: .contextCompaction(completed)))
+            }
         case .tool(_, let activity):
             let toolIndex: Int
             if let index = toolIndices[activity.id], case .tool(let previous) = entries[index].content {
@@ -294,7 +314,7 @@ public final class AgentChatModel {
                 break
             case .assistantProgress:
                 transcript.apply(event)
-            case .message, .tool, .agentActivity:
+            case .message, .tool, .agentActivity, .contextCompaction:
                 transcript.apply(event)
             case .plan(_, let steps):
                 transcript.apply(event)
