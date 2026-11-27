@@ -45,8 +45,12 @@ def tool_definitions(schema):
          "inputSchema": {"type": "object", "properties": input_properties, "required": ["action"],
                          "additionalProperties": False}},
         {"name": "chrome_handoff",
-         "description": "Pause and give the user the same Chrome window in Riptide. Wait for Hand back.",
-         "inputSchema": {"type": "object", "properties": {"reason": {"type": "string", "maxLength": 120}},
+         "description": "Pause while the user completes a manual step in the same Chrome window. "
+         "Riptide shows the browser controls and resumes after handback.",
+         "inputSchema": {"type": "object", "properties": {"reason": {
+             "type": "string", "maxLength": 120,
+             "description": "Name the site and describe only what the user needs to do inside Chrome.",
+         }},
                          "required": ["reason"], "additionalProperties": False}},
     ]
 
@@ -171,11 +175,11 @@ class Chrome:
         epoch = self.epoch()
         if name == "chrome_handoff":
             reason = args.get("reason")
-            if set(args) != {"reason"} or not isinstance(reason, str) or not 0 < len(reason) <= 120:
+            if set(args) != {"reason"} or not isinstance(reason, str) or len(reason) > 120 or not reason.strip():
                 return {"error": "Provide a short description of the manual step."}
             self.captured = None
             self.window(epoch, open_or_activate=True)
-            if not ask_handoff(elicit, f"{reason.strip()} Open Hermes browser, then tap Hand back."):
+            if not ask_handoff(elicit, reason.strip()):
                 return {"status": "cancelled"}
             if self.epoch() <= epoch:
                 return {"error": "Chrome was not handed back. Ask the user to take over and tap Hand back."}

@@ -186,10 +186,11 @@ class ChromeComputerUseTests(unittest.TestCase):
 
     def test_handoff_requires_a_new_lease_epoch(self):
         reply = {"action": "accept", "content": {"browser": HANDOFF}}
-        args = {"reason": "Sign in to the site."}
+        args = {"reason": " Sign in to the site. "}
         self.assertIn("error", self.chrome.call("chrome_handoff", args, lambda form: reply))
 
-        def hand_back(_form):
+        def hand_back(form):
+            self.assertEqual(form["message"], "Sign in to the site.")
             self.state.epoch += 2
             return reply
 
