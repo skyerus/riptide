@@ -135,4 +135,5 @@ public struct OpenedSession: Sendable {
     public var nativeSessionKey: String? = nil
     var reportedModelName: String? = nil
     var acceptsImages = false
+    var historySnapshot: ChatHistorySnapshot? = nil
 }

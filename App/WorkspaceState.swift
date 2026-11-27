@@ -324,7 +324,8 @@ final class WorkspaceState {
         if let existing = remoteModels[id] { return existing }
         guard let main = profile.mainSessionID else { return nil }
         let target = AgentTarget(id: id, name: profile.name, mainSessionID: main, cwd: profile.workspace)
-        let model = AgentChatModel(target: target, connect: { [remotes] in
+        let cache = profile.kind == .hermes && profile.sshHostFingerprint != nil ? ChatHistoryCache(workspace: id) : nil
+        let model = AgentChatModel(target: target, historyCache: cache, connect: { [remotes] in
             profile.makeACPClient(credential: bearer, onDisplayName: { [weak remotes] name in
                 remotes?.updateDisplayName(name, for: profile.id)
             }) ?? ACPClient(transport: UnavailableWorkspaceTransport())
@@ -466,6 +467,8 @@ final class WorkspaceState {
         hermesGroupSessions = hermesGroupSessions.filter { $0.key.workspace != workspaceID }
         HermesGroupSession.removeDrafts(workspaceID: workspaceID)
         SentPhotoStore(workspace: workspaceID).removeWorkspace()
+        if let model = remoteModels[workspaceID] { model.removeCachedHistory() }
+        else { ChatHistoryCache(workspace: workspaceID).removeWorkspace() }
         try? avatars.removePhoto(for: workspaceID)
         if path.contains(where: { $0.workspace == workspaceID }) { showSidebar(.agents) }
         for key in codexRecency.filter({ $0.workspace == workspaceID }) {

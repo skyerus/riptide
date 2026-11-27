@@ -3,6 +3,37 @@ import Testing
 @testable import RiptideCore
 
 struct ACPCapabilityTests {
+    @Test(arguments: [false, true])
+    func fastHistoryReopensThroughAnOlderSSHWrapper(advertisesFastResume: Bool) async throws {
+        let transport = ScriptedTransport { request in
+            let id = try #require(request["id"])
+            switch request["method"]?.string {
+            case "initialize":
+                var capabilities: [String: JSON] = ["loadSession": .boolean(true)]
+                if advertisesFastResume { capabilities["_meta"] = ["app.riptide.fastResume": .integer(1)] }
+                return [.reply(id, result: ["protocolVersion": .integer(1), "agentCapabilities": .object(capabilities)])]
+            case "_riptide/session/resume":
+                #expect(advertisesFastResume)
+                return [.failure(id, code: -32602, message: "Older SSH pairing")]
+            case "session/load":
+                return [
+                    .notification("session/update", params: ["sessionId": "saved", "update": [
+                        "sessionUpdate": "agent_message_chunk", "content": ["type": "text", "text": "Full history"]
+                    ]]),
+                    .reply(id, result: [:])
+                ]
+            default:
+                Issue.record("Unexpected ACP request \(request)")
+                return []
+            }
+        }
+        let client = ACPClient(transport: transport, restrictedSSH: true)
+        let opened = try await client.load(sessionID: "saved", cwd: "/disposable", cachedHistory: nil, fastResume: true)
+        #expect(opened.events == [.message(sessionID: "saved", messageID: nil, role: .assistant, text: "Full history")])
+        #expect(opened.historySnapshot == nil)
+        await client.close()
+    }
+
     @Test func restrictedSSHCanInitializeWithAnOlderWrapper() async throws {
         let transport = ScriptedTransport { request in
             let id = try #require(request["id"])

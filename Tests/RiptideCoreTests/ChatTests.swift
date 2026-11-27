@@ -7,6 +7,43 @@ import Testing
 struct ChatTests {
     private let target = AgentTarget.demos[0]
 
+    @Test func cachedHistoryAndRecentReplyAppearBeforeLiveResume() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = ChatHistoryCache(workspace: target.id, root: directory)
+        let chat = target.mainSessionID
+        let old = FastHistoryTransport.update("user_message_chunk", text: "Saved question")
+        let checkpoint = try #require(ChatHistoryCheckpoint(wire: FastHistoryTransport.checkpoint(rows: 1, digit: "a")))
+        cache.write(ChatHistorySnapshot(checkpoint: checkpoint, updates: [old]), chat: chat)
+        let transport = FastHistoryTransport(chat: chat)
+        let model = AgentChatModel(target: target, historyCache: cache) { ACPClient(transport: transport) }
+        let open = Task { await model.showMain() }
+
+        try await waitUntil { await transport.awaitingBothRequests }
+        #expect(model.selected.displayTranscript.entries.map(\.content) == [.message(.user, "Saved question")])
+        #expect(!model.selected.loaded)
+        #expect(model.selected.permissions.isEmpty)
+
+        try await transport.sendPreview()
+        try await waitUntil {
+            model.selected.displayTranscript.entries.last?.content == .message(.assistant, "Newest reply")
+        }
+        #expect(!model.selected.loaded)
+
+        try await transport.finishResume()
+        await open.value
+        #expect(model.selected.loaded)
+        #expect(model.selected.displayTranscript.entries.map(\.content) == [
+            .message(.user, "Saved question"), .message(.user, "New question"), .message(.assistant, "Newest reply")
+        ])
+        try await waitUntil { model.selected.permissions.count == 1 }
+        #expect(model.selected.permissions.first?.toolCallID == "clarify-still-pending")
+        #expect(cache.read(chat)?.checkpoint.rows == 3)
+        #expect(cache.read(chat)?.updates.count == 3)
+        model.removeCachedHistory()
+        #expect(cache.read(chat) == nil)
+    }
+
     @Test func steeringAndQueuedFollowUpsStayWithTheirOriginalChat() async throws {
         let model = try makeModel()
         await model.showMain()
@@ -420,6 +457,69 @@ struct ChatTests {
             try await Task.sleep(for: .milliseconds(10))
         }
     }
+}
+
+private actor FastHistoryTransport: ACPTransport {
+    nonisolated let incoming: AsyncThrowingStream<Data, any Error>
+    private let output: AsyncThrowingStream<Data, any Error>.Continuation
+    private let chat: String
+    private var previewID: JSON?
+    private var resumeID: JSON?
+
+    init(chat: String) {
+        self.chat = chat
+        (incoming, output) = AsyncThrowingStream.makeStream()
+    }
+
+    var awaitingBothRequests: Bool { previewID != nil && resumeID != nil }
+
+    func send(_ data: Data) throws {
+        let request = try JSONDecoder().decode(JSON.self, from: data)
+        let id = try #require(request["id"])
+        switch request["method"]?.string {
+        case "initialize":
+            try emit(.reply(id, result: ["protocolVersion": .integer(1), "agentCapabilities": [
+                "loadSession": .boolean(true), "_meta": ["app.riptide.fastResume": .integer(1)]
+            ]]))
+        case "_riptide/session/recent":
+            previewID = id
+        case "_riptide/session/resume":
+            #expect(request["params"]?["checkpoint"] == Self.checkpoint(rows: 1, digit: "a"))
+            resumeID = id
+        default:
+            Issue.record("Unexpected request \(request)")
+        }
+    }
+
+    func sendPreview() throws {
+        try emit(.reply(try #require(previewID), result: [
+            "updates": .array([Self.update("agent_message_chunk", text: "Newest reply")])
+        ]))
+    }
+
+    func finishResume() throws {
+        for update in [Self.update("user_message_chunk", text: "New question"),
+                       Self.update("agent_message_chunk", text: "Newest reply")] {
+            try emit(.notification("_riptide/session/history", params: ["sessionId": .string(chat), "update": update]))
+        }
+        try emit(.request("session/request_permission", id: "handback", params: [
+            "sessionId": .string(chat),
+            "toolCall": ["toolCallId": "clarify-still-pending", "title": "Complete sign-in"],
+            "options": .array([["optionId": "choice-0", "name": "Browser handoff complete", "kind": "allow_once"],
+                               ["optionId": "skip", "name": "Skip", "kind": "reject_once"]])
+        ]))
+        try emit(.reply(try #require(resumeID), result: ["checkpoint": Self.checkpoint(rows: 3, digit: "b"), "reuseHistory": .boolean(true)]))
+    }
+
+    static func checkpoint(rows: Int, digit: String) -> JSON {
+        ["rows": .integer(rows), "digest": .string(String(repeating: digit, count: 64))]
+    }
+
+    static func update(_ kind: String, text: String) -> JSON {
+        ["sessionUpdate": .string(kind), "messageId": .string(text), "content": ["type": "text", "text": .string(text)]]
+    }
+
+    private func emit(_ message: JSON) throws { output.yield(try JSONEncoder().encode(message)) }
 }
 
 private actor GatedHistoryTransport: ACPTransport {

@@ -280,6 +280,7 @@ public final class AgentChatModel {
     @ObservationIgnored private var idleTimeout: Duration?
     @ObservationIgnored private var idleDeadline: ContinuousClock.Instant?
     @ObservationIgnored private var idleTask: Task<Void, Never>?
+    @ObservationIgnored private var historyCache: ChatHistoryCache?
     @ObservationIgnored private var liveEventsDuringLoad: [String: [ACPEvent]] = [:]
     @ObservationIgnored private var mainPreload: Task<Void, Never>?
     @ObservationIgnored private var catalogRefresh: (maximumPages: Int?, client: ACPClient, task: Task<Void, Never>)?
@@ -294,6 +295,7 @@ public final class AgentChatModel {
 
     public struct ChatState {
         public fileprivate(set) var transcript = Transcript()
+        fileprivate var provisionalTranscript: Transcript?
         public fileprivate(set) var permissions: [PermissionRequest] = []
         public fileprivate(set) var configOptions: [SessionConfigOption] = []
         fileprivate var reportedModelName: String?
@@ -323,6 +325,7 @@ public final class AgentChatModel {
         public fileprivate(set) var plan: [TurnPlanStep] = []
 
         public var working: Bool { submittingPrompt || agentWorking }
+        public var displayTranscript: Transcript { provisionalTranscript ?? transcript }
         public var canStop: Bool { submittingPrompt }
         public var canSteer: Bool { submittingPrompt || steerAdmissionID != nil }
 
@@ -379,11 +382,12 @@ public final class AgentChatModel {
         selectedID = target.mainSessionID
     }
 
-    public init(target: AgentTarget, idleTimeout: Duration = .seconds(3_600),
+    public init(target: AgentTarget, idleTimeout: Duration = .seconds(3_600), historyCache: ChatHistoryCache? = nil,
                 connect: @escaping @Sendable () -> ACPClient) {
         self.target = target
         selectedID = target.mainSessionID
         self.idleTimeout = idleTimeout
+        self.historyCache = historyCache
         makeClient = connect
     }
 
@@ -400,6 +404,11 @@ public final class AgentChatModel {
     }
 
     public var selected: ChatState { chats[selectedID] ?? ChatState() }
+
+    public func removeCachedHistory() {
+        historyCache?.removeWorkspace()
+        historyCache = nil
+    }
 
     public func title(for sessionID: String) -> String {
         sessionID == target.mainSessionID ? "Main Chat" :
@@ -464,6 +473,10 @@ public final class AgentChatModel {
     public func openSavedChat(_ sessionID: String) async -> Bool {
         guard !Task.isCancelled else { return false }
         if !listsChat(sessionID) {
+            if let cached = historyCache?.read(sessionID), chats[sessionID]?.loaded != true {
+                showProvisionalHistory(ACPClient.historyEvents(cached.updates, sessionID: sessionID), in: sessionID)
+                selectedID = sessionID
+            }
             // Adopt an in-flight catalog connection, or keep the one used to look up this chat.
             guard connectIfNeeded() != nil else { return false }
             await refreshSessions()
@@ -489,6 +502,10 @@ public final class AgentChatModel {
         expireIdleConnection()
         guard chats[sessionID]?.loaded != true, chats[sessionID]?.loading != true else { return }
         guard let client = connectIfNeeded() else { return }
+        let cached = historyCache?.read(sessionID)
+        if let cached, chats[sessionID]?.transcript.entries.isEmpty != false {
+            showProvisionalHistory(ACPClient.historyEvents(cached.updates, sessionID: sessionID), in: sessionID)
+        }
         chats[sessionID, default: ChatState()].loading = true
         chats[sessionID]?.error = nil
         liveEventsDuringLoad[sessionID] = []
@@ -498,11 +515,21 @@ public final class AgentChatModel {
                 liveEventsDuringLoad.removeValue(forKey: sessionID)
             }
         }
+        let cwd = sessions.first { $0.id == sessionID }?.cwd ?? target.cwd
+        let fastResume = historyCache != nil
+        let preview = fastResume ? Task { [weak self] in
+            guard let events = try? await client.recentHistory(sessionID: sessionID, cwd: cwd),
+                  let self, !Task.isCancelled, self.client === client, chats[sessionID]?.loading == true else { return }
+            showProvisionalHistory(events, in: sessionID)
+        } : nil
+        defer { preview?.cancel() }
         do {
-            let cwd = sessions.first { $0.id == sessionID }?.cwd ?? target.cwd
-            let opened = try await client.load(sessionID: sessionID, cwd: cwd)
+            let opened = try await client.load(sessionID: sessionID, cwd: cwd, cachedHistory: cached, fastResume: fastResume)
             guard self.client === client else { return }
             markLoaded(opened)
+            if let snapshot = opened.historySnapshot, snapshot.checkpoint != cached?.checkpoint {
+                historyCache?.write(snapshot, chat: sessionID)
+            }
         } catch {
             guard self.client === client else { return }
             if !Task.isCancelled { chats[sessionID]?.error = error.localizedDescription }
@@ -511,6 +538,14 @@ public final class AgentChatModel {
                 await client.close()
             }
         }
+    }
+
+    private func showProvisionalHistory(_ events: [ACPEvent], in sessionID: String) {
+        var transcript = Transcript()
+        for event in events { transcript.apply(event) }
+        guard !transcript.entries.isEmpty else { return }
+        transcript.restorePhotos(from: photoStore, in: sessionID)
+        chats[sessionID, default: ChatState()].provisionalTranscript = transcript
     }
 
     public func refreshSessions(maximumPages: Int? = nil) async {
@@ -1043,6 +1078,7 @@ public final class AgentChatModel {
     private func markLoaded(_ opened: OpenedSession) {
         var chat = chats[opened.id] ?? ChatState()
         chat.transcript = Transcript()
+        chat.provisionalTranscript = nil
         chat.replyTimedOut = false
         for event in opened.events { chat.receive(event, replaying: true) }
         if !chat.replyTimedOut { chat.uncertainFollowUp = nil }

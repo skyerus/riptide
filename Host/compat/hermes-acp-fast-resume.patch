@@ -1,0 +1,254 @@
+--- a/acp_adapter/gateway_server.py
++++ b/acp_adapter/gateway_server.py
+@@ -3,8 +3,11 @@
+
+ import asyncio
+ from contextlib import suppress
++import hashlib
++import json
+ import logging
+ import os
++import re
+ import uuid
+
+ import acp
+@@ -21,6 +24,35 @@
+ from agent.transports.codex_event_projector import ASSISTANT_PROGRESS
+
+ logger = logging.getLogger(__name__)
++
++_RIPTIDE_FAST_RESUME = "app.riptide.fastResume"
++
++
++def _history_checkpoint(rows, checkpoint):
++    """Only append deltas after an exact stored prefix and at a turn boundary."""
++    digest = hashlib.sha256()
++    count = checkpoint.get("rows", -1)
++    expected = checkpoint.get("digest")
++    reused = False
++    for index, row in enumerate(rows):
++        if index == count and row.get("role") == "user":
++            reused = digest.hexdigest() == expected
++        digest.update(json.dumps(row, sort_keys=True, separators=(",", ":")).encode())
++        digest.update(b"\n")
++    result = {"rows": len(rows), "digest": digest.hexdigest()}
++    reused = reused or (count == len(rows) and result["digest"] == expected)
++    return result, reused
++
++
++def _riptide_history_update(update):
++    """Project only the fields the app renders and can safely retain in its cache."""
++    packet = update.model_dump(mode="json", by_alias=True, exclude_none=True)
++    kind = packet["sessionUpdate"]
++    if kind == "agent_thought_chunk":
++        return {"sessionUpdate": kind, "content": {"type": "text", "text": "."}}
++    if kind in ("tool_call", "tool_call_update"):
++        return {key: packet[key] for key in ("sessionUpdate", "toolCallId", "title", "status") if key in packet}
++    return packet
+
+
+ def _slash_command(text):
+@@ -154,12 +186,17 @@
+         return InitializeResponse(protocol_version=acp.PROTOCOL_VERSION,
+             agent_info=Implementation(name="hermes-agent", version=__version__),
+             agent_capabilities=AgentCapabilities(load_session=True,
++                field_meta={_RIPTIDE_FAST_RESUME: 1},
+                 prompt_capabilities=PromptCapabilities(image=True),
+                 session_capabilities=SessionCapabilities(fork=SessionForkCapabilities(), list=SessionListCapabilities(),
+                                                          resume=SessionResumeCapabilities())),
+             auth_methods=build_auth_methods())
+
+     async def ext_method(self, method, params):
++        if method == "riptide/session/recent":
++            return await self._riptide_recent_history(params)
++        if method == "riptide/session/resume":
++            return await self._riptide_resume(params)
+         if method != "riptide/session/steer":
+             raise acp.RequestError.method_not_found(f"_{method}")
+         editor_id, text = params.get("sessionId"), params.get("text")
+@@ -203,6 +240,56 @@
+         if result.get("status") != "redirected":
+             raise acp.RequestError(-32000, "Hermes could not steer this turn.")
+         return {"status": "steered"}
++
++    async def _riptide_workspace_info(self, client, session_id, cwd):
++        from hermes_cli.gateway_client import GatewayRPCError
++        try:
++            info = await client.rpc("session.info", session_id=session_id)
++        except GatewayRPCError as exc:
++            if str(exc) != "not_found":
++                raise
++            raise acp.RequestError.invalid_params() from exc
++        if not info.get("cwd") or self._moved(info, cwd):
++            raise acp.RequestError.invalid_params()
++        return info
++
++    async def _riptide_recent_history(self, params):
++        from acp_adapter.catalog import logical_session_id
++        if (set(params) != {"sessionId", "cwd"} or not isinstance(params["sessionId"], str)
++                or not isinstance(params["cwd"], str)):
++            raise acp.RequestError.invalid_params()
++        client = await self._client()
++        session_id = await asyncio.to_thread(logical_session_id, self._home, params["sessionId"])
++        await self._riptide_workspace_info(client, session_id, params["cwd"])
++        page = await client.rpc("session.transcript", session_id=session_id, order="latest",
++                                limit=12, inline_images=False)
++        updates = []
++        for row in page.get("rows", []):
++            role, text = row.get("role"), row.get("text")
++            if row.get("row_kind") == "message" and role in ("user", "assistant") and isinstance(text, str):
++                kind = "user_message_chunk" if role == "user" else "agent_message_chunk"
++                updates.append({"sessionUpdate": kind, "messageId": str(row["row_id"]),
++                                "content": {"type": "text", "text": text[:8192]}})
++        return {"updates": updates}
++
++    async def _riptide_resume(self, params):
++        from acp.schema import LoadSessionRequest
++        from pydantic import ValidationError
++        params = dict(params)
++        checkpoint = params.pop("checkpoint", {})
++        if (not isinstance(checkpoint, dict) or checkpoint and
++                (set(checkpoint) != {"rows", "digest"} or type(checkpoint["rows"]) is not int
++                 or not 0 <= checkpoint["rows"] <= 1_000_000 or not isinstance(checkpoint["digest"], str)
++                 or not re.fullmatch(r"[0-9a-f]{64}", checkpoint["digest"]))):
++            raise acp.RequestError.invalid_params()
++        try:
++            request = LoadSessionRequest.model_validate(params)
++        except ValidationError as exc:
++            raise acp.RequestError.invalid_params() from exc
++        fields = await self._resume(request.cwd, request.session_id, request.mcp_servers,
++                                    riptide_checkpoint=checkpoint)
++        history = fields.pop("riptide_history")
++        return {**LoadSessionResponse(**fields).model_dump(mode="json", by_alias=True, exclude_none=True), **history}
+
+     async def authenticate(self, method_id, **kwargs):
+         from acp_adapter.server import HermesACPAgent
+@@ -434,7 +521,7 @@
+         await client.rpc("session.detach", session_id=session_id, subscription_id=adopted["subscription_id"])
+         return await client.rpc("session.info", session_id=session_id)
+
+-    async def _resume(self, cwd, held_id, mcp_servers):
++    async def _resume(self, cwd, held_id, mcp_servers, *, riptide_checkpoint=None):
+         client = await self._client()
+         from acp_adapter.catalog import logical_session_id
+         from hermes_cli.gateway_client import GatewayRPCError
+@@ -443,7 +530,10 @@
+         self._aliases = {held: sid for held, sid in self._aliases.items() if sid != session_id}
+         if session_id != held_id:
+             self._aliases[held_id] = session_id
+-        info = await self._attach_info(client, session_id)
++        if riptide_checkpoint is None:
++            info = await self._attach_info(client, session_id)
++        else:
++            info = await self._riptide_workspace_info(client, session_id, cwd)
+         if self._moved(info, cwd):
+             info = await self._move_workspace(client, session_id, cwd)
+         if "cwd" not in info and self._conn:
+@@ -471,6 +561,7 @@
+         if 'editor' in resume_params:
+             self._editor_mcp[session_id] = resume_params['editor']
+         from acp_adapter.server import _history_replay_updates
++        history = {}
+         if self._conn:
+             # The editor replays the live transcript in stored order, as main's ACP did; archived rows
+             # (summarized away by a compression) are display-only.
+@@ -479,8 +570,16 @@
+                 live = [message for message in live
+                         if not (isinstance(meta := message.get("display_metadata"), dict)
+                                 and meta.get(ASSISTANT_PROGRESS) is True)]
+-            for update in _history_replay_updates(live):
+-                await self._conn.session_update(session_id=held_id, update=update)
++            if riptide_checkpoint is None:
++                for update in _history_replay_updates(live):
++                    await self._conn.session_update(session_id=held_id, update=update)
++            else:
++                checkpoint, reuse = await asyncio.to_thread(_history_checkpoint, live, riptide_checkpoint)
++                start = riptide_checkpoint["rows"] if reuse else 0
++                for update in _history_replay_updates(live[start:]):
++                    await self._conn.ext_notification("riptide/session/history", {
++                        "sessionId": held_id, "update": _riptide_history_update(update)})
++                history = {"riptide_history": {"checkpoint": checkpoint, "reuseHistory": reuse}}
+             last_message = next((m for m in reversed(live) if m.get("role") in {"user", "assistant"}), {})
+             if (last_message.get("display_kind") == "failed_turn"
+                     and isinstance(meta := last_message.get("display_metadata"), dict)
+@@ -490,7 +589,7 @@
+             self._permission(session_id, pending)
+         await self._notify_unknown(session_id)
+         await self._request_live_reasoning(client, session_id)
+-        return await self._session_fields(session_id, {**info, **(snapshot.get("info") or {})}, held_id)
++        return {**await self._session_fields(session_id, {**info, **(snapshot.get("info") or {})}, held_id), **history}
+
+     @staticmethod
+     def _moved(info, cwd):
+--- /dev/null
++++ b/tests/acp_adapter/test_riptide_fast_resume.py
+@@ -0,0 +1,69 @@
++"""Riptide cached-history negotiation over the real ACP projection."""
++import asyncio
++
++import pytest
++
++from acp_adapter.gateway_server import _history_checkpoint
++from tests.acp_adapter.test_gateway_sessions import editor, viewer
++
++
++def test_history_checkpoints_only_append_at_a_turn_boundary():
++    history = [{"role": "user", "content": "first"}, {"role": "assistant", "content": "reply"}]
++    checkpoint, reused = _history_checkpoint(history, {})
++    assert not reused
++    assert _history_checkpoint(history, checkpoint) == (checkpoint, True)
++    assert _history_checkpoint(history + [{"role": "user", "content": "next"}], checkpoint)[1]
++    assert not _history_checkpoint(history + [{"role": "assistant", "content": "continued"}], checkpoint)[1]
++    assert not _history_checkpoint([{**history[0], "content": "edited"}, history[1]], checkpoint)[1]
++
++
++@pytest.mark.asyncio
++async def test_fast_resume_fetches_recent_rows_and_replays_only_new_turns(daemon, tmp_path, model_peer):
++    cwd = str(tmp_path)
++    async with viewer(daemon) as ws:
++        sid = (await ws.rpc("session.create", request_id="riptide-fast", source="cli", cwd=cwd))["session_id"]
++    params = {"sessionId": sid, "cwd": cwd, "mcpServers": []}
++
++    async def send(acp, text):
++        result = await acp.rpc("session/prompt", sessionId=sid, prompt=[{"type": "text", "text": text}])
++        assert result.get("result", {}).get("stopReason") == "end_turn", result
++
++    def history(acp, start=0):
++        return [f["params"]["update"].get("content", {}).get("text") for f in acp.frames[start:]
++                if f.get("method") == "_riptide/session/history"]
++
++    async with editor(daemon, tmp_path) as acp:
++        init = await acp.rpc("initialize", protocolVersion=1, clientCapabilities={})
++        assert init["result"]["agentCapabilities"]["_meta"]["app.riptide.fastResume"] == 1
++        assert "result" in await acp.rpc("session/load", **params)
++        await send(acp, "WS_SHARED history before disconnect")
++        first = await acp.rpc("_riptide/session/resume", **params)
++        assert first["result"]["reuseHistory"] is False
++        checkpoint = first["result"]["checkpoint"]
++        assert "WS_SHARED history before disconnect" in history(acp)
++        await send(acp, "WS_SHARED history after disconnect")
++
++    async with editor(daemon, tmp_path) as acp:
++        await acp.rpc("initialize", protocolVersion=1, clientCapabilities={})
++        wrong = await acp.rpc("_riptide/session/recent", sessionId=sid, cwd=str(tmp_path / "different"))
++        assert wrong["error"]["code"] == -32602
++        start = len(acp.frames)
++        recent, resumed = await asyncio.gather(
++            acp.rpc("_riptide/session/recent", sessionId=sid, cwd=cwd),
++            acp.rpc("_riptide/session/resume", **params, checkpoint=checkpoint),
++        )
++        assert any(u["content"]["text"] == "WS_SHARED history after disconnect"
++                   for u in recent["result"]["updates"])
++        assert resumed["result"]["reuseHistory"] is True, resumed
++        assert "WS_SHARED history after disconnect" in history(acp, start)
++        assert "WS_SHARED history before disconnect" not in history(acp, start)
++
++        start = len(acp.frames)
++        same = await acp.rpc("_riptide/session/resume", **params, checkpoint=resumed["result"]["checkpoint"])
++        assert same["result"]["reuseHistory"] is True
++        assert history(acp, start) == []
++        stale = {**checkpoint, "digest": "0" * 64}
++        start = len(acp.frames)
++        result = await acp.rpc("_riptide/session/resume", **params, checkpoint=stale)
++        assert result["result"]["reuseHistory"] is False
++        assert "WS_SHARED history before disconnect" in history(acp, start)
