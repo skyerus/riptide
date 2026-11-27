@@ -1,6 +1,8 @@
+diff --git a/acp_adapter/gateway_server.py b/acp_adapter/gateway_server.py
+index a24e257..75975ba 100644
 --- a/acp_adapter/gateway_server.py
 +++ b/acp_adapter/gateway_server.py
-@@ -3,8 +3,11 @@
+@@ -3,8 +3,11 @@ from __future__ import annotations
 
  import asyncio
  from contextlib import suppress
@@ -12,11 +14,10 @@
  import uuid
 
  import acp
-@@ -21,6 +24,35 @@
- from agent.transports.codex_event_projector import ASSISTANT_PROGRESS
+@@ -22,6 +25,35 @@ from agent.transports.codex_event_projector import ASSISTANT_PROGRESS
 
  logger = logging.getLogger(__name__)
-+
+
 +_RIPTIDE_FAST_RESUME = "app.riptide.fastResume"
 +
 +
@@ -45,32 +46,49 @@
 +    if kind in ("tool_call", "tool_call_update"):
 +        return {key: packet[key] for key in ("sessionUpdate", "toolCallId", "title", "status") if key in packet}
 +    return packet
-
++
 
  def _slash_command(text):
-@@ -154,12 +186,17 @@
+     """Canonical Hermes command name ``text`` invokes, or None for ordinary text.
+@@ -115,6 +147,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+         self._riptide_client = False
+         self._riptide_turns = {}
+         self._assistant_progress = False
++        self._riptide_fast_resume = False
+         self._codex_stream_messages = {}
+         from hermes_cli.gateway_mutations import PreparedMutations
+         self._mutations = PreparedMutations()
+@@ -147,6 +180,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
+             capabilities = params.get("clientCapabilities") if isinstance(params, dict) else None
+             metadata = capabilities.get("_meta") if isinstance(capabilities, dict) else None
+             self._assistant_progress = isinstance(metadata, dict) and metadata.get(ASSISTANT_PROGRESS) is True
++            self._riptide_fast_resume = isinstance(metadata, dict) and metadata.get(_RIPTIDE_FAST_RESUME) is True
+
+     async def initialize(self, **kwargs):
+         from hermes_cli import __version__
+@@ -154,12 +188,18 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
          return InitializeResponse(protocol_version=acp.PROTOCOL_VERSION,
              agent_info=Implementation(name="hermes-agent", version=__version__),
              agent_capabilities=AgentCapabilities(load_session=True,
-+                field_meta={_RIPTIDE_FAST_RESUME: 1},
++                field_meta={_RIPTIDE_FAST_RESUME: 1} if self._riptide_fast_resume else None,
                  prompt_capabilities=PromptCapabilities(image=True),
                  session_capabilities=SessionCapabilities(fork=SessionForkCapabilities(), list=SessionListCapabilities(),
                                                           resume=SessionResumeCapabilities())),
              auth_methods=build_auth_methods())
 
      async def ext_method(self, method, params):
-+        if method == "riptide/session/recent":
-+            return await self._riptide_recent_history(params)
-+        if method == "riptide/session/resume":
-+            return await self._riptide_resume(params)
++        if self._riptide_fast_resume:
++            if method == "riptide/session/recent":
++                return await self._riptide_recent_history(params)
++            if method == "riptide/session/resume":
++                return await self._riptide_resume(params)
          if method != "riptide/session/steer":
              raise acp.RequestError.method_not_found(f"_{method}")
          editor_id, text = params.get("sessionId"), params.get("text")
-@@ -203,6 +240,56 @@
-         if result.get("status") != "redirected":
+@@ -204,6 +244,56 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
              raise acp.RequestError(-32000, "Hermes could not steer this turn.")
          return {"status": "steered"}
-+
+
 +    async def _riptide_workspace_info(self, client, session_id, cwd):
 +        from hermes_cli.gateway_client import GatewayRPCError
 +        try:
@@ -120,10 +138,11 @@
 +                                    riptide_checkpoint=checkpoint)
 +        history = fields.pop("riptide_history")
 +        return {**LoadSessionResponse(**fields).model_dump(mode="json", by_alias=True, exclude_none=True), **history}
-
++
      async def authenticate(self, method_id, **kwargs):
          from acp_adapter.server import HermesACPAgent
-@@ -434,7 +521,7 @@
+         return await HermesACPAgent.authenticate(self, method_id, **kwargs)
+@@ -434,7 +524,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
          await client.rpc("session.detach", session_id=session_id, subscription_id=adopted["subscription_id"])
          return await client.rpc("session.info", session_id=session_id)
 
@@ -132,7 +151,7 @@
          client = await self._client()
          from acp_adapter.catalog import logical_session_id
          from hermes_cli.gateway_client import GatewayRPCError
-@@ -443,7 +530,10 @@
+@@ -443,7 +533,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
          self._aliases = {held: sid for held, sid in self._aliases.items() if sid != session_id}
          if session_id != held_id:
              self._aliases[held_id] = session_id
@@ -144,7 +163,7 @@
          if self._moved(info, cwd):
              info = await self._move_workspace(client, session_id, cwd)
          if "cwd" not in info and self._conn:
-@@ -471,6 +561,7 @@
+@@ -471,6 +564,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
          if 'editor' in resume_params:
              self._editor_mcp[session_id] = resume_params['editor']
          from acp_adapter.server import _history_replay_updates
@@ -152,7 +171,7 @@
          if self._conn:
              # The editor replays the live transcript in stored order, as main's ACP did; archived rows
              # (summarized away by a compression) are display-only.
-@@ -479,8 +570,16 @@
+@@ -479,8 +573,16 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                  live = [message for message in live
                          if not (isinstance(meta := message.get("display_metadata"), dict)
                                  and meta.get(ASSISTANT_PROGRESS) is True)]
@@ -171,7 +190,7 @@
              last_message = next((m for m in reversed(live) if m.get("role") in {"user", "assistant"}), {})
              if (last_message.get("display_kind") == "failed_turn"
                      and isinstance(meta := last_message.get("display_metadata"), dict)
-@@ -490,7 +589,7 @@
+@@ -490,7 +592,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
              self._permission(session_id, pending)
          await self._notify_unknown(session_id)
          await self._request_live_reasoning(client, session_id)
@@ -180,9 +199,12 @@
 
      @staticmethod
      def _moved(info, cwd):
+diff --git a/tests/acp_adapter/test_riptide_fast_resume.py b/tests/acp_adapter/test_riptide_fast_resume.py
+new file mode 100644
+index 0000000..a4c8107
 --- /dev/null
 +++ b/tests/acp_adapter/test_riptide_fast_resume.py
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,79 @@
 +"""Riptide cached-history negotiation over the real ACP projection."""
 +import asyncio
 +
@@ -218,7 +240,17 @@
 +                if f.get("method") == "_riptide/session/history"]
 +
 +    async with editor(daemon, tmp_path) as acp:
-+        init = await acp.rpc("initialize", protocolVersion=1, clientCapabilities={})
++        init = await acp.rpc("initialize", protocolVersion=1, clientCapabilities={
++            "_meta": {"app.riptide.assistantProgress": True},
++        })
++        assert "app.riptide.fastResume" not in init["result"]["agentCapabilities"].get("_meta", {})
++        unsupported = await acp.rpc("_riptide/session/recent", sessionId=sid, cwd=cwd)
++        assert unsupported["error"]["code"] == -32601
++        assert "result" in await acp.rpc("session/load", **params)
++
++    capabilities = {"_meta": {"app.riptide.fastResume": True}}
++    async with editor(daemon, tmp_path) as acp:
++        init = await acp.rpc("initialize", protocolVersion=1, clientCapabilities=capabilities)
 +        assert init["result"]["agentCapabilities"]["_meta"]["app.riptide.fastResume"] == 1
 +        assert "result" in await acp.rpc("session/load", **params)
 +        await send(acp, "WS_SHARED history before disconnect")
@@ -229,7 +261,7 @@
 +        await send(acp, "WS_SHARED history after disconnect")
 +
 +    async with editor(daemon, tmp_path) as acp:
-+        await acp.rpc("initialize", protocolVersion=1, clientCapabilities={})
++        await acp.rpc("initialize", protocolVersion=1, clientCapabilities=capabilities)
 +        wrong = await acp.rpc("_riptide/session/recent", sessionId=sid, cwd=str(tmp_path / "different"))
 +        assert wrong["error"]["code"] == -32602
 +        start = len(acp.frames)

@@ -51,6 +51,9 @@ class SSHACPPolicyTests(unittest.TestCase):
             ("initialize", {"protocolVersion": 1, "clientCapabilities": {
                 "_meta": {"app.riptide.assistantProgress": True},
             }}),
+            ("initialize", {"protocolVersion": 1, "clientCapabilities": {
+                "_meta": {"app.riptide.assistantProgress": True, "app.riptide.fastResume": True},
+            }}),
             ("session/list", {}),
             ("session/new", {"cwd": workspace, "mcpServers": []}),
             ("session/load", {"cwd": workspace, "sessionId": "main", "mcpServers": []}),
@@ -195,6 +198,9 @@ class SSHACPPolicyTests(unittest.TestCase):
             }}),
             ("initialize", {"protocolVersion": 1, "clientCapabilities": {
                 "_meta": {"app.riptide.assistantProgress": 1},
+            }}),
+            ("initialize", {"protocolVersion": 1, "clientCapabilities": {
+                "_meta": {"app.riptide.assistantProgress": True, "app.riptide.fastResume": 1},
             }}),
             ("session/new", {"cwd": workspace, "mcpServers": [{"name": "extra"}]}),
             ("session/load", {"cwd": "/", "sessionId": "main", "mcpServers": []}),

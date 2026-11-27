@@ -106,6 +106,7 @@ public actor ACPClient {
     private let emit: AsyncStream<ACPEvent>.Continuation
     private let transport: any ACPTransport
     private let restrictedSSH: Bool
+    private let requestsFastResume: Bool
     private let onDisplayName: (@MainActor @Sendable (String) -> Void)?
     private var reader: Task<Void, Never>?
     private var initialization: Task<JSON, any Error>?
@@ -121,10 +122,11 @@ public actor ACPClient {
     private var loadedSessions = Set<String>()
     private var newVoiceSessionKeys: [String: String]?
 
-    public init(transport: any ACPTransport, restrictedSSH: Bool = false,
+    public init(transport: any ACPTransport, restrictedSSH: Bool = false, requestsFastResume: Bool = false,
                 onDisplayName: (@MainActor @Sendable (String) -> Void)? = nil) {
         self.transport = transport
         self.restrictedSSH = restrictedSSH
+        self.requestsFastResume = requestsFastResume
         self.onDisplayName = onDisplayName
         (events, emit) = AsyncStream.makeStream()
     }
@@ -427,21 +429,30 @@ public actor ACPClient {
             await self?.disconnect()
         }
         let handshake = Task {
-            var params: [String: JSON] = [
-                "protocolVersion": .integer(1),
-                "clientCapabilities": ["_meta": ["app.riptide.assistantProgress": .boolean(true)]],
-                "clientInfo": ["name": "riptide", "version": "0.1.0"]
-            ]
-            let reply: JSON
+            func negotiate(capabilities: JSON) async throws -> JSON {
+                let reply = try await call("initialize", [
+                    "protocolVersion": .integer(1), "clientCapabilities": capabilities,
+                    "clientInfo": ["name": "riptide", "version": "0.1.0"]
+                ])
+                guard reply["protocolVersion"] == .integer(1) else { throw ACPError.protocolVersion }
+                return reply["agentCapabilities"] ?? [:]
+            }
+            let progress = ["app.riptide.assistantProgress": JSON.boolean(true)]
+            if restrictedSSH && requestsFastResume {
+                var metadata = progress
+                metadata["app.riptide.fastResume"] = .boolean(true)
+                do {
+                    return try await negotiate(capabilities: ["_meta": .object(metadata)])
+                } catch ACPError.invalidParameters {
+                    // Older wrappers may support assistant progress without the fast-resume opt-in.
+                }
+            }
             do {
-                reply = try await call("initialize", .object(params))
+                return try await negotiate(capabilities: ["_meta": .object(progress)])
             } catch ACPError.invalidParameters where restrictedSSH {
                 // Older forced commands only admit an empty capabilities object.
-                params["clientCapabilities"] = [:]
-                reply = try await call("initialize", .object(params))
+                return try await negotiate(capabilities: [:])
             }
-            guard reply["protocolVersion"] == .integer(1) else { throw ACPError.protocolVersion }
-            return reply["agentCapabilities"] ?? [:]
         }
         initialization = handshake
         return try await handshake.value

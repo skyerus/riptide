@@ -34,22 +34,30 @@ struct ACPCapabilityTests {
         await client.close()
     }
 
-    @Test func restrictedSSHCanInitializeWithAnOlderWrapper() async throws {
+    @Test(arguments: [false, true])
+    func restrictedSSHCanInitializeWithAnOlderWrapper(supportsProgress: Bool) async throws {
         let transport = ScriptedTransport { request in
             let id = try #require(request["id"])
             #expect(request["method"] == "initialize")
             let capabilities = request["params"]?["clientCapabilities"]
             if id == .integer(1) {
                 #expect(capabilities?["_meta"]?["app.riptide.assistantProgress"] == .boolean(true))
+                #expect(capabilities?["_meta"]?["app.riptide.fastResume"] == .boolean(true))
                 return [.failure(id, code: -32602, message: "Unsupported capability")]
             }
-            #expect(id == .integer(2))
-            #expect(capabilities == [:])
+            if id == .integer(2) {
+                #expect(capabilities == ["_meta": ["app.riptide.assistantProgress": .boolean(true)]])
+                if !supportsProgress { return [.failure(id, code: -32602, message: "Use empty capabilities")] }
+            } else {
+                #expect(!supportsProgress)
+                #expect(id == .integer(3))
+                #expect(capabilities == [:])
+            }
             return [.reply(id, result: ["protocolVersion": .integer(1), "agentCapabilities": [
                 "loadSession": .boolean(true),
             ]])]
         }
-        let client = ACPClient(transport: transport, restrictedSSH: true)
+        let client = ACPClient(transport: transport, restrictedSSH: true, requestsFastResume: true)
         #expect(try await client.canLoadSessions())
         await client.close()
     }
