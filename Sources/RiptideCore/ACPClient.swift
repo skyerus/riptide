@@ -469,8 +469,12 @@ public actor ACPClient {
                 if case .message(_, _, .assistant, let text) = event, let soFar = voiceReplies[sessionID] {
                     voiceReplies[sessionID] = String((soFar + text).suffix(4_800))
                 }
-                if replaying[sessionID] != nil { replaying[sessionID]?.append(event) }
-                else { emit.yield(event) }
+                if replaying[sessionID] != nil {
+                    replaying[sessionID]?.append(event)
+                } else {
+                    if case .replyTimedOut = event { closePermissions(in: sessionID) }
+                    emit.yield(event)
+                }
             }
         } else if let id = message["id"], let request = pending.removeValue(forKey: id) {
             if let error = message["error"]?["message"]?.string {

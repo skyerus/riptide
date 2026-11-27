@@ -832,6 +832,7 @@ final class WorkspaceUXUITests: XCTestCase {
         let recovery = app.buttons["chat-continue-after-timeout"]
         XCTAssertTrue(recovery.waitForExistence(timeout: 8), app.debugDescription)
         XCTAssertTrue(app.staticTexts["Reply timed out"].exists)
+        XCTAssertFalse(app.buttons["approval-reject_once"].exists)
         XCTAssertEqual(editor.value as? String, "Check the existing integration")
         capture(app, as: "Hermes timeout with the follow-up preserved")
 
