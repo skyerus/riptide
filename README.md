@@ -173,6 +173,8 @@ For fast resume over a pinned Hermes SSH pairing, apply [the fast resume adapter
 
 Apply [the progress resume patch](Host/compat/hermes-acp-progress-resume.patch) after the fast resume patch. It declares the compaction state in the gateway protocol and restores the latest progress message from a running Codex turn on either ACP load path. Restart the gateway after active turns finish so the gateway and new ACP connections use the same version.
 
+Apply [the generated image transcript patch](Host/compat/hermes-codex-image-generation-transcript.patch) after the screenshot transcript and progress resume patches. Hermes reports the result of an image-only turn as a short status and keeps the image file on the agent host. Reopening a chat replaces older raw image records with the same status and refreshes any affected local transcript cache. Use the same apply, restart, and rollback procedure.
+
 ### Hermes browser handoff over SSH
 
 Configure [Hermes Bot Screen](https://hermes-agent.nousresearch.com/docs/user-guide/features/bot-screen) on the Linux gateway. Install its desktop packages, set `bot_desktop.auto_start: true` and `model.openai_runtime: codex_app_server` in the paired profile, and apply [the Hermes gateway patches](Host/compat/hermes-gateway-pairing.md). The SSH wrapper needs `websockets` and `--hermes-screen /absolute/hermes/profile/home /absolute/path/to/hermes` in the key’s forced command. Give this option only to devices trusted to control the profile’s desktop.
