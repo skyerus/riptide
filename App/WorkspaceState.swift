@@ -296,6 +296,14 @@ final class WorkspaceState {
         await model.preloadMain()
     }
 
+    func preloadReply(from notification: WorkspaceChatNotification) {
+        guard let preview = notification.replyPreview,
+              let profile = profile(notification.chat.workspace), profile.kind == .hermes,
+              profile.sshHostFingerprint != nil,
+              let model = agentChatModel(for: notification.chat.workspace) else { return }
+        model.preloadReplyPreview(preview, receivedAt: notification.date, in: notification.chat.chat)
+    }
+
     func rememberCodexCatalog(_ chats: [CodexChatSummary], workspaceID: String) {
         guard agent(workspaceID) != nil else { return }
         codexSearchCatalog[workspaceID] = chats

@@ -65,8 +65,8 @@ struct ChatScreen: View {
     }
 
     private var awaitingHistory: Bool {
-        resolvingInitialChat || (!model.selected.loaded && !model.selected.connectionLost && model.selected.error == nil &&
-                                 model.selected.displayTranscript.entries.isEmpty && model.selected.permissions.isEmpty)
+        resolvingInitialChat || (!model.selected.loaded && model.selected.error == nil &&
+                                 !model.selected.hasDisplayHistory && model.selected.permissions.isEmpty)
     }
 
     private var disconnectedChat: WorkspaceChatID? {
@@ -321,7 +321,7 @@ struct ChatScreen: View {
                         privateFileTransfer: workspace.privateFileTransfer(for: chatKey.workspace),
                         settings: settings,
                         context: selected.context,
-                        ready: selected.loaded || model.canQueueWhileConnecting(in: chatKey.chat),
+                        ready: selected.loaded || selected.hasDisplayHistory || model.canQueueWhileConnecting(in: chatKey.chat),
                         canDictate: selected.loaded,
                         canSubmit: canSubmit(in: chatKey.chat),
                         transcribe: dictationTranscriber,
@@ -447,10 +447,7 @@ struct ChatScreen: View {
                 ForEach(model.selected.permissions) { request in
                     permissionCard(request)
                 }
-                if chat.loading && (chat.connectionLost || !history.entries.isEmpty) {
-                    Text(chat.connectionLost ? "Reconnecting…" : "Connecting…")
-                        .font(.footnote).foregroundStyle(.secondary)
-                } else if let error = model.selected.error {
+                if !chat.loading, let error = chat.error {
                     Text(error).font(.footnote)
                     if !model.selected.loaded {
                         Button("Try again") { Task { await model.open(model.selectedID) } }
@@ -483,8 +480,9 @@ struct ChatScreen: View {
             .transcriptColumn()
         }
         .scrollDismissesKeyboard(.interactively)
+        .defaultScrollAnchor(viewport.follow.canScrollAutomatically ? .bottom : nil, for: .sizeChanges)
         .accessibilityIdentifier("chat-transcript")
-        .transcriptViewport($viewport, chat: chat.loaded || !history.entries.isEmpty ? chatKey : nil,
+        .transcriptViewport($viewport, chat: chat.loaded || chat.hasDisplayHistory ? chatKey : nil,
                             composerFocused: composerFocused, showsJumpToLatest: !pickerIsOpen)
     }
 

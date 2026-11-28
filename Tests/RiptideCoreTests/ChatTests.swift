@@ -15,27 +15,43 @@ struct ChatTests {
         let old = FastHistoryTransport.update("user_message_chunk", text: "Saved question")
         let checkpoint = try #require(ChatHistoryCheckpoint(wire: FastHistoryTransport.checkpoint(rows: 1, digit: "a")))
         cache.write(ChatHistorySnapshot(checkpoint: checkpoint, updates: [old]), chat: chat)
-        let transport = FastHistoryTransport(chat: chat)
+        let reply = "Newest reply\nThe full reply appeared before live attach."
+        let transport = FastHistoryTransport(chat: chat, reply: reply)
         let model = AgentChatModel(target: target, historyCache: cache) { ACPClient(transport: transport) }
+        model.preloadReplyPreview("Outdated reply", receivedAt: .distantPast, in: chat)
+        #expect(!model.selected.hasDisplayHistory)
+        model.preloadReplyPreview("Newest reply", receivedAt: .now, in: chat)
+        #expect(model.selected.displayTranscript.entries.map(\.content) == [
+            .message(.user, "Saved question"), .message(.assistant, "Newest reply")
+        ])
+        let cachedID = try #require(model.selected.displayTranscript.entries.first?.id)
+        let replyID = try #require(model.selected.displayTranscript.entries.last?.id)
         let open = Task { await model.showMain() }
 
         try await waitUntil { await transport.awaitingBothRequests }
-        #expect(model.selected.displayTranscript.entries.map(\.content) == [.message(.user, "Saved question")])
+        #expect(model.selected.displayTranscript.entries.map(\.id) == [cachedID, replyID])
         #expect(!model.selected.loaded)
         #expect(model.selected.permissions.isEmpty)
 
         try await transport.sendPreview()
         try await waitUntil {
-            model.selected.displayTranscript.entries.last?.content == .message(.assistant, "Newest reply")
+            model.selected.displayTranscript.entries.last?.content == .message(.assistant, reply)
         }
+        #expect(model.selected.displayTranscript.entries.map(\.content) == [
+            .message(.user, "Saved question"), .message(.user, "New question"), .message(.assistant, reply)
+        ])
+        let prefetchedIDs = model.selected.displayTranscript.entries.map(\.id)
+        #expect(prefetchedIDs.first == cachedID)
+        #expect(prefetchedIDs.last == replyID)
         #expect(!model.selected.loaded)
 
         try await transport.finishResume()
         await open.value
         #expect(model.selected.loaded)
         #expect(model.selected.displayTranscript.entries.map(\.content) == [
-            .message(.user, "Saved question"), .message(.user, "New question"), .message(.assistant, "Newest reply")
+            .message(.user, "Saved question"), .message(.user, "New question"), .message(.assistant, reply)
         ])
+        #expect(model.selected.displayTranscript.entries.map(\.id) == prefetchedIDs)
         try await waitUntil { model.selected.permissions.count == 1 }
         #expect(model.selected.permissions.first?.toolCallID == "clarify-still-pending")
         #expect(cache.read(chat)?.checkpoint.rows == 3)
@@ -573,11 +589,13 @@ private actor FastHistoryTransport: ACPTransport {
     nonisolated let incoming: AsyncThrowingStream<Data, any Error>
     private let output: AsyncThrowingStream<Data, any Error>.Continuation
     private let chat: String
+    private let reply: String
     private var previewID: JSON?
     private var resumeID: JSON?
 
-    init(chat: String) {
+    init(chat: String, reply: String = "Newest reply") {
         self.chat = chat
+        self.reply = reply
         (incoming, output) = AsyncThrowingStream.makeStream()
     }
 
@@ -603,7 +621,11 @@ private actor FastHistoryTransport: ACPTransport {
 
     func sendPreview() throws {
         try emit(.reply(try #require(previewID), result: [
-            "updates": .array([Self.update("agent_message_chunk", text: "Newest reply")])
+            "updates": .array([
+                Self.update("user_message_chunk", text: "Saved question"),
+                Self.update("user_message_chunk", text: "New question"),
+                Self.update("agent_message_chunk", text: reply)
+            ])
         ]))
     }
 
@@ -611,7 +633,7 @@ private actor FastHistoryTransport: ACPTransport {
 
     func finishResume() throws {
         for update in [Self.update("user_message_chunk", text: "New question"),
-                       Self.update("agent_message_chunk", text: "Newest reply")] {
+                       Self.update("agent_message_chunk", text: reply)] {
             try emit(.notification("_riptide/session/history", params: ["sessionId": .string(chat), "update": update]))
         }
         try emit(.request("session/request_permission", id: "handback", params: [
