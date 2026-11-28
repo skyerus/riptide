@@ -108,6 +108,7 @@ public actor ACPClient {
     private let restrictedSSH: Bool
     private let requestsFastResume: Bool
     private let onDisplayName: (@MainActor @Sendable (String) -> Void)?
+    private let onProfilePhoto: (@MainActor @Sendable (UUID, Data) async -> Void)?
     private var reader: Task<Void, Never>?
     private var initialization: Task<JSON, any Error>?
     private var nextID = 0
@@ -123,11 +124,13 @@ public actor ACPClient {
     private var newVoiceSessionKeys: [String: String]?
 
     public init(transport: any ACPTransport, restrictedSSH: Bool = false, requestsFastResume: Bool = false,
-                onDisplayName: (@MainActor @Sendable (String) -> Void)? = nil) {
+                onDisplayName: (@MainActor @Sendable (String) -> Void)? = nil,
+                onProfilePhoto: (@MainActor @Sendable (UUID, Data) async -> Void)? = nil) {
         self.transport = transport
         self.restrictedSSH = restrictedSSH
         self.requestsFastResume = requestsFastResume
         self.onDisplayName = onDisplayName
+        self.onProfilePhoto = onProfilePhoto
         (events, emit) = AsyncStream.makeStream()
     }
 
@@ -519,9 +522,16 @@ public actor ACPClient {
             } else if method == "_riptide/session/history", let sessionID = params["sessionId"]?.string,
                       let update = params["update"] {
                 resumingHistory[sessionID]?.append(update)
-            } else if method == "_riptide/agent/profile", initialization != nil,
-                      let proposed = params["name"]?.string, let name = RemoteProfile.validDisplayName(proposed) {
-                await onDisplayName?(name)
+            } else if method == "_riptide/agent/profile", initialization != nil {
+                if let proposed = params["name"]?.string, let name = RemoteProfile.validDisplayName(proposed) {
+                    await onDisplayName?(name)
+                }
+                if let onProfilePhoto, let photo = params["photo"],
+                   let revision = photo["revision"]?.string.flatMap(UUID.init(uuidString:)),
+                   let encoded = photo["dataBase64"]?.string, encoded.utf8.count <= 349_528,
+                   let bytes = Data(base64Encoded: encoded), (1...262_144).contains(bytes.count) {
+                    await onProfilePhoto(revision, bytes)
+                }
             } else if method == "session/update", let sessionID = params["sessionId"]?.string, let update = params["update"] {
                 if update["sessionUpdate"] == "session_info_update", let key = update["_meta"]?["sessionKey"]?.string,
                    let count = newVoiceSessionKeys?.count, count < 24, key.utf8.count <= 512 {

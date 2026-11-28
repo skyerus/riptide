@@ -107,15 +107,19 @@ In the chat composer, tap **+ → Send File to VPS**, choose a file up to 100 Mi
 
 This option is available for SSH-paired agents, including Hermes group chats through their paired host. For files over 1 MiB, update both the iPhone app and the VPS wrapper. Install the current `Host/ssh_acp.py` or apply the versioned [SSH release updater](Host/update_ssh_release.py) to the existing key. The transfer uses the existing restricted key and SSH port.
 
-### Rename a paired agent from chat
+### Update a paired agent’s profile from chat
 
 In a paired ACP chat, say “Change your name to Harbor.” The `set_display_name` tool updates that agent’s label in Riptide, including its chat header and entry under **Agents**. Riptide saves the new label on the device when it receives the update. The same pairing keeps its chats, photo, and favorites.
+
+Say “Generate a minimal avatar and set it as your Riptide profile picture.” The agent can create the image with its available tools and call `set_profile_photo` with a PNG, JPEG, or WebP filename directly in its paired workspace. The host saves the photo for that agent and sends it to Riptide over the existing private connection. You can still change or reset the avatar locally. Reconnecting leaves that choice in place until the agent sets a new photo.
 
 With the updated iPhone app and host payload, create a directory owned by the agent’s host account with mode `0700`. Use a distinct absolute state file inside it for each agent, such as `/home/agent/.local/state/riptide-profiles/harbor.json`. Keep the same file across releases. The tool creates the file on its first successful call.
 
 - **SSH** — Add `--agent-profile-state /absolute/path/to/agent.json` before the `--` separator in the paired key’s fixed `ssh_acp.py` command. For an existing versioned pairing, pass the same option to `Host/update_ssh_release.py`. Repeat for each agent you want to enable, with its own file.
-- **Private WebSocket ACP** — Pass `--agent-profile-state /absolute/path/to/agent.json` to `Host/acp_bridge.py` before the fixed agent command.
-- **Hermes using Codex App Server** — Apply [the Hermes gateway pairing adapter](Host/compat/hermes-gateway-pairing.md). Reconnect the chat after enabling the feature. The native Hermes MCP route uses the shared tool directly.
+- **Private WebSocket ACP** — Pass `--agent-profile-state /absolute/path/to/agent.json` to `Host/acp_bridge.py` before the fixed agent command. For profile photos, also pass `--agent-profile-workspace /absolute/paired/workspace`.
+- **Hermes using Codex App Server** — Apply [the Hermes gateway pairing adapter and profile photo patch](Host/compat/hermes-gateway-pairing.md). Reconnect the chat after enabling the feature. The native Hermes MCP route uses the shared tools directly.
+
+Install Pillow in the same Python environment that runs the SSH wrapper or WebSocket bridge to enable profile photos. The SSH tool uses the fixed workspace already bound to the key. Profile photos are stored beside the name state file, in its owner-only directory.
 
 ### Hermes group chats over SSH
 

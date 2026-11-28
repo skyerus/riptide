@@ -8,8 +8,14 @@ import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class AgentAvatarStore {
+    private struct Record: Codable {
+        let jpeg: Data?
+        let agentRevision: UUID?
+    }
+
     private let directory: URL
     @ObservationIgnored private var loaded = Set<String>()
+    @ObservationIgnored private var agentRevisions: [String: UUID] = [:]
     private var images: [String: UIImage] = [:]
 
     init(namespace: UUID?) {
@@ -22,11 +28,18 @@ final class AgentAvatarStore {
     func load(_ id: String) {
         guard !loaded.contains(id) else { return }
         do {
-            let data = try Data(contentsOf: file(for: id))
-            images[id] = UIImage(data: data)
+            let data = try Data(contentsOf: file(for: id, extension: "avatar"))
+            let record = try PropertyListDecoder().decode(Record.self, from: data)
+            images[id] = record.jpeg.flatMap(UIImage.init(data:))
+            agentRevisions[id] = record.agentRevision
             loaded.insert(id)
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-            loaded.insert(id)
+            do {
+                images[id] = UIImage(data: try Data(contentsOf: file(for: id, extension: "jpg")))
+                loaded.insert(id)
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                loaded.insert(id)
+            } catch { }
         } catch {
             // Allow another read if the device is locked or the file is temporarily inaccessible.
         }
@@ -35,33 +48,62 @@ final class AgentAvatarStore {
     func setPhoto(_ data: Data, for id: String) async throws {
         let bytes = try await Task.detached(priority: .userInitiated) { try Self.avatarJPEG(from: data) }.value
         try Task.checkCancellation()
-        guard let image = UIImage(data: bytes) else { throw AvatarPhotoError.unreadable }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try bytes.write(to: file(for: id), options: [.atomic, .completeFileProtection])
-        loaded.insert(id)
-        images[id] = image
+        load(id)
+        try save(Record(jpeg: bytes, agentRevision: agentRevisions[id]), for: id)
     }
 
     func removePhoto(for id: String) throws {
-        do { try FileManager.default.removeItem(at: file(for: id)) }
-        catch let error as CocoaError where error.code == .fileNoSuchFile { }
+        load(id)
+        try save(Record(jpeg: nil, agentRevision: agentRevisions[id]), for: id)
+    }
+
+    func applyProfilePhoto(_ data: Data, revision: UUID, for id: String) async {
+        load(id)
+        guard agentRevisions[id] != revision else { return }
+        do {
+            let bytes = try await Task.detached(priority: .utility) {
+                try Self.avatarJPEG(from: data, maxSourceEdge: 512)
+            }.value
+            try Task.checkCancellation()
+            guard agentRevisions[id] != revision else { return }
+            try save(Record(jpeg: bytes, agentRevision: revision), for: id)
+        } catch { }
+    }
+
+    private func save(_ record: Record, for id: String) throws {
+        let image = record.jpeg.flatMap(UIImage.init(data:))
+        guard record.jpeg == nil || image != nil else { throw AvatarPhotoError.unreadable }
+        let data = try PropertyListEncoder().encode(record)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: file(for: id, extension: "avatar"), options: [.atomic, .completeFileProtection])
+        try? FileManager.default.removeItem(at: file(for: id, extension: "jpg"))
         loaded.insert(id)
-        images[id] = nil
+        agentRevisions[id] = record.agentRevision
+        images[id] = image
     }
 
-    private func file(for id: String) -> URL {
+    private func file(for id: String, extension pathExtension: String) -> URL {
         let key = SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined()
-        return directory.appending(path: key).appendingPathExtension("jpg")
+        return directory.appending(path: key).appendingPathExtension(pathExtension)
     }
 
-    nonisolated private static func avatarJPEG(from data: Data) throws -> Data {
+    nonisolated private static func avatarJPEG(from data: Data, maxSourceEdge: Int? = nil) throws -> Data {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: 512,
         ]
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { throw AvatarPhotoError.unreadable }
+        if let maxSourceEdge {
+            guard CGImageSourceGetType(source) == UTType.jpeg.identifier as CFString,
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                  let height = properties[kCGImagePropertyPixelHeight] as? Int,
+                  (1...maxSourceEdge).contains(width), (1...maxSourceEdge).contains(height) else {
+                throw AvatarPhotoError.unreadable
+            }
+        }
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
             throw AvatarPhotoError.unreadable
         }
         let edge = min(image.width, image.height)

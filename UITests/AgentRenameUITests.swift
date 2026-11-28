@@ -2,7 +2,7 @@ import XCTest
 
 final class AgentRenameUITests: XCTestCase {
     @MainActor
-    func testAgentToolRenamesChatAndRosterAndPersistsAcrossLaunch() throws {
+    func testAgentToolsUpdateNameAndPhotoAndRespectLocalReset() throws {
         guard let port = ProcessInfo.processInfo.environment["RIPTIDE_PROFILE_FIXTURE_PORT"] else {
             throw XCTSkip("Requires a trusted loopback TLS endpoint for the agent profile fixture.")
         }
@@ -40,8 +40,12 @@ final class AgentRenameUITests: XCTestCase {
         XCTAssertTrue(heading.waitForExistence(timeout: 10))
         XCTAssertEqual(heading.value as? String, "Hermes VPS")
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
-        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"), object: composer)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        func waitForComposer() {
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND enabled == true"),
+                                                   object: composer)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        }
+        waitForComposer()
         composer.tap()
         composer.typeText("Change your name to Harbor")
         app.buttons["send-message"].tap()
@@ -49,14 +53,48 @@ final class AgentRenameUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [renamed], timeout: 10), .completed)
         capture(app, "renamed-agent-chat")
 
+        composer.tap()
+        composer.typeText("Set your profile picture")
+        app.buttons["send-message"].tap()
+        XCTAssertTrue(app.staticTexts["I updated my profile picture."].firstMatch.waitForExistence(timeout: 10))
+
         app.buttons["BackButton"].tap()
         let updated = app.showAgentGrid().buttons[agentID]
         XCTAssertEqual(updated.label, "Harbor")
-        capture(app, "renamed-agent-grid")
+
+        func openPhotoEditor() {
+            XCTAssertTrue(updated.waitForExistence(timeout: 8))
+            updated.press(forDuration: 1)
+            let edit = app.buttons["edit-agent-photo"]
+            XCTAssertTrue(edit.waitForExistence(timeout: 5))
+            edit.tap()
+            XCTAssertTrue(app.buttons["choose-agent-photo"].waitForExistence(timeout: 5))
+        }
+
+        let reset = app.buttons["reset-agent-photo"]
+        let done = app.navigationBars["Profile photo"].buttons["Done"]
+        openPhotoEditor()
+        XCTAssertTrue(reset.waitForExistence(timeout: 10))
+        capture(app, "agent-set-profile-photo")
+        done.tap()
+        XCTAssertTrue(updated.isHittable)
+        capture(app, "agent-set-photo-grid")
 
         app.terminate()
         app.launch()
         XCTAssertEqual(app.showAgentGrid().buttons[agentID].label, "Harbor")
+        openPhotoEditor()
+        XCTAssertTrue(reset.exists)
+        reset.tap()
+        XCTAssertTrue(reset.waitForNonExistence(timeout: 5))
+        done.tap()
+        updated.tap()
+        XCTAssertTrue(heading.waitForExistence(timeout: 10))
+        waitForComposer()
+        app.buttons["BackButton"].tap()
+        _ = app.showAgentGrid()
+        openPhotoEditor()
+        XCTAssertFalse(reset.exists)
     }
 
     @MainActor

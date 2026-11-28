@@ -1,0 +1,26 @@
+diff --git a/gateway/session_local_mcp.py b/gateway/session_local_mcp.py
+--- a/gateway/session_local_mcp.py
++++ b/gateway/session_local_mcp.py
+@@ -510,6 +510,10 @@
+             and args[1::2] == ['--hermes-source', '--profile']
+             and all(Path(path).is_absolute() for path in (command, *args[::2]))):
+         return name
++    if (name == 'riptide_agent_profile' and len(args) == 5 and args[1::2] == ['--state', '--workspace']
++            and Path(args[0]).name == 'agent_profile.py'
++            and all(Path(path).is_absolute() for path in (command, *args[::2]))):
++        return name
+     if len(args) != 3 or not all(Path(path).is_absolute() for path in (command, args[0], args[2])):
+         return None
+     signature = (Path(args[0]).name, args[1])
+@@ -544,7 +548,10 @@
+                             enabled_tools=['computer_use', 'chrome_input', 'chrome_handoff'])
+             settings['tools.chrome_input.approval_mode'] = 'prompt'
+         if name == 'riptide_agent_profile':
+-            settings.update(default_tools_approval_mode='approve', enabled_tools=['set_display_name'])
++            tools = ['set_display_name']
++            if len(spec['args']) == 5:
++                tools.append('set_profile_photo')
++            settings.update(default_tools_approval_mode='approve', enabled_tools=tools)
+         for key, value in settings.items():
+             arguments.extend(('-c', f'mcp_servers.{name}.{key}={_json(value)}'))
+     token = _RIPTIDE_MCP_ARGS.set(tuple(arguments))

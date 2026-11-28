@@ -325,9 +325,12 @@ final class WorkspaceState {
         guard let main = profile.mainSessionID else { return nil }
         let target = AgentTarget(id: id, name: profile.name, mainSessionID: main, cwd: profile.workspace)
         let cache = profile.kind == .hermes && profile.sshHostFingerprint != nil ? ChatHistoryCache(workspace: id) : nil
-        let model = AgentChatModel(target: target, historyCache: cache, connect: { [remotes] in
+        let model = AgentChatModel(target: target, historyCache: cache, connect: { [remotes, avatars] in
             profile.makeACPClient(credential: bearer, onDisplayName: { [weak remotes] name in
                 remotes?.updateDisplayName(name, for: profile.id)
+            }, onProfilePhoto: { [weak remotes, weak avatars] revision, data in
+                guard remotes?.profiles.contains(where: { $0.id == profile.id }) == true else { return }
+                await avatars?.applyProfilePhoto(data, revision: revision, for: id)
             }) ?? ACPClient(transport: UnavailableWorkspaceTransport())
         })
         remoteModels[id] = model

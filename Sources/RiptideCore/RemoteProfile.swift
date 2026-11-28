@@ -88,16 +88,18 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
     }
 
     public func makeACPClient(credential: String,
-                              onDisplayName: (@MainActor @Sendable (String) -> Void)? = nil) -> ACPClient? {
+                              onDisplayName: (@MainActor @Sendable (String) -> Void)? = nil,
+                              onProfilePhoto: (@MainActor @Sendable (UUID, Data) async -> Void)? = nil) -> ACPClient? {
         guard kind != .codex, mainSessionID != nil else { return nil }
         if sshHostFingerprint != nil {
             return sshTransport(credential: credential, command: "riptide-acp").map {
                 ACPClient(transport: $0, restrictedSSH: true, requestsFastResume: kind == .hermes,
-                          onDisplayName: onDisplayName)
+                          onDisplayName: onDisplayName, onProfilePhoto: onProfilePhoto)
             }
         }
         guard let url = Self.secureURL(address), Self.validBearer(credential) else { return nil }
-        return ACPClient(transport: RemoteWebSocketTransport(url: url, bearer: credential), onDisplayName: onDisplayName)
+        return ACPClient(transport: RemoteWebSocketTransport(url: url, bearer: credential),
+                         onDisplayName: onDisplayName, onProfilePhoto: onProfilePhoto)
     }
 
     public func makeHermesDictation(credential: String) -> CodexDictation? {

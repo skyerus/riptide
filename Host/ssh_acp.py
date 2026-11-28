@@ -282,7 +282,7 @@ async def serve(workspace, command, browser_mcp=None, attention_socket=None, pai
             "env": [],
         })
     if profile_state is not None:
-        connectors.append(profile_connector(profile_state))
+        connectors.append(profile_connector(profile_state, workspace))
     pending = set()
     openings = {}
     opened = set()
