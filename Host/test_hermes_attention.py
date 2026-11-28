@@ -5,12 +5,13 @@ import os
 from pathlib import Path
 import runpy
 import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
 
 from attention_relay import AttentionState
-from hermes_attention import HermesAttention, HermesAttentionRouter, attention
+from hermes_attention import HermesAttention, HermesAttentionRouter, REPLY_LIFETIME, attention, configure_reply_key
 
 
 class Gateway:
@@ -36,6 +37,66 @@ class Gateway:
 
 
 class HermesAttentionTests(unittest.IsolatedAsyncioTestCase):
+    def test_reply_key_replaces_only_its_restricted_route(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        keys = root / "authorized_keys"
+        retained = b"# keep other authorized keys\n"
+        keys.write_bytes(retained)
+        identity = root / "key"
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(identity)], check=True)
+        key = " ".join((root / "key.pub").read_text().split()[:2])
+        scope = {"profile": "accountant", "workspace": str(root)}
+        device = "00000000-0000-0000-0000-000000000005"
+        for _ in range(2):
+            configure_reply_key(keys, root / "attention.sock", scope, device, key)
+        self.assertEqual(keys.read_bytes().count(key.encode()), 1)
+        self.assertIn(b'restrict,command="', keys.read_bytes())
+        self.assertIn(b"--notification-device", keys.read_bytes())
+        self.assertNotIn(b"--pairing-config", keys.read_bytes())
+        configure_reply_key(keys, root / "attention.sock", scope, device, None)
+        self.assertEqual(keys.read_bytes(), retained)
+
+    async def test_only_the_registered_reply_device_can_fetch_the_exact_full_message(self):
+        gateway = Gateway()
+        full_text = "The release is ready.\n" + "Details below. " * 900
+        rpc = gateway.rpc
+
+        async def long_reply(method, **params):
+            result = await rpc(method, **params)
+            if method == "session.transcript":
+                result["rows"][1]["text"] = full_text
+            return result
+
+        gateway.rpc = long_reply
+        now = 1234
+
+        @asynccontextmanager
+        async def connect():
+            yield gateway
+
+        state = AttentionState(send=lambda *_: "sent", clock=lambda: now)
+        relay = HermesAttention(state, connect, lambda _: "canonical", "/paired")
+        device = "00000000-0000-0000-0000-000000000005"
+        registration = {"id": device, "workspace": device, "environment": "production", "token": "a" * 64,
+                        "policy": {"delivery": "always", "approvals": True, "replies": True}, "replyPreload": True}
+        state.register(registration)
+        await relay.publish("editor", {"session_id": "canonical", "type": "message.complete", "payload": {
+            "status": "complete", "admission_id": "notice", "persisted_turn": {"final_assistant_row_id": 23},
+        }}, gateway)
+        request = {"operation": "reply", "device": device, "chat": "editor", "eventID": "notice"}
+        self.assertEqual(await relay.request(request), {"text": full_text})
+        self.assertFalse(await relay.request({**request, "eventID": "older"}))
+        self.assertFalse(await relay.request({**request, "chat": "different"}))
+        self.assertFalse(await relay.request({**request, "device": "00000000-0000-0000-0000-000000000006"}))
+        gateway.cwd = "/moved"
+        self.assertFalse(await relay.request(request))
+        gateway.cwd = "/paired"
+        now += REPLY_LIFETIME + 1
+        self.assertFalse(await relay.request(request))
+        now -= REPLY_LIFETIME + 1
+        state.register({**registration, "token": None})
+        self.assertFalse(await relay.request(request))
+
     async def test_watch_survives_its_caller_and_routes_only_current_events(self):
         gateway = Gateway()
 
@@ -188,13 +249,19 @@ class HermesAttentionTests(unittest.IsolatedAsyncioTestCase):
         agent = ("import json, sys\nfor line in sys.stdin:\n"
                  "    print(json.dumps({'id': json.loads(line)['id'], 'result': {}}), flush=True)")
         wrapper = Path(__file__).with_name("ssh_acp.py")
+        keys = root / ".ssh" / "authorized_keys"
+        keys.parent.mkdir()
+        keys.touch()
+        identity = root / "reply-key"
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(identity)], check=True)
+        public_key = " ".join(identity.with_suffix(".pub").read_text().split()[:2])
         server = await asyncio.start_unix_server(record, path=socket)
         async with server:
             async def launch(route):
                 return await asyncio.create_subprocess_exec(
                     sys.executable, str(wrapper), "--workspace", str(root), "--attention-socket", str(socket),
                     "--attention-profile", "fixture", "--", sys.executable, "-c", agent,
-                    env={**os.environ, "SSH_ORIGINAL_COMMAND": route},
+                    env={**os.environ, "SSH_ORIGINAL_COMMAND": route, "HOME": str(root)},
                     stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 )
 
@@ -206,6 +273,16 @@ class HermesAttentionTests(unittest.IsolatedAsyncioTestCase):
             forged = {**registration, "scope": {**scope, "profile": "another"}}
             response, _ = await asyncio.wait_for(ssh.communicate(json.dumps(forged).encode() + b"\n"), 5)
             self.assertEqual(json.loads(response), {"ok": False})
+
+            device = "00000000-0000-0000-0000-000000000005"
+            body = {"id": device, "workspace": device, "token": "a" * 64, "environment": "development",
+                    "policy": {"delivery": "always", "replies": True, "approvals": True}}
+            preload = {"operation": "register", "body": {**body, "supportsReplyPreload": True,
+                                                         "replyPreloadKey": public_key}}
+            ssh = await launch("riptide-attention")
+            response, _ = await asyncio.wait_for(ssh.communicate(json.dumps(preload).encode() + b"\n"), 5)
+            self.assertEqual(json.loads(response), {"ok": True})
+            self.assertIn(public_key, keys.read_text())
 
             ssh = await launch("riptide-acp")
             try:
@@ -222,6 +299,7 @@ class HermesAttentionTests(unittest.IsolatedAsyncioTestCase):
                 ssh.stdin.close()
                 await asyncio.wait_for(ssh.wait(), 5)
         self.assertEqual(requests, [{**registration, "scope": scope},
+                                    {"operation": "register", "scope": scope, "body": {**body, "replyPreload": True}},
                                     {"operation": "watch", "scope": scope, "chat": "test"}])
 
     def test_rollout_rewrites_only_restricted_hermes_keys_and_can_be_repeated(self):

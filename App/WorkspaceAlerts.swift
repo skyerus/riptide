@@ -5,12 +5,36 @@ import SwiftUI
 import UserNotifications
 import UIKit
 
+struct WorkspaceChatNotification: Sendable {
+    let chat: WorkspaceChatID
+    let date: Date
+    let replyPreview: String?
+    let replyLocator: NotificationReplyLocator?
+
+    init?(_ notification: UNNotification) {
+        let content = notification.request.content
+        guard let workspace = content.userInfo["workspace"] as? String,
+              let session = content.userInfo["chat"] as? String,
+              (1...200).contains(workspace.utf8.count), (1...300).contains(session.utf8.count) else { return nil }
+        chat = WorkspaceChatID(workspace: workspace, chat: session)
+        date = notification.date
+        replyLocator = (content.userInfo["replyEventID"] as? String).flatMap {
+            NotificationReplyLocator(workspace: workspace, chat: session, eventID: $0)
+        }
+        let body = content.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Existing push senders put the reply excerpt in the alert body and use fixed text for other alerts.
+        replyPreview = (1...180).contains(body.unicodeScalars.count) &&
+            !AttentionReason.allCases.contains { $0.title == body } ? body : nil
+    }
+}
+
 @MainActor
 final class RiptideNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    static var opened: ((WorkspaceChatID?) -> Void)?
+    static var opened: ((WorkspaceChatNotification?) -> Void)?
+    static var received: ((WorkspaceChatNotification) -> Void)?
     static var receivedToken: ((String) -> Void)?
     static var failedRegistration: (() -> Void)?
-    static var pendingOpen: (WorkspaceChatID?, Bool)?
+    static var pendingOpen: (WorkspaceChatNotification?, Bool)?
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -27,20 +51,19 @@ final class RiptideNotificationDelegate: NSObject, UIApplicationDelegate, UNUser
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async
-        -> UNNotificationPresentationOptions { [] }
+        -> UNNotificationPresentationOptions {
+        if let route = WorkspaceChatNotification(notification), route.replyPreview != nil || route.replyLocator != nil {
+            await MainActor.run { Self.received?(route) }
+        }
+        return []
+    }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping @Sendable () -> Void) {
-        let data = response.notification.request.content.userInfo
-        let chat = (data["workspace"] as? String).flatMap { workspace in
-            (data["chat"] as? String).flatMap { chat in
-                (1...200).contains(workspace.utf8.count) && (1...300).contains(chat.utf8.count)
-                    ? WorkspaceChatID(workspace: workspace, chat: chat) : nil
-            }
-        }
+        let route = WorkspaceChatNotification(response.notification)
         Task { @MainActor in
-            if let opened = Self.opened { opened(chat) }
-            else { Self.pendingOpen = (chat, true) }
+            if let opened = Self.opened { opened(route) }
+            else { Self.pendingOpen = (route, true) }
             // UIKit uses the completion handler to update the app's foreground snapshot.
             completionHandler()
         }
@@ -64,7 +87,8 @@ final class WorkspaceAlerts {
     private(set) var pushEnabled = false
     private var pushWorkspaces = Set<String>()
     weak var remotes: RemoteStore?
-    var openWorkspace: ((WorkspaceChatID?) -> Void)?
+    var openWorkspace: ((WorkspaceChatNotification?) -> Void)?
+    var preloadReply: ((WorkspaceChatNotification) -> Void)?
 
     init() {
         policy = (try? JSONDecoder().decode(AttentionPolicy.self,
@@ -88,9 +112,18 @@ final class WorkspaceAlerts {
 
     func activate() {
         RiptideNotificationDelegate.opened = { [weak self] in self?.openWorkspace?($0) }
+        RiptideNotificationDelegate.received = { [weak self] in self?.preloadReply?($0) }
         if let pending = RiptideNotificationDelegate.pendingOpen {
             RiptideNotificationDelegate.pendingOpen = nil
             openWorkspace?(pending.0)
+        }
+        Task {
+            var seen = Set<WorkspaceChatID>()
+            for notification in await center.deliveredNotifications().sorted(by: { $0.date > $1.date }) {
+                guard let route = WorkspaceChatNotification(notification), route.replyPreview != nil || route.replyLocator != nil,
+                      seen.insert(route.chat).inserted else { continue }
+                preloadReply?(route)
+            }
         }
         RiptideNotificationDelegate.receivedToken = { [weak self] token in
             self?.token = token
@@ -250,9 +283,18 @@ final class WorkspaceAlerts {
         for profile in profiles {
             guard revision == current else { return }
             guard let credential = remotes?.bearer(for: profile) else { continue }
+            let preloads = NotificationReplyStore.shared
+            let preloadKey: String?
+            if hermesToken != nil && value.replies {
+                preloadKey = try? preloads?.prepareRoute(for: profile)
+            } else {
+                preloads?.removeWorkspace(profile.id)
+                preloadKey = nil
+            }
             do {
                 try await profile.registerHermesNotifications(credential: credential, token: hermesToken,
-                                                               environment: environment, policy: value)
+                                                               environment: environment, policy: value,
+                                                               replyPreloadKey: preloadKey)
                 if hermesToken != nil { registered.insert(profile.id.uuidString) }
             } catch { continue }
         }

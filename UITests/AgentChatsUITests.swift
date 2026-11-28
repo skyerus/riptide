@@ -88,14 +88,17 @@ final class AgentChatsUITests: XCTestCase {
         XCTAssertFalse(history.exists)
         XCTAssertFalse(app.staticTexts["Opening chat…"].exists)
         let composer = app.descendants(matching: .any).matching(identifier: "chat-composer").firstMatch
+        let keyboard = app.keyboards.firstMatch
         XCTAssertTrue(composer.exists)
-        XCTAssertFalse(composer.isEnabled)
+        composer.tap()
+        XCTAssertFalse(keyboard.exists)
         capture(app, as: "Main Chat loading skeleton")
 
         XCTAssertTrue(history.waitForExistence(timeout: 18))
         XCTAssertTrue(skeleton.waitForNonExistence(timeout: 2))
-        XCTAssertTrue(composer.isEnabled)
         capture(app, as: "Main Chat history loaded")
+        composer.tap()
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
     }
 
     @MainActor

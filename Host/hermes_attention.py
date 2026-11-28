@@ -9,7 +9,10 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
+import shlex
 import sys
+import uuid
 
 # Hermes may re-enter a script with runpy and isolated Python, which omits both
 # the script directory and PYTHONPATH. Restore this release's trusted paths.
@@ -20,19 +23,22 @@ if __name__ == "__main__":
 
 from attention_relay import APNs, AttentionState, WORKSPACE_ID, reply_preview, valid
 from hermes_chrome_profile import owned_directory
-from ssh_pairing_files import PROFILE
+from ssh_pairing_files import Edit, PROFILE, key_identity, lock_keys, read_owned
 
 
 MAX_FRAME = 8192
+MAX_REPLY_FRAME = 2 * 1024 * 1024
 CHAT_ID = r"[A-Za-z0-9._:-]{1,240}"
+EVENT_ID = r"[A-Za-z0-9._:-]{1,160}"
+REPLY_LIFETIME = 15 * 60
 LEASE = 8 * 60 * 60
 MAX_WATCHES = 32
 LOG = logging.getLogger(__name__)
 
 
-async def exchange(socket, request):
+async def exchange(socket, request, *, reply=False):
     async with asyncio.timeout(4):
-        reader, writer = await asyncio.open_unix_connection(socket, limit=MAX_FRAME)
+        reader, writer = await asyncio.open_unix_connection(socket, limit=MAX_REPLY_FRAME if reply else MAX_FRAME)
         try:
             writer.write(json.dumps(request).encode() + b"\n")
             await writer.drain()
@@ -42,23 +48,71 @@ async def exchange(socket, request):
             await writer.wait_closed()
 
 
-async def serve_ssh(socket, scope=None):
+def configure_reply_key(path, socket, scope, device, key):
+    marker = "riptide-notification-" + hashlib.sha256(json.dumps([scope, device]).encode()).hexdigest()
+    argv = [sys.executable, str(Path(__file__).with_name("ssh_acp.py").resolve()),
+            "--attention-socket", str(socket), "--notification-device", device,
+            "--workspace", scope["workspace"] if scope else "/"]
+    if scope:
+        argv.extend(["--attention-profile", scope["profile"]])
+    with lock_keys(path):
+        original, mode = read_owned(path)
+        if original is None:
+            raise ValueError("Missing restricted SSH key file.")
+        lines = [line for line in original.decode().splitlines(keepends=True)
+                 if (not line.startswith('restrict,command="') or line.rstrip().split()[-1] != marker)]
+        source = "".join(lines)
+        if key is not None:
+            if not valid(key, r"ssh-ed25519 [A-Za-z0-9+/=]{50,100}"):
+                raise ValueError("Invalid reply key.")
+            key = " ".join(key_identity(key))
+            if re.search(rf"(?:^|\s){re.escape(key)}(?=\s|$)", source, re.MULTILINE):
+                raise ValueError("Reply key is already assigned.")
+            command = shlex.join(argv).replace('"', r'\"')
+            if any(char in command for char in "\r\n"):
+                raise ValueError("Invalid reply command.")
+            source += ("" if not source or source.endswith("\n") else "\n")
+            source += f'restrict,command="{command}" {key} {marker}\n'
+        Edit(path, original, source.encode(), mode).apply()
+
+
+async def serve_ssh(socket, scope=None, *, device=None):
     reader = asyncio.StreamReader(limit=MAX_FRAME)
     loop = asyncio.get_running_loop()
     transport, _ = await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer)
     try:
         request = json.loads(await asyncio.wait_for(reader.readline(), 5))
-        if (not isinstance(request, dict) or set(request) != {"operation", "body"}
-                or request["operation"] != "register"):
-            raise ValueError("Only device registration is allowed over SSH.")
+        if device is not None:
+            if not isinstance(request, dict) or set(request) != {"chat", "eventID"}:
+                raise ValueError("Only alert reply lookup is allowed with this key.")
+            request.update(operation="reply", device=device)
+        else:
+            if (not isinstance(request, dict) or set(request) != {"operation", "body"}
+                    or request["operation"] != "register" or not isinstance(request["body"], dict)):
+                raise ValueError("Only device registration is allowed over SSH.")
+            body = request["body"]
+            key = body.pop("replyPreloadKey", None)
+            preload = body.pop("supportsReplyPreload", None) is True
+            body.pop("replyPreload", None)
+            policy = body.get("policy", {})
+            if preload:
+                if str(uuid.UUID(body["id"])) != body.get("workspace", "").lower():
+                    raise ValueError("Registration must match its device ID.")
+                enabled = body.get("token") is not None and policy.get("replies") is True and policy.get("delivery") != "off"
+                try:
+                    await asyncio.to_thread(configure_reply_key, Path.home() / ".ssh" / "authorized_keys",
+                                            socket, scope, body["id"], key if enabled else None)
+                    body["replyPreload"] = enabled and key is not None
+                except (OSError, ValueError):
+                    LOG.warning("Could not configure the notification reply key")
         if scope is not None:
             request["scope"] = scope
-        response = await exchange(socket, request)
-    except (OSError, ValueError, TimeoutError):
+        response = await exchange(socket, request, reply=device is not None)
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, TimeoutError):
         response = {"ok": False}
     finally:
         transport.close()
-    print(json.dumps(response), flush=True)
+    print(json.dumps(response, ensure_ascii=False), flush=True)
 
 
 def attention(event):
@@ -92,6 +146,8 @@ class HermesAttention:
             async with self.state_lock:
                 self.state.register(body)
             return True
+        if request.get("operation") == "reply":
+            return await self.read_reply(request)
         chat = request.get("chat")
         if request.get("operation") != "watch" or not valid(chat, CHAT_ID):
             return False
@@ -152,36 +208,60 @@ class HermesAttention:
         if not notification:
             return
         reason, event_id, disposition, preview = notification
-        if not valid(event_id, r"[A-Za-z0-9._:-]{1,160}"):
+        if not valid(event_id, EVENT_ID):
             return
+        row = (event["payload"].get("persisted_turn") or {}).get("final_assistant_row_id") if reason == "reply" else None
         if reason == "reply" and preview is None:
-            preview = await self.stored_reply_preview(gateway, event)
+            preview = reply_preview(await self.stored_reply(gateway, event["session_id"], row))
             if preview is None:
                 return
         async with self.state_lock:
             workspaces = {row["workspace"] for row in self.state.devices.values()}
             for workspace in workspaces:
                 self.state.publish({"workspace": workspace, "chat": chat, "reason": reason,
-                                    "eventID": event_id, "state": disposition, "preview": preview})
+                                    "eventID": event_id, "state": disposition, "preview": preview, "replyRow": row})
+
+    async def read_reply(self, request):
+        device, chat, event_id = (request.get(key) for key in ("device", "chat", "eventID"))
+        if not valid(chat, CHAT_ID) or not valid(event_id, EVENT_ID):
+            return False
+        async with self.state_lock:
+            registration = self.state.devices.get(device)
+            if not registration or not registration["replyPreload"] or not registration["policy"]["replies"]:
+                return False
+            item = self.state.inbox.get((registration["workspace"], chat, "reply"))
+            if not item or item[0].event_id != event_id or not 0 <= self.state.clock() - item[1] <= REPLY_LIFETIME:
+                return False
+            row = item[0].reply_row
+        if row is None:
+            return False
+        async with self.connect() as gateway:
+            session = await asyncio.to_thread(self.logical_id, chat)
+            info = await gateway.rpc("session.info", session_id=session)
+            if info.get("cwd") != self.workspace_path:
+                return False
+            text = await self.stored_reply(gateway, session, row)
+        async with self.state_lock:
+            if self.state.devices.get(device) is not registration:
+                return False
+        return {"text": text} if reply_preview(text) else False
 
     @staticmethod
-    async def stored_reply_preview(gateway, event):
+    async def stored_reply(gateway, session, row_id):
         # A final delivered during streaming can have an empty completion body.
         # The receipt names its exact stored row. Never fall back to an older assistant message.
-        receipt = event["payload"].get("persisted_turn") or {}
-        row_id = receipt.get("final_assistant_row_id")
         if type(row_id) is not int or row_id <= 0:
             return None
         try:
             async with asyncio.timeout(3):
-                page = await gateway.rpc("session.transcript", session_id=event["session_id"],
+                page = await gateway.rpc("session.transcript", session_id=session,
                                          order="latest", limit=20, inline_images=False)
         except Exception as error:
             LOG.warning("Hermes notification reply lookup failed (%s)", type(error).__name__)
             return None
         for row in page.get("rows", []):
             if row.get("row_id") == row_id and row.get("role") == "assistant":
-                return reply_preview(row.get("text"))
+                return row.get("text")
         return None
 
     async def flush(self):
@@ -225,7 +305,7 @@ class HermesAttentionRouter:
 
     async def request(self, request):
         operation = request.get("operation")
-        if operation not in ("health", "register", "watch"):
+        if operation not in ("health", "register", "watch", "reply"):
             return False
         scope, home = self.scope(request.get("scope"))
         if operation == "health":
@@ -244,10 +324,14 @@ class HermesAttentionRouter:
         try:
             request = json.loads(await asyncio.wait_for(reader.readline(), 5))
             ok = isinstance(request, dict) and await self.request(request)
-        except (OSError, ValueError, TimeoutError, RuntimeError):
+        except (OSError, ValueError, TypeError, TimeoutError, RuntimeError):
             pass
         try:
-            writer.write(json.dumps({"ok": bool(ok)}).encode() + b"\n")
+            response = {"ok": bool(ok)}
+            if isinstance(ok, dict):
+                response.update(ok)
+            data = json.dumps(response, ensure_ascii=False).encode()
+            writer.write((data if len(data) < MAX_REPLY_FRAME else b'{"ok":false}') + b"\n")
             await writer.drain()
         except OSError:
             pass

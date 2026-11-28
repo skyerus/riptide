@@ -77,6 +77,7 @@ class AttentionEvent:
     reason: str
     event_id: str
     preview: str | None = None
+    reply_row: int | None = None
 
     @property
     def target(self):
@@ -91,7 +92,9 @@ class AttentionEvent:
                 or not valid(event_id, r"[A-Za-z0-9._:-]{1,160}")):
             raise ValueError("Invalid event identifiers.")
         preview = reply_preview(body.get("preview")) if reason == "reply" else None
-        return cls(workspace, chat, reason, event_id, preview)
+        row = body.get("replyRow")
+        return cls(workspace, chat, reason, event_id, preview,
+                   row if reason == "reply" and type(row) is int and 0 < row < 2**63 else None)
 
 
 class AttentionState:
@@ -164,6 +167,7 @@ class AttentionState:
             "environment": environment,
             "policy": {field: policy[field] for field in ("delivery", "approvals", "replies")},
             "workspace": workspace,
+            "replyPreload": body.get("replyPreload") is True,
         }
         if save:
             self.persist()
@@ -305,6 +309,9 @@ class APNs:
             "workspace": event.workspace,
             "chat": event.chat,
         }
+        if device.get("replyPreload") and event.reply_row is not None:
+            payload["aps"]["mutable-content"] = 1
+            payload["replyEventID"] = event.event_id
         try:
             response = self.client.post(f"https://{host}/3/device/{device['token']}", headers=headers, json=payload)
         except self.network_error:

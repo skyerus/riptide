@@ -29,7 +29,8 @@ public struct ChatEntry: Identifiable, Equatable, Sendable {
         case pairingReceipt(name: String, connected: Bool)
     }
 
-    public let id = UUID()
+    public fileprivate(set) var id = UUID()
+    fileprivate var messageID: String?
     public fileprivate(set) var content: Content
     public fileprivate(set) var photos: [TranscriptPhoto] = []
     public fileprivate(set) var receipt: MessageReceipt?
@@ -38,6 +39,16 @@ public struct ChatEntry: Identifiable, Equatable, Sendable {
     public var isConversationMessage: Bool {
         guard !isAssistantProgress, case .message = content else { return false }
         return true
+    }
+
+    fileprivate struct MessageKey: Hashable {
+        let role: ChatRole
+        let text: String
+    }
+
+    fileprivate var messageKey: MessageKey? {
+        guard !isAssistantProgress, case .message(let role, let text) = content else { return nil }
+        return MessageKey(role: role, text: text)
     }
 }
 
@@ -86,6 +97,76 @@ public struct Transcript: Equatable, Sendable {
         guard let entry = lastMessage(includingProgress: false),
               case .message(.assistant, let text) = entry.content else { return nil }
         return text
+    }
+
+    fileprivate func containsReplyPreview(_ preview: String) -> Bool {
+        entries.reversed().contains { entry in
+            guard !entry.isAssistantProgress, case .message(.assistant, let text) = entry.content else { return false }
+            return WorkspaceAttention.preview(text) == preview
+        }
+    }
+
+    fileprivate mutating func adoptReplyPreview(_ preview: ChatEntry, complete: Bool, keepFullText: Bool = false) -> Bool {
+        guard case .message(.assistant, let excerpt) = preview.content,
+              let index = entries.lastIndex(where: { $0.isConversationMessage }),
+              case .message(.assistant, let text) = entries[index].content else { return false }
+        if complete {
+            guard text == excerpt || (keepFullText && text.unicodeScalars.count == 8192 && excerpt.hasPrefix(text)) else {
+                return false
+            }
+            if keepFullText { entries[index].content = preview.content }
+        } else if WorkspaceAttention.preview(text) != excerpt { return false }
+        entries[index].id = preview.id
+        return true
+    }
+
+    fileprivate func displaying(_ preview: ChatEntry?) -> Transcript {
+        guard let preview else { return self }
+        var display = self
+        if let latestPromptIndex { display.entries[latestPromptIndex].receipt = .seen }
+        display.entries.append(preview)
+        return display
+    }
+
+    fileprivate mutating func appendRecent(_ recent: Transcript, in sessionID: String) {
+        // Recent history is a bounded list of messages that can overlap the cached tail.
+        let anchor = recent.entries.lastIndex { entry in
+            if let id = entry.messageID, messageIndices[id] != nil { return true }
+            return entries.contains { $0.messageID == nil && $0.content == entry.content }
+        }
+        let afterAnchor = anchor.map { recent.entries.index(after: $0) } ?? recent.entries.startIndex
+        let lastStoredRow = messageIndices.keys.compactMap(Int64.init).max()
+        for entry in recent.entries[afterAnchor...] {
+            guard case .message(let role, let text) = entry.content else { continue }
+            if let id = entry.messageID {
+                if messageIndices[id] != nil { continue }
+                if let row = Int64(id), let lastStoredRow, row <= lastStoredRow { continue }
+            }
+            openMessage = nil
+            apply(.message(sessionID: sessionID, messageID: entry.messageID, role: role, text: text))
+        }
+    }
+
+    fileprivate mutating func preserveEntryIDs(from previous: Transcript) {
+        var matched = Set<Int>()
+        for (messageID, index) in messageIndices {
+            guard let old = previous.messageIndices[messageID],
+                  !entries[index].isAssistantProgress, !previous.entries[old].isAssistantProgress else { continue }
+            entries[index].id = previous.entries[old].id
+            matched.insert(index)
+        }
+        for (toolID, index) in toolIndices {
+            if let old = previous.toolIndices[toolID] { entries[index].id = previous.entries[old].id }
+        }
+        // Hermes replay and optimistic messages can omit IDs. Match equal rows in transcript order.
+        let used = Set(entries.map(\.id))
+        var available: [ChatEntry.MessageKey: [UUID]] = [:]
+        for entry in previous.entries.reversed() where !used.contains(entry.id) {
+            if let key = entry.messageKey { available[key, default: []].append(entry.id) }
+        }
+        for (index, entry) in entries.enumerated() where !matched.contains(index) {
+            if let key = entry.messageKey, let old = available[key]?.popLast() { entries[index].id = old }
+        }
     }
 
     private func lastMessage(includingProgress: Bool) -> ChatEntry? {
@@ -200,7 +281,8 @@ public struct Transcript: Equatable, Sendable {
                 openMessage = messageIndex
                 if let messageID { messageIndices[messageID] = messageIndex }
                 if role == .user { latestPromptIndex = messageIndex }
-                entries.append(ChatEntry(content: .message(role, text), receipt: role == .user ? .delivered : nil))
+                entries.append(ChatEntry(messageID: messageID, content: .message(role, text),
+                                         receipt: role == .user ? .delivered : nil))
             }
             if role == .assistant, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                let latestPromptIndex, messageIndex > latestPromptIndex {
@@ -208,7 +290,7 @@ public struct Transcript: Equatable, Sendable {
             }
         case .assistantProgress(_, let messageID, let text):
             let index = messageIndices[messageID] ?? entries.endIndex
-            let entry = ChatEntry(content: .message(.assistant, text), isAssistantProgress: true)
+            let entry = ChatEntry(messageID: messageID, content: .message(.assistant, text), isAssistantProgress: true)
             if index == entries.endIndex {
                 messageIndices[messageID] = index
                 entries.append(entry)
@@ -297,6 +379,7 @@ public final class AgentChatModel {
     public struct ChatState {
         public fileprivate(set) var transcript = Transcript()
         fileprivate var provisionalTranscript: Transcript?
+        fileprivate var notificationReply: (date: Date, entry: ChatEntry, complete: Bool)?
         public fileprivate(set) var permissions: [PermissionRequest] = []
         public fileprivate(set) var configOptions: [SessionConfigOption] = []
         fileprivate var reportedModelName: String?
@@ -326,7 +409,9 @@ public final class AgentChatModel {
         public fileprivate(set) var plan: [TurnPlanStep] = []
 
         public var working: Bool { submittingPrompt || agentWorking }
-        public var displayTranscript: Transcript { provisionalTranscript ?? transcript }
+        fileprivate var availableHistory: Transcript { provisionalTranscript ?? transcript }
+        public var displayTranscript: Transcript { availableHistory.displaying(notificationReply?.entry) }
+        public var hasDisplayHistory: Bool { !availableHistory.entries.isEmpty || notificationReply != nil }
         public var canStop: Bool { submittingPrompt }
         public var canSteer: Bool { submittingPrompt || steerAdmissionID != nil }
 
@@ -464,8 +549,27 @@ public final class AgentChatModel {
     }
 
     public func prepareToOpen(_ sessionID: String) {
-        guard makeClient != nil, sessionID == target.mainSessionID || listsChat(sessionID) else { return }
+        guard makeClient != nil else { return }
+        if chats[sessionID]?.hasDisplayHistory != true, let cached = historyCache?.read(sessionID) {
+            showCachedHistory(cached, in: sessionID)
+        }
+        guard sessionID == target.mainSessionID || listsChat(sessionID) else { return }
         _ = beginOpening(sessionID)
+    }
+
+    public func preloadReplyPreview(_ text: String, receivedAt: Date, in sessionID: String, complete: Bool = false) {
+        guard let historyCache, chats[sessionID]?.loaded != true,
+              receivedAt > (historyCache.modifiedAt(sessionID) ?? .distantPast) else { return }
+        let previous = chats[sessionID]?.notificationReply
+        if let previous, receivedAt < previous.date || (receivedAt == previous.date && (!complete || previous.complete)) { return }
+        if chats[sessionID]?.hasDisplayHistory != true, let cached = historyCache.read(sessionID) {
+            showCachedHistory(cached, in: sessionID)
+        }
+        let history = chats[sessionID]?.availableHistory ?? Transcript()
+        guard complete || (!history.entries.isEmpty && !history.containsReplyPreview(text)) else { return }
+        var entry = ChatEntry(content: .message(.assistant, text))
+        if let previous, previous.date == receivedAt { entry.id = previous.entry.id }
+        chats[sessionID, default: ChatState()].notificationReply = (receivedAt, entry, complete)
     }
 
     public func open(_ sessionID: String) async {
@@ -477,9 +581,11 @@ public final class AgentChatModel {
     public func openSavedChat(_ sessionID: String) async -> Bool {
         guard !Task.isCancelled else { return false }
         if !listsChat(sessionID) {
-            if let cached = historyCache?.read(sessionID), chats[sessionID]?.loaded != true {
-                showProvisionalHistory(ACPClient.historyEvents(cached.updates, sessionID: sessionID), in: sessionID)
-                selectedID = sessionID
+            if chats[sessionID]?.loaded != true {
+                if chats[sessionID]?.hasDisplayHistory != true, let cached = historyCache?.read(sessionID) {
+                    showCachedHistory(cached, in: sessionID)
+                }
+                if chats[sessionID]?.hasDisplayHistory == true { selectedID = sessionID }
             }
             // Adopt an in-flight catalog connection, or keep the one used to look up this chat.
             guard connectIfNeeded() != nil else { return false }
@@ -521,9 +627,8 @@ public final class AgentChatModel {
         guard chats[sessionID]?.loaded != true, chats[sessionID]?.loading != true else { return }
         guard let client = connectIfNeeded() else { return }
         let cached = historyCache?.read(sessionID)
-        if let cached, chats[sessionID]?.transcript.entries.isEmpty != false,
-           chats[sessionID]?.provisionalTranscript == nil {
-            showProvisionalHistory(ACPClient.historyEvents(cached.updates, sessionID: sessionID), in: sessionID)
+        if let cached, chats[sessionID]?.hasDisplayHistory != true {
+            showCachedHistory(cached, in: sessionID)
         }
         chats[sessionID, default: ChatState()].loading = true
         chats[sessionID]?.error = nil
@@ -539,7 +644,7 @@ public final class AgentChatModel {
         let preview = fastResume ? Task { [weak self] in
             guard let events = try? await client.recentHistory(sessionID: sessionID, cwd: cwd),
                   let self, !Task.isCancelled, self.client === client, chats[sessionID]?.loading == true else { return }
-            showProvisionalHistory(events, in: sessionID)
+            showRecentHistory(events, in: sessionID)
         } : nil
         defer { preview?.cancel() }
         do {
@@ -568,12 +673,27 @@ public final class AgentChatModel {
         }
     }
 
-    private func showProvisionalHistory(_ events: [ACPEvent], in sessionID: String) {
+    private func showCachedHistory(_ cached: ChatHistorySnapshot, in sessionID: String) {
         var transcript = Transcript()
-        for event in events { transcript.apply(event) }
+        for event in ACPClient.historyEvents(cached.updates, sessionID: sessionID) { transcript.apply(event) }
         guard !transcript.entries.isEmpty else { return }
         transcript.restorePhotos(from: photoStore, in: sessionID)
         chats[sessionID, default: ChatState()].provisionalTranscript = transcript
+    }
+
+    private func showRecentHistory(_ events: [ACPEvent], in sessionID: String) {
+        guard !events.isEmpty, var chat = chats[sessionID] else { return }
+        var recent = Transcript()
+        for event in events { recent.apply(event) }
+        var transcript = chat.availableHistory
+        transcript.appendRecent(recent, in: sessionID)
+        transcript.restorePhotos(from: photoStore, in: sessionID)
+        if let preview = chat.notificationReply,
+           transcript.adoptReplyPreview(preview.entry, complete: preview.complete, keepFullText: true) {
+            chat.notificationReply = nil
+        }
+        chat.provisionalTranscript = transcript
+        chats[sessionID] = chat
     }
 
     public func refreshSessions(maximumPages: Int? = nil) async {
@@ -1070,7 +1190,7 @@ public final class AgentChatModel {
             guard var chat = chats[id] else { continue }
             if chat.loaded {
                 chat.connectionLost = true
-                if !expired { chat.error = "Connection closed. Reconnect to reopen this chat." }
+                if !expired && !chat.hasDisplayHistory { chat.error = ACPError.disconnected.localizedDescription }
             } else if chat.loading && chat.error == nil {
                 chat.error = ACPError.disconnected.localizedDescription
             }
@@ -1122,12 +1242,18 @@ public final class AgentChatModel {
 
     private func markLoaded(_ opened: OpenedSession) {
         var chat = chats[opened.id] ?? ChatState()
+        let previous = chat.availableHistory
         chat.transcript = Transcript()
         chat.provisionalTranscript = nil
         chat.replyTimedOut = false
         for event in opened.events { chat.receive(event, replaying: true) }
         if !chat.replyTimedOut { chat.uncertainFollowUp = nil }
         chat.transcript.restorePhotos(from: photoStore, in: opened.id)
+        chat.transcript.preserveEntryIDs(from: previous)
+        if let preview = chat.notificationReply {
+            _ = chat.transcript.adoptReplyPreview(preview.entry, complete: preview.complete)
+        }
+        chat.notificationReply = nil
         if chat.agentWorking { chat.transcript.beginObservedTurn() }
         if let options = opened.configOptions { chat.configOptions = options }
         chat.reportedModelName = opened.reportedModelName

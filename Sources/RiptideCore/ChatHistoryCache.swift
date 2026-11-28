@@ -37,6 +37,10 @@ public struct ChatHistoryCache: Sendable {
         return try? JSONDecoder().decode(ChatHistorySnapshot.self, from: data)
     }
 
+    func modifiedAt(_ chat: String) -> Date? {
+        try? file(chat).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
     func write(_ snapshot: ChatHistorySnapshot, chat: String) {
         let url = file(chat)
         guard let data = try? JSONEncoder().encode(snapshot), data.count <= Self.byteLimit else {

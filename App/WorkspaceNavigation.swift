@@ -91,8 +91,11 @@ struct WorkspaceNavigation: View {
                     guard let workspace, let alerts else { return }
                     alerts.receive(entry, appIsActive: workspace.sceneIsActive)
                 }
-                alerts.openWorkspace = { chat in
-                    if let chat, workspace.agent(chat.workspace) != nil {
+                alerts.preloadReply = { [weak workspace] in workspace?.preloadReply(from: $0) }
+                alerts.openWorkspace = { notification in
+                    if let notification, workspace.agent(notification.chat.workspace) != nil {
+                        workspace.preloadReply(from: notification)
+                        let chat = notification.chat
                         workspace.open(chat.workspace, chat: chat.chat)
                     } else {
                         workspace.showSidebar(.inbox)
