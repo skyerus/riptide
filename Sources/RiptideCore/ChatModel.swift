@@ -106,11 +106,16 @@ public struct Transcript: Equatable, Sendable {
         }
     }
 
-    fileprivate mutating func adoptReplyPreview(_ preview: ChatEntry) -> Bool {
+    fileprivate mutating func adoptReplyPreview(_ preview: ChatEntry, complete: Bool, keepFullText: Bool = false) -> Bool {
         guard case .message(.assistant, let excerpt) = preview.content,
               let index = entries.lastIndex(where: { $0.isConversationMessage }),
-              case .message(.assistant, let text) = entries[index].content,
-              WorkspaceAttention.preview(text) == excerpt else { return false }
+              case .message(.assistant, let text) = entries[index].content else { return false }
+        if complete {
+            guard text == excerpt || (keepFullText && text.unicodeScalars.count == 8192 && excerpt.hasPrefix(text)) else {
+                return false
+            }
+            if keepFullText { entries[index].content = preview.content }
+        } else if WorkspaceAttention.preview(text) != excerpt { return false }
         entries[index].id = preview.id
         return true
     }
@@ -374,7 +379,7 @@ public final class AgentChatModel {
     public struct ChatState {
         public fileprivate(set) var transcript = Transcript()
         fileprivate var provisionalTranscript: Transcript?
-        fileprivate var notificationReply: (date: Date, entry: ChatEntry)?
+        fileprivate var notificationReply: (date: Date, entry: ChatEntry, complete: Bool)?
         public fileprivate(set) var permissions: [PermissionRequest] = []
         public fileprivate(set) var configOptions: [SessionConfigOption] = []
         fileprivate var reportedModelName: String?
@@ -552,16 +557,19 @@ public final class AgentChatModel {
         _ = beginOpening(sessionID)
     }
 
-    public func preloadReplyPreview(_ preview: String, receivedAt: Date, in sessionID: String) {
+    public func preloadReplyPreview(_ text: String, receivedAt: Date, in sessionID: String, complete: Bool = false) {
         guard let historyCache, chats[sessionID]?.loaded != true,
-              receivedAt > (chats[sessionID]?.notificationReply?.date ?? .distantPast),
               receivedAt > (historyCache.modifiedAt(sessionID) ?? .distantPast) else { return }
+        let previous = chats[sessionID]?.notificationReply
+        if let previous, receivedAt < previous.date || (receivedAt == previous.date && (!complete || previous.complete)) { return }
         if chats[sessionID]?.hasDisplayHistory != true, let cached = historyCache.read(sessionID) {
             showCachedHistory(cached, in: sessionID)
         }
-        guard let chat = chats[sessionID], !chat.availableHistory.entries.isEmpty,
-              !chat.availableHistory.containsReplyPreview(preview) else { return }
-        chats[sessionID]?.notificationReply = (receivedAt, ChatEntry(content: .message(.assistant, preview)))
+        let history = chats[sessionID]?.availableHistory ?? Transcript()
+        guard complete || (!history.entries.isEmpty && !history.containsReplyPreview(text)) else { return }
+        var entry = ChatEntry(content: .message(.assistant, text))
+        if let previous, previous.date == receivedAt { entry.id = previous.entry.id }
+        chats[sessionID, default: ChatState()].notificationReply = (receivedAt, entry, complete)
     }
 
     public func open(_ sessionID: String) async {
@@ -680,7 +688,8 @@ public final class AgentChatModel {
         var transcript = chat.availableHistory
         transcript.appendRecent(recent, in: sessionID)
         transcript.restorePhotos(from: photoStore, in: sessionID)
-        if let preview = chat.notificationReply, transcript.adoptReplyPreview(preview.entry) {
+        if let preview = chat.notificationReply,
+           transcript.adoptReplyPreview(preview.entry, complete: preview.complete, keepFullText: true) {
             chat.notificationReply = nil
         }
         chat.provisionalTranscript = transcript
@@ -1241,7 +1250,9 @@ public final class AgentChatModel {
         if !chat.replyTimedOut { chat.uncertainFollowUp = nil }
         chat.transcript.restorePhotos(from: photoStore, in: opened.id)
         chat.transcript.preserveEntryIDs(from: previous)
-        if let preview = chat.notificationReply { _ = chat.transcript.adoptReplyPreview(preview.entry) }
+        if let preview = chat.notificationReply {
+            _ = chat.transcript.adoptReplyPreview(preview.entry, complete: preview.complete)
+        }
         chat.notificationReply = nil
         if chat.agentWorking { chat.transcript.beginObservedTurn() }
         if let options = opened.configOptions { chat.configOptions = options }

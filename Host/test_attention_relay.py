@@ -167,6 +167,8 @@ class AttentionRelayTests(unittest.TestCase):
             sender = APNs(team="EXAMPLE001", key_id="EXAMPLE002", topic="app.riptide.client", key_file=path)
         sender.client.close()
 
+        preloading = False
+
         def inspect(request):
             self.assertEqual(request.url.host, "api.sandbox.push.apple.com")
             self.assertEqual(request.headers["apns-topic"], "app.riptide.client")
@@ -177,10 +179,14 @@ class AttentionRelayTests(unittest.TestCase):
             signature = encode_dss_signature(int.from_bytes(raw[:32], "big"), int.from_bytes(raw[32:], "big"))
             key.public_key().verify(signature, f"{headers}.{claims}".encode(), ec.ECDSA(hashes.SHA256()))
             payload = json.loads(request.content)
-            self.assertEqual(payload, {
+            expected_payload = {
                 "aps": {"alert": {"title": "Riptide", "body": expected}, "sound": "default"},
                 "workspace": "agent", "chat": "main",
-            })
+            }
+            if preloading:
+                expected_payload["aps"]["mutable-content"] = 1
+                expected_payload["replyEventID"] = event.event_id
+            self.assertEqual(payload, expected_payload)
             return httpx.Response(200)
 
         with httpx.Client(transport=httpx.MockTransport(inspect)) as client:
@@ -196,3 +202,8 @@ class AttentionRelayTests(unittest.TestCase):
                 with self.subTest(reason=reason, expected=expected):
                     body = self.event(reason) if preview is None else self.event(reason, preview=preview)
                     self.assertEqual(sender.send(self.state.devices[DEVICE], AttentionEvent.parse(body)), "sent")
+            device = {**self.state.devices[DEVICE], "replyPreload": True}
+            expected = "The report is ready."
+            event = AttentionEvent.parse(self.event("reply", preview=expected) | {"replyRow": 23})
+            preloading = True
+            self.assertEqual(sender.send(device, event), "sent")

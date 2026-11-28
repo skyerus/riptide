@@ -30,6 +30,8 @@ targets:
       - package: SwiftMarkdown
         product: Markdown
       - package: WebRTC
+      - target: RiptideNotificationService
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.riptide.client
@@ -51,6 +53,24 @@ targets:
         Release:
           RIPTIDE_PUSH_ENTITLEMENTS: App/RiptidePush.entitlements
           RIPTIDE_PUSH_ENVIRONMENT: production
+  RiptideNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: NotificationService
+        excludes: [Info.plist, NotificationService.entitlements]
+    dependencies:
+      - package: RiptideCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.riptide.client.notification-service
+        INFOPLIST_FILE: NotificationService/Info.plist
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_ENTITLEMENTS: NotificationService/NotificationService.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES
+        SWIFT_VERSION: "6.0"
   RiptideUITests:
     type: bundle.ui-testing
     platform: iOS

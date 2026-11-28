@@ -149,7 +149,7 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
     }
 
     public func registerHermesNotifications(credential: String, token: String?, environment: String,
-                                            policy: AttentionPolicy) async throws {
+                                            policy: AttentionPolicy, replyPreloadKey: String? = nil) async throws {
         guard kind == .hermes, let transport = sshTransport(credential: credential, command: "riptide-attention") else {
             throw URLError(.unsupportedURL)
         }
@@ -159,6 +159,8 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
             let token: String?
             let environment: String
             let policy: AttentionPolicy
+            let supportsReplyPreload = true
+            let replyPreloadKey: String?
         }
         struct Request: Encodable {
             let operation = "register"
@@ -173,13 +175,35 @@ public struct RemoteProfile: Codable, Identifiable, Equatable, Sendable {
             deadline.cancel()
             Task { await transport.close() }
         }
-        let body = Registration(id: id, workspace: id.uuidString, token: token, environment: environment, policy: policy)
+        let body = Registration(id: id, workspace: id.uuidString, token: token, environment: environment,
+                                policy: policy, replyPreloadKey: replyPreloadKey)
         try await transport.send(JSONEncoder().encode(Request(body: body)))
         for try await response in transport.incoming {
             guard try JSONDecoder().decode(Response.self, from: response).ok else { break }
             return
         }
         throw URLError(.cannotConnectToHost)
+    }
+
+    func notificationReply(_ locator: NotificationReplyLocator, credential: String) async throws -> String {
+        guard kind == .hermes, locator.workspace == id,
+              let transport = sshTransport(credential: credential, command: "riptide-notification-reply") else {
+            throw URLError(.unsupportedURL)
+        }
+        struct Request: Encodable { let chat: String; let eventID: String }
+        struct Response: Decodable { let ok: Bool; let text: String? }
+        return try await withTaskCancellationHandler {
+            defer { Task { await transport.close() } }
+            try await transport.send(JSONEncoder().encode(Request(chat: locator.chat, eventID: locator.eventID)))
+            for try await data in transport.incoming {
+                let response = try JSONDecoder().decode(Response.self, from: data)
+                if response.ok, let text = response.text { return text }
+                break
+            }
+            throw URLError(.resourceUnavailable)
+        } onCancel: {
+            Task { await transport.close() }
+        }
     }
 
     /// Pair only through this profile's existing SSH endpoint and host-key pin.

@@ -9,6 +9,7 @@ struct WorkspaceChatNotification: Sendable {
     let chat: WorkspaceChatID
     let date: Date
     let replyPreview: String?
+    let replyLocator: NotificationReplyLocator?
 
     init?(_ notification: UNNotification) {
         let content = notification.request.content
@@ -17,6 +18,9 @@ struct WorkspaceChatNotification: Sendable {
               (1...200).contains(workspace.utf8.count), (1...300).contains(session.utf8.count) else { return nil }
         chat = WorkspaceChatID(workspace: workspace, chat: session)
         date = notification.date
+        replyLocator = (content.userInfo["replyEventID"] as? String).flatMap {
+            NotificationReplyLocator(workspace: workspace, chat: session, eventID: $0)
+        }
         let body = content.body.trimmingCharacters(in: .whitespacesAndNewlines)
         // Existing push senders put the reply excerpt in the alert body and use fixed text for other alerts.
         replyPreview = (1...180).contains(body.unicodeScalars.count) &&
@@ -48,7 +52,7 @@ final class RiptideNotificationDelegate: NSObject, UIApplicationDelegate, UNUser
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async
         -> UNNotificationPresentationOptions {
-        if let route = WorkspaceChatNotification(notification), route.replyPreview != nil {
+        if let route = WorkspaceChatNotification(notification), route.replyPreview != nil || route.replyLocator != nil {
             await MainActor.run { Self.received?(route) }
         }
         return []
@@ -116,7 +120,7 @@ final class WorkspaceAlerts {
         Task {
             var seen = Set<WorkspaceChatID>()
             for notification in await center.deliveredNotifications().sorted(by: { $0.date > $1.date }) {
-                guard let route = WorkspaceChatNotification(notification), route.replyPreview != nil,
+                guard let route = WorkspaceChatNotification(notification), route.replyPreview != nil || route.replyLocator != nil,
                       seen.insert(route.chat).inserted else { continue }
                 preloadReply?(route)
             }
@@ -279,9 +283,18 @@ final class WorkspaceAlerts {
         for profile in profiles {
             guard revision == current else { return }
             guard let credential = remotes?.bearer(for: profile) else { continue }
+            let preloads = NotificationReplyStore.shared
+            let preloadKey: String?
+            if hermesToken != nil && value.replies {
+                preloadKey = try? preloads?.prepareRoute(for: profile)
+            } else {
+                preloads?.removeWorkspace(profile.id)
+                preloadKey = nil
+            }
             do {
                 try await profile.registerHermesNotifications(credential: credential, token: hermesToken,
-                                                               environment: environment, policy: value)
+                                                               environment: environment, policy: value,
+                                                               replyPreloadKey: preloadKey)
                 if hermesToken != nil { registered.insert(profile.id.uuidString) }
             } catch { continue }
         }

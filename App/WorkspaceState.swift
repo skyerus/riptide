@@ -297,11 +297,14 @@ final class WorkspaceState {
     }
 
     func preloadReply(from notification: WorkspaceChatNotification) {
-        guard let preview = notification.replyPreview,
-              let profile = profile(notification.chat.workspace), profile.kind == .hermes,
+        guard let profile = profile(notification.chat.workspace), profile.kind == .hermes,
               profile.sshHostFingerprint != nil,
               let model = agentChatModel(for: notification.chat.workspace) else { return }
-        model.preloadReplyPreview(preview, receivedAt: notification.date, in: notification.chat.chat)
+        if let locator = notification.replyLocator, let fullReply = NotificationReplyStore.shared?.read(locator) {
+            model.preloadReplyPreview(fullReply, receivedAt: notification.date, in: notification.chat.chat, complete: true)
+        } else if let preview = notification.replyPreview {
+            model.preloadReplyPreview(preview, receivedAt: notification.date, in: notification.chat.chat)
+        }
     }
 
     func rememberCodexCatalog(_ chats: [CodexChatSummary], workspaceID: String) {

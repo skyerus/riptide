@@ -97,6 +97,34 @@ struct ChatTests {
         #expect(clients.withLock { $0.isEmpty })
     }
 
+    @Test func aFullNotificationReplyStaysIntactWhenTheRecentPreviewIsShorter() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = ChatHistoryCache(workspace: target.id, root: directory)
+        let chat = target.mainSessionID
+        let old = FastHistoryTransport.update("user_message_chunk", text: "Saved question")
+        let checkpoint = try #require(ChatHistoryCheckpoint(wire: FastHistoryTransport.checkpoint(rows: 1, digit: "a")))
+        cache.write(ChatHistorySnapshot(checkpoint: checkpoint, updates: [old]), chat: chat)
+        let reply = "The release is ready.\n" + String(repeating: "Keep every detail. ", count: 720)
+        let transport = FastHistoryTransport(chat: chat, reply: reply, recentReply: String(reply.prefix(8192)))
+        let model = AgentChatModel(target: target, historyCache: cache) { ACPClient(transport: transport) }
+        model.preloadReplyPreview(reply, receivedAt: .now, in: chat, complete: true)
+        let replyID = try #require(model.selected.displayTranscript.entries.last?.id)
+        #expect(model.selected.displayTranscript.entries.last?.content == .message(.assistant, reply))
+
+        let open = Task { await model.showMain() }
+        try await waitUntil { await transport.awaitingBothRequests }
+        try await transport.sendPreview()
+        try await waitUntil { model.selected.displayTranscript.entries.count == 3 }
+        #expect(model.selected.displayTranscript.entries.last?.content == .message(.assistant, reply))
+        #expect(model.selected.displayTranscript.entries.last?.id == replyID)
+
+        try await transport.finishResume()
+        await open.value
+        #expect(model.selected.displayTranscript.entries.last?.content == .message(.assistant, reply))
+        #expect(model.selected.displayTranscript.entries.last?.id == replyID)
+    }
+
     @Test func sendWhileOpeningASideChatKeepsItsDestinationAfterSwitchingAway() async throws {
         let side = "\(target.id)-sample-1"
         let fixture = try FixtureTransport(target: target, catalog: ["Saved side chat"])
@@ -590,12 +618,14 @@ private actor FastHistoryTransport: ACPTransport {
     private let output: AsyncThrowingStream<Data, any Error>.Continuation
     private let chat: String
     private let reply: String
+    private let recentReply: String
     private var previewID: JSON?
     private var resumeID: JSON?
 
-    init(chat: String, reply: String = "Newest reply") {
+    init(chat: String, reply: String = "Newest reply", recentReply: String? = nil) {
         self.chat = chat
         self.reply = reply
+        self.recentReply = recentReply ?? reply
         (incoming, output) = AsyncThrowingStream.makeStream()
     }
 
@@ -624,7 +654,7 @@ private actor FastHistoryTransport: ACPTransport {
             "updates": .array([
                 Self.update("user_message_chunk", text: "Saved question"),
                 Self.update("user_message_chunk", text: "New question"),
-                Self.update("agent_message_chunk", text: reply)
+                Self.update("agent_message_chunk", text: recentReply)
             ])
         ]))
     }

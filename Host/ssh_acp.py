@@ -386,6 +386,7 @@ if __name__ == "__main__":
     parser.add_argument("--hermes-browser-mcp", nargs=2, metavar=("PYTHON", "HERMES_SOURCE"))
     parser.add_argument("--attention-socket", type=Path)
     parser.add_argument("--attention-profile")
+    parser.add_argument("--notification-device")
     parser.add_argument("--pairing-config", type=Path)
     parser.add_argument("--agent-profile-state", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -404,6 +405,17 @@ if __name__ == "__main__":
         if args.attention_socket is None or not PROFILE.fullmatch(args.attention_profile):
             parser.error("A Hermes profile and private relay socket are required for scoped alerts.")
         attention_scope = {"profile": args.attention_profile, "workspace": args.workspace}
+    if args.notification_device is not None:
+        import uuid
+        if requested != "riptide-notification-reply" or args.attention_socket is None:
+            parser.exit(1, "This key is only authorized to fetch a notification reply.\n")
+        try:
+            uuid.UUID(args.notification_device)
+        except ValueError:
+            parser.exit(1, "Invalid notification device.\n")
+        from hermes_attention import serve_ssh
+        asyncio.run(serve_ssh(args.attention_socket, attention_scope, device=args.notification_device))
+        sys.exit(0)
     if requested == "riptide-pair-hermes":
         if args.pairing_config is None:
             print(json.dumps({"error": "This SSH pairing cannot connect additional Hermes profiles."}))

@@ -156,6 +156,7 @@ final class RemoteStore {
     func forget(_ profile: RemoteProfile) throws {
         let remaining = profiles.filter { $0.id != profile.id }
         let metadata = try JSONEncoder().encode(remaining)
+        let notificationCredential = profile.kind == .hermes && profile.sshHostFingerprint != nil ? bearer(for: profile) : nil
         try KeychainToken.remove(profile.id)
         try KeychainToken.remove(profile.id, purpose: "voice")
         try KeychainToken.remove(profile.id, purpose: "hermes-talk")
@@ -164,6 +165,15 @@ final class RemoteStore {
         defaults.set(try JSONEncoder().encode(voices), forKey: voiceKey)
         defaults.set(metadata, forKey: metadataKey)
         profiles = remaining
+        NotificationReplyStore.shared?.removeWorkspace(profile.id)
+        if let notificationCredential,
+           let environment = Bundle.main.object(forInfoDictionaryKey: "RiptidePushEnvironment") as? String,
+           ["development", "production"].contains(environment) {
+            Task {
+                try? await profile.registerHermesNotifications(credential: notificationCredential, token: nil,
+                                                                environment: environment, policy: .init())
+            }
+        }
     }
 }
 
