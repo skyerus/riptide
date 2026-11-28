@@ -13,7 +13,7 @@ import stat
 import subprocess
 import tempfile
 
-from agent_profile import RENAME, read_name
+from agent_profile import RENAME, SET_PHOTO, read_name
 from ssh_pairing_files import Edit, key_command, lock_keys, read_owned, require
 
 
@@ -130,11 +130,16 @@ def verify(argv, verify_talk=False):
         state = Path(prefix[prefix.index("--agent-profile-state") + 1])
         read_name(state)
         frame = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
-        result = subprocess.run([prefix[0], "-BE", str(wrapper.with_name("agent_profile.py")), "--state", str(state)],
+        workspace = prefix[prefix.index("--workspace") + 1]
+        result = subprocess.run([prefix[0], "-BE", str(wrapper.with_name("agent_profile.py")), "--state", str(state),
+                                 "--workspace", workspace],
                                 input=json.dumps(frame) + "\n", text=True, capture_output=True, timeout=8)
         require(result.returncode == 0, "The staged agent profile tool could not start.")
         tools = json.loads(result.stdout).get("result", {}).get("tools", [])
-        require(any(tool.get("name") == RENAME for tool in tools), "The staged agent profile tool is missing.")
+        names = {tool.get("name") for tool in tools}
+        require(RENAME in names, "The staged agent profile tool is missing.")
+        if SET_PHOTO not in names:
+            print("Agent profile photos require Pillow in the paired Python interpreter.")
     if "--hermes-groups" in argv:
         probe = {"jsonrpc": "2.0", "id": "verify-groups", "method": "groups.capabilities", "params": {}}
         groups = json.loads(run("riptide-hermes-groups", json.dumps(probe) + "\n"))

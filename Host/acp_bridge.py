@@ -35,9 +35,9 @@ def rpc_packet(text):
     return packet
 
 
-def bridge_server(port, token, command, dictation_auth=None, profile_state=None):
+def bridge_server(port, token, command, dictation_auth=None, profile_state=None, profile_workspace=None):
     active = set()
-    connector = profile_connector(profile_state) if profile_state is not None else None
+    connector = profile_connector(profile_state, profile_workspace) if profile_state is not None else None
 
     def authenticate(connection, request):
         if not ((request.path == "/acp" and command) or (request.path == DICTATION_PATH and dictation_auth)):
@@ -141,7 +141,7 @@ def bridge_server(port, token, command, dictation_auth=None, profile_state=None)
 
 async def run(args):
     async with bridge_server(args.port, read_token(args.token_file), args.command, args.codex_dictation_auth,
-                             args.agent_profile_state) as bridge:
+                             args.agent_profile_state, args.agent_profile_workspace) as bridge:
         name = "ACP bridge" if args.command else "Dictation relay"
         print(f"{name} on 127.0.0.1:{bridge.sockets[0].getsockname()[1]}", flush=True)
         await bridge.serve_forever()
@@ -153,6 +153,8 @@ if __name__ == "__main__":
     parser.add_argument("--token-file", required=True)
     parser.add_argument("--codex-dictation-auth", metavar="CODEX_AUTH_FILE")
     parser.add_argument("--agent-profile-state", type=Path)
+    parser.add_argument("--agent-profile-workspace", type=Path,
+                        help="Absolute trusted workspace for images used by the agent profile tools.")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command[:1] == ["--"]:
@@ -166,6 +168,8 @@ if __name__ == "__main__":
             validate_state(args.agent_profile_state)
         except (OSError, ValueError) as error:
             parser.error(str(error))
+    if args.agent_profile_workspace and (not args.agent_profile_state or not args.agent_profile_workspace.is_absolute()):
+        parser.error("An absolute agent profile workspace requires --agent-profile-state.")
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:
