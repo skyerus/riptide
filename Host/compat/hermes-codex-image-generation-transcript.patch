@@ -1,0 +1,257 @@
+diff --git a/acp_adapter/gateway_server.py b/acp_adapter/gateway_server.py
+--- a/acp_adapter/gateway_server.py
++++ b/acp_adapter/gateway_server.py
+@@ -21,7 +21,7 @@
+ from hermes_constants import get_hermes_home
+ from acp_adapter.gateway_reply import GatewayReplyMixin, _text
+ from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
+-from agent.transports.codex_event_projector import ASSISTANT_PROGRESS
++from agent.transports.codex_event_projector import ASSISTANT_PROGRESS, legacy_image_generation_notice
+
+ logger = logging.getLogger(__name__)
+
+@@ -37,6 +37,10 @@
+     for index, row in enumerate(rows):
+         if index == count and row.get("role") == "user":
+             reused = digest.hexdigest() == expected
++        # Older clients may still have the opaque image row in their cached prefix.
++        if row.get("role") == "assistant" and isinstance(text := row.get("content"), str):
++            if notice := legacy_image_generation_notice(text):
++                row = {**row, "content": notice}
+         digest.update(json.dumps(row, sort_keys=True, separators=(",", ":")).encode())
+         digest.update(b"\n")
+     result = {"rows": len(rows), "digest": digest.hexdigest()}
+diff --git a/acp_adapter/server.py b/acp_adapter/server.py
+--- a/acp_adapter/server.py
++++ b/acp_adapter/server.py
+@@ -39,7 +39,7 @@
+ from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+ from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
+ from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
+-from agent.transports.codex_event_projector import is_legacy_image_view_text
++from agent.transports.codex_event_projector import is_legacy_image_view_text, legacy_image_generation_notice
+ from agent.turn_failure_copy import (
+     CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY, CONTENT_REFUSED_NOTICE)
+ from agent.interrupt_compat import request_hard_interrupt
+@@ -120,6 +120,8 @@
+     text = _flatten_history_text(message.get("content"))
+     if not text or (role == "assistant" and is_legacy_image_view_text(text)):
+         return None
++    if role == "assistant":
++        text = legacy_image_generation_notice(text) or text
+     cls, session_update = _HISTORY_CHUNK_TYPES[role]
+     return cls(
+         session_update=session_update, content=TextContentBlock(type="text", text=text),
+diff --git a/agent/transports/codex_app_server_session.py b/agent/transports/codex_app_server_session.py
+--- a/agent/transports/codex_app_server_session.py
++++ b/agent/transports/codex_app_server_session.py
+@@ -556,6 +556,10 @@
+             if turn_status and turn_status not in {"completed", "interrupted"} and turn_obj.get("error"):
+                 err_msg = _format_responses_error(turn_obj["error"], str(turn_status))
+                 self._set_classified_error(result, f"turn ended status={turn_status}", err_msg, err_msg)
++            if (turn_status == "completed" and not result.interrupted and result.error is None
++                    and not result.final_text.strip() and projector.image_generation_notice):
++                result.final_text = projector.image_generation_notice
++                result.projected_messages.append({"role": "assistant", "content": result.final_text})
+             return True
+
+         try:
+diff --git a/agent/transports/codex_event_projector.py b/agent/transports/codex_event_projector.py
+--- a/agent/transports/codex_event_projector.py
++++ b/agent/transports/codex_event_projector.py
+@@ -11,11 +11,26 @@
+
+ import hashlib
+ import json
++import re
+ from dataclasses import dataclass, field
+ from typing import Any, Callable, Optional
+
+ ASSISTANT_PROGRESS = "app.riptide.assistantProgress"
+ _IMAGE_VIEW = "imageView"
++_IMAGE_GENERATION = "imageGeneration"
++_OPAQUE_PAYLOAD_LIMIT = 1500
++_IMAGE_GENERATION_STATUSES = {
++    "completed": "Image generated on the agent host.",
++    "failed": "Image generation failed.",
++    "cancelled": "Image generation was cancelled.",
++    "canceled": "Image generation was cancelled.",
++}
++# Codex sends these fields first. Old opaque notes used json.dumps and clipped
++# the result at a fixed boundary, often in the middle of the image data string.
++_TRUNCATED_IMAGE_GENERATION = re.compile(
++    r'^\{"type": "imageGeneration", "id": "[A-Za-z0-9_.:-]{1,256}", "status": "([A-Za-z]{1,32})", '
++    r'"(?:revisedPrompt|result|savedPath|failure)": '
++)
+
+
+ def is_legacy_image_view_text(text: str) -> bool:
+@@ -31,6 +46,30 @@
+             and all(isinstance(item.get(key), str) and item[key] for key in ("id", "path")))
+
+
++def legacy_image_generation_notice(text: str) -> str | None:
++    """Recognize intact or clipped image records produced by the opaque projector."""
++    prefix = f"[codex {_IMAGE_GENERATION}] "
++    if not text.startswith(prefix):
++        return None
++    payload = text[len(prefix):]
++    if len(payload) > _OPAQUE_PAYLOAD_LIMIT:
++        return None
++    try:
++        item = json.loads(payload)
++    except (ValueError, RecursionError):
++        match = _TRUNCATED_IMAGE_GENERATION.match(payload) if len(payload) == _OPAQUE_PAYLOAD_LIMIT else None
++        if not match:
++            return None
++        status = match[1]
++    else:
++        if (not isinstance(item, dict) or item.get("type") != _IMAGE_GENERATION
++                or not isinstance(item.get("id"), str) or not item["id"]
++                or not isinstance(item.get("status"), str)):
++            return None
++        status = item["status"]
++    return _IMAGE_GENERATION_STATUSES.get(status, "Image generation update.")
++
++
+ def _deterministic_call_id(item_type: str, item_id: str) -> str:
+     """Stable tool_call id: the codex item id, else a hash so replay keeps prefix caches valid."""
+     return f"codex_{item_type}_{item_id or hashlib.sha256(f'{item_type}'.encode()).hexdigest()[:16]}"
+@@ -60,6 +99,7 @@
+
+     def __init__(self) -> None:
+         self._pending_reasoning: list[str] = []
++        self.image_generation_notice: str | None = None
+
+     def project(self, notification: dict) -> ProjectionResult:
+         """Project one notification; only ``item/completed`` materializes messages (deltas are display-only)."""
+@@ -70,6 +110,14 @@
+         item_id = item.get("id") or ""
+         if item_type == _IMAGE_VIEW:
+             # Viewing a screenshot is internal activity, not an assistant message.
++            return ProjectionResult()
++        if item_type == _IMAGE_GENERATION or (
++            item_type == "extension" and item.get("kind") == "image_gen.generation"
++        ):
++            status = item.get("status")
++            notice = _IMAGE_GENERATION_STATUSES.get(status) if isinstance(status, str) else None
++            if notice and (status == "completed" or self.image_generation_notice is None):
++                self.image_generation_notice = notice
+             return ProjectionResult()
+         if item_type == "agentMessage":
+             return self._project_agent_message(item)
+@@ -188,7 +236,7 @@
+     @staticmethod
+     def _project_opaque(item: dict, item_type: str) -> ProjectionResult:
+         try:
+-            payload = json.dumps(item, ensure_ascii=False)[:1500]
++            payload = json.dumps(item, ensure_ascii=False)[:_OPAQUE_PAYLOAD_LIMIT]
+         except (TypeError, ValueError):
+-            payload = repr(item)[:1500]
++            payload = repr(item)[:_OPAQUE_PAYLOAD_LIMIT]
+         return ProjectionResult(messages=[{"role": "assistant", "content": f"[codex {item_type}] {payload}"}])
+diff --git a/tests/acp_adapter/test_riptide_codex_image_generation.py b/tests/acp_adapter/test_riptide_codex_image_generation.py
+new file mode 100644
+--- /dev/null
++++ b/tests/acp_adapter/test_riptide_codex_image_generation.py
+@@ -0,0 +1,52 @@
++"""Riptide's stored Codex image events replay as concise status messages."""
++
++import hashlib
++import json
++
++from acp_adapter.gateway_server import _history_checkpoint
++from acp_adapter.server import _history_replay_updates
++
++NOTICE = "Image generated on the agent host."
++IMAGE = {
++    "type": "imageGeneration", "id": "exec-image", "status": "completed",
++    "revisedPrompt": "A simple avatar", "result": "iVBORw0KGgo" * 500,
++    "savedPath": "/fixture/avatar.png",
++}
++TRUNCATED = "[codex imageGeneration] " + json.dumps(IMAGE)[:1500]
++FAILED = "[codex imageGeneration] " + json.dumps({
++    **IMAGE, "status": "failed", "result": None, "failure": "Fixture detail",
++})
++
++
++def test_replay_converts_complete_and_truncated_records_but_keeps_surrounding_text():
++    quoted = f"The log included: {TRUNCATED}"
++    malformed = '[codex imageGeneration] {"type": "imageGeneration", "id": "clip"'
++    unrelated = '[codex imageGeneration] {"type": "agentMessage", "id": "fixture", "status": "completed"}'
++    rows = [{"role": "user", "content": "Generate a minimal avatar."}] + [
++        {"role": "assistant", "content": text}
++        for text in (TRUNCATED, FAILED, "That is the preview.", quoted, malformed, unrelated)
++    ] + [{"role": "user", "content": TRUNCATED}]
++    updates = list(_history_replay_updates(rows))
++    assert [update.content.text for update in updates] == [
++        "Generate a minimal avatar.", NOTICE, "Image generation failed.",
++        "That is the preview.", quoted, malformed, unrelated, TRUNCATED,
++    ]
++    assert rows[1]["content"] == TRUNCATED
++
++
++def unpatched_checkpoint(rows):
++    body = "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
++    return {"rows": len(rows), "digest": hashlib.sha256(body.encode()).hexdigest()}
++
++
++def test_fast_resume_refreshes_only_a_prefix_caching_a_raw_image_record():
++    ordinary = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello."}]
++    history = ordinary + [
++        {"role": "user", "content": "Generate an avatar."},
++        {"role": "assistant", "content": TRUNCATED},
++    ]
++    current, reused = _history_checkpoint(history, unpatched_checkpoint(history))
++    assert not reused
++    assert _history_checkpoint(history, current) == (current, True)
++    assert _history_checkpoint(history, unpatched_checkpoint(ordinary)) == (current, True)
++    assert _history_checkpoint(ordinary, unpatched_checkpoint(ordinary))[1]
+diff --git a/tests/agent/transports/test_codex_app_server_session.py b/tests/agent/transports/test_codex_app_server_session.py
+--- a/tests/agent/transports/test_codex_app_server_session.py
++++ b/tests/agent/transports/test_codex_app_server_session.py
+@@ -274,6 +274,44 @@
+ # ---- turn loop ----
+
+ class TestRunTurn:
++    @pytest.mark.parametrize(
++        "item_type, kind, status, final, expected",
++        [
++            ("imageGeneration", None, "completed", "", "Image generated on the agent host."),
++            ("extension", "image_gen.generation", "completed", "", "Image generated on the agent host."),
++            ("imageGeneration", None, "completed", "Here's the result.", "Here's the result."),
++            ("imageGeneration", None, "failed", "", "Image generation failed."),
++        ],
++    )
++    def test_generated_image_uses_a_text_receipt_only_when_the_final_reply_is_empty(
++        self, item_type, kind, status, final, expected,
++    ):
++        client = FakeClient()
++        item = {"type": item_type, "id": "exec-image", "status": status, "result": "iVBORw0KGgo" * 500}
++        if kind:
++            item["kind"] = kind
++        client.queue_notification("item/completed", threadId="t", turnId="tu1", item=item)
++        client.queue_notification(
++            "item/completed", threadId="t", turnId="tu1",
++            item={"type": "agentMessage", "id": "final", "phase": "final_answer", "text": final},
++        )
++        client.queue_notification("turn/completed", threadId="t", turn={"id": "tu1", "status": "completed"})
++        outcome = make_session(client).run_turn("Generate an image")
++        assert outcome.error is None
++        assert outcome.final_text == expected
++        assert [msg["content"] for msg in outcome.projected_messages if msg.get("content")] == [expected]
++
++    def test_completed_image_event_does_not_replace_an_interrupted_turn(self):
++        client = FakeClient()
++        client.queue_notification(
++            "item/completed", threadId="t", turnId="tu1",
++            item={"type": "imageGeneration", "id": "exec-image", "status": "completed"},
++        )
++        client.queue_notification("turn/completed", threadId="t", turn={"id": "tu1", "status": "interrupted"})
++        outcome = make_session(client).run_turn("Generate an image")
++        assert outcome.final_text == ""
++        assert not outcome.projected_messages
++
+     def test_simple_text_turn_returns_final_message(self):
+         client = FakeClient()
+         client.queue_notification("turn/started", threadId="t", turn={"id": "tu1"})
